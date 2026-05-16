@@ -1,0 +1,6 @@
+interface:
+  display_name: "StackChan Contract Change"
+  short_description: "Keep ROS and CLI contracts aligned"
+  default_prompt: "Use $stackchan-contract-change to update a StackChan ROS or CLI contract safely."
+policy:
+  allow_implicit_invocation: true

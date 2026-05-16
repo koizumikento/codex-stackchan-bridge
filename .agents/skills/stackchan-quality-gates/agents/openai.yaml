@@ -1,0 +1,6 @@
+interface:
+  display_name: "StackChan Quality Gates"
+  short_description: "Choose validation before commit or push"
+  default_prompt: "Use $stackchan-quality-gates to choose and run the right checks for this StackChan change."
+policy:
+  allow_implicit_invocation: true

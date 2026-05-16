@@ -1,0 +1,6 @@
+interface:
+  display_name: "StackChan Dev Workflow"
+  short_description: "Route development work in this repo"
+  default_prompt: "Use $stackchan-dev-workflow to plan and route a codex-stackchan-bridge change."
+policy:
+  allow_implicit_invocation: true
