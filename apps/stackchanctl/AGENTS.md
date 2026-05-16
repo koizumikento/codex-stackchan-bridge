@@ -14,6 +14,7 @@ This directory owns the Python CLI. Follow this file for package-specific rules,
 - Device selection through `--device <device_id>`.
 - ROS 2 calls to the `stackchan_bridge` facade through `rclpy`.
 - Human-readable output and `--json` output.
+- MCP stdio adapter behavior for `stackchanctl mcp serve`.
 - Command metadata creation and propagation.
 - Structured error rendering.
 
@@ -43,6 +44,11 @@ stackchanctl <command> [args]
 
 Do not expose ROS 2 package names, topic names, or service names as the normal user-facing contract.
 
+`stackchanctl mcp serve --transport stdio` is allowed as a local adapter over
+the same command contract. It must keep MCP JSON-RPC on stdout, send logs and
+diagnostics to stderr, and route through the same mock or bridge backend as the
+shell CLI.
+
 Device selection belongs on the CLI surface:
 
 ```bash
@@ -63,6 +69,7 @@ Expected command groups:
 - `camera`
 - `nfc`
 - `imu`
+- `mcp serve`
 
 Keep camera capture, NFC wait, and IMU streaming as explicit commands. Do not hide them inside `observe`.
 
@@ -109,6 +116,7 @@ For CLI changes, add or update tests for:
 - command metadata
 - structured error shape
 - backend selection
+- MCP stdio framing and stdout/stderr separation
 - `ACCEPTED`/`COMPLETED`/`REJECTED`/`TIMEOUT` state mapping
 
 Do not require physical hardware for CLI tests.

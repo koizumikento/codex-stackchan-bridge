@@ -12,7 +12,7 @@ Use this skill to orient development work in `codex-stackchan-bridge` before edi
 1. Read the root `AGENTS.md`.
 2. Read `docs/README.md`, then the closest relevant docs:
    - Architecture or boundary work: `docs/architecture.md`
-   - CLI work: `docs/stackchanctl.md`
+   - CLI or MCP stdio adapter work: `docs/stackchanctl.md`
    - ROS interfaces: `docs/ros-interface.md`
    - Firmware: `docs/firmware.md`
    - Dependencies or source use: `docs/license-notes.md`
@@ -37,6 +37,7 @@ Keep delegation shallow. `.codex/config.toml` intentionally sets `max_depth = 1`
 
 - Keep the standard control path as `stackchanctl -> stackchan_bridge facade -> firmware`.
 - Keep Codex skills calling `stackchanctl`, not raw `ros2` commands.
+- Keep MCP stdio integrations routed through `stackchanctl mcp serve` and the same command contract.
 - Keep ROS resources under `/stackchan/<device_id>`, with `default` as the single-device default.
 - Use feature-specific ROS interfaces rather than a generic command bus.
 - Keep `stackchanctl` in Python with `rclpy`; use Rust only for measured companion workers or long-running helpers.

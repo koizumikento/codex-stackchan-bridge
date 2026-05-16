@@ -16,7 +16,7 @@ from stackchan_bridge.models import (
 )
 from stackchan_bridge.registry import DeviceAvailability, DeviceRegistry
 
-CLI_SOURCES = {"cli", "codex_skill", "human_cli", "stackchanctl"}
+CLI_SOURCES = {"cli", "codex_skill", "human_cli", "mcp_agent", "stackchanctl"}
 AVAILABILITY_ERROR_CODES = {
     "DEVICE_NOT_FOUND",
     "TRANSPORT_DISCONNECTED",

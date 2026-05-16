@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import uuid
@@ -19,6 +20,7 @@ from stackchanctl.contract import (
     Priority,
     utc_timestamp,
 )
+from stackchanctl.mcp_stdio import run_mcp_stdio
 
 CommandIdFactory = Callable[[], str]
 Clock = Callable[[], datetime]
@@ -54,6 +56,7 @@ def run_cli(
     except SystemExit as exc:
         return int(exc.code)
 
+    is_mcp = args.command == "mcp"
     runtime = resolve_runtime_config(
         cli_backend=args.backend,
         cli_device=args.device,
@@ -61,7 +64,14 @@ def run_cli(
         cli_source=args.source,
         cli_timeout=args.timeout,
         env=env,
+        default_source="mcp_agent" if is_mcp else "human_cli",
     )
+    if is_mcp:
+        if args.transport != "stdio":
+            stderr.write("REJECTED unsupported MCP transport\n")
+            return 1
+        return run_mcp_stdio(runtime, stderr=stderr)
+
     priority = Priority(args.priority or Priority.NORMAL.value)
     request = build_request(
         args=args,
@@ -74,11 +84,19 @@ def run_cli(
     )
 
     backend = create_backend(runtime.backend)
-    result = backend.execute(request)
-    render(result, json_output=runtime.output == "json", stdout=stdout, stderr=stderr)
-    if isinstance(result, CommandResult) and not result.ok:
-        return 1
-    return 0
+    try:
+        result = backend.execute(request)
+        render(result, json_output=runtime.output == "json", stdout=stdout, stderr=stderr)
+        if isinstance(result, CommandResult) and not result.ok:
+            return 1
+        return 0
+    finally:
+        close = getattr(backend, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:  # pragma: no cover - defensive cleanup guard
+                stderr.write(f"stackchanctl backend close error: {exc}\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend", choices=("bridge", "mock"))
     parser.add_argument("--device")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--timeout", type=float)
+    parser.add_argument("--timeout", type=finite_float)
     parser.add_argument("--priority", choices=[priority.value for priority in Priority])
     parser.add_argument("--source")
     parser.add_argument("--wait", action="store_true")
@@ -105,12 +123,17 @@ def build_parser() -> argparse.ArgumentParser:
     led = subparsers.add_parser("led")
     led.add_argument("pattern")
 
+    mcp = subparsers.add_parser("mcp")
+    mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_subparsers.add_parser("serve")
+    mcp_serve.add_argument("--transport", choices=("stdio",), default="stdio")
+
     audio = subparsers.add_parser("audio")
     audio_subparsers = audio.add_subparsers(dest="audio_command", required=True)
     audio_play = audio_subparsers.add_parser("play")
     audio_play.add_argument("path")
     audio_capture = audio_subparsers.add_parser("capture")
-    audio_capture.add_argument("--seconds", type=float, default=3.0)
+    audio_capture.add_argument("--seconds", type=finite_float, default=3.0)
     audio_capture.add_argument("--output", required=True)
 
     camera = subparsers.add_parser("camera")
@@ -126,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     imu = subparsers.add_parser("imu")
     imu_subparsers = imu.add_subparsers(dest="imu_command", required=True)
     imu_stream = imu_subparsers.add_parser("stream")
-    imu_stream.add_argument("--hz", type=float, default=10.0)
+    imu_stream.add_argument("--hz", type=finite_float, default=10.0)
 
     subparsers.add_parser("observe")
 
@@ -199,7 +222,7 @@ def render(
 ) -> None:
     if json_output:
         stream = stderr if isinstance(result, CommandResult) and not result.ok else stdout
-        json.dump(result.to_dict(), stream, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(result.to_dict(), stream, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
         stream.write("\n")
         return
 
@@ -253,3 +276,13 @@ def _normalize_global_options(argv: list[str]) -> list[str]:
         index += 1
 
     return globals_part + command_part
+
+
+def finite_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError(f"{value!r} must be finite")
+    return parsed

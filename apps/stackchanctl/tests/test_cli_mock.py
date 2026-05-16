@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import unittest
+from contextlib import redirect_stderr
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,7 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from stackchanctl import cli as cli_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
+from stackchanctl.contract import DeviceStatus  # noqa: E402
 
 
 FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
@@ -20,14 +23,15 @@ FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
 def run_stackchanctl(argv: list[str], env: dict[str, str] | None = None):
     stdout = io.StringIO()
     stderr = io.StringIO()
-    code = run_cli(
-        argv,
-        stdout=stdout,
-        stderr=stderr,
-        env={"XDG_CONFIG_HOME": str(ROOT / ".test-config"), **(env or {})},
-        command_id_factory=lambda: "cmd-test-0001",
-        clock=lambda: FIXED_NOW,
-    )
+    with redirect_stderr(stderr):
+        code = run_cli(
+            argv,
+            stdout=stdout,
+            stderr=stderr,
+            env={"XDG_CONFIG_HOME": str(ROOT / ".test-config"), **(env or {})},
+            command_id_factory=lambda: "cmd-test-0001",
+            clock=lambda: FIXED_NOW,
+        )
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -192,6 +196,36 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
 
+    def test_non_finite_timeout_is_rejected_by_parser(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "nod", "--timeout", "NaN", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("'NaN' must be finite", stderr)
+
+    def test_non_finite_audio_seconds_is_rejected_by_parser(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["audio", "capture", "--seconds", "NaN", "--output", "mic.wav", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("'NaN' must be finite", stderr)
+
+    def test_non_finite_imu_hz_is_rejected_by_parser(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["imu", "stream", "--hz", "Infinity", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("'Infinity' must be finite", stderr)
+
     def test_observe_json_matches_fixture(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["observe", "--json"],
@@ -210,6 +244,64 @@ class MockCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0, stderr)
         self.assertEqual(stdout, "ACCEPTED say device=default command_id=cmd-test-0001\n")
+
+    def test_cli_closes_backend_when_supported(self) -> None:
+        class ClosingBackend:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def execute(self, request):
+                return DeviceStatus(
+                    device_id=request.meta.device_id,
+                    connected=True,
+                    device_state="idle",
+                    face="neutral",
+                )
+
+            def close(self) -> None:
+                self.closed = True
+
+        backend = ClosingBackend()
+        original_create_backend = cli_module.create_backend
+        cli_module.create_backend = lambda name: backend
+        try:
+            code, stdout, stderr = run_stackchanctl(
+                ["observe", "--json"],
+                {"STACKCHANCTL_BACKEND": "mock"},
+            )
+        finally:
+            cli_module.create_backend = original_create_backend
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["device_state"], "idle")
+        self.assertTrue(backend.closed)
+
+    def test_cli_close_failure_is_reported_without_overriding_result(self) -> None:
+        class BadCloseBackend:
+            def execute(self, request):
+                return DeviceStatus(
+                    device_id=request.meta.device_id,
+                    connected=True,
+                    device_state="idle",
+                    face="neutral",
+                )
+
+            def close(self) -> None:
+                raise RuntimeError("close failed")
+
+        original_create_backend = cli_module.create_backend
+        cli_module.create_backend = lambda name: BadCloseBackend()
+        try:
+            code, stdout, stderr = run_stackchanctl(
+                ["observe", "--json"],
+                {"STACKCHANCTL_BACKEND": "mock"},
+            )
+        finally:
+            cli_module.create_backend = original_create_backend
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["device_state"], "idle")
+        self.assertIn("stackchanctl backend close error: close failed", stderr)
 
 
 if __name__ == "__main__":

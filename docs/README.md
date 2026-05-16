@@ -7,7 +7,7 @@ This directory is the map for the project. Start here when you want to understan
 1. [architecture.md](architecture.md)
    - Overall shape of the Codex App -> CLI -> ROS 2 -> micro-ROS -> M5StackChan bridge.
 2. [stackchanctl.md](stackchanctl.md)
-   - Human and Codex-facing command surface.
+   - Human, Codex, and MCP stdio command surface.
 3. [ros-interface.md](ros-interface.md)
    - ROS 2 topics, services, actions, and shared message boundaries.
 4. [firmware.md](firmware.md)
@@ -15,7 +15,7 @@ This directory is the map for the project. Start here when you want to understan
 5. [license-notes.md](license-notes.md)
    - Dependency and reference policy for StackChan-related upstream code.
 6. [quality-gates.md](quality-gates.md)
-   - Required validation gates for CLI, ROS 2 interfaces, firmware, Codex skill, and Rust workers.
+   - Required validation gates for CLI, MCP stdio, ROS 2 interfaces, firmware, Codex skill, and Rust workers.
 
 ## Implementation areas
 
@@ -27,7 +27,7 @@ This directory is the map for the project. Start here when you want to understan
 
 ## Quality gates
 
-Use [quality-gates.md](quality-gates.md) before implementation changes. The short version is: mock backend behavior must stay testable without hardware, command metadata and structured errors are contract, and safety behavior belongs at the firmware boundary.
+Use [quality-gates.md](quality-gates.md) before implementation changes. The short version is: mock backend behavior must stay testable without hardware, command metadata and structured errors are contract, MCP stdio must keep JSON-RPC isolated on stdout, and safety behavior belongs at the firmware boundary.
 
 ## Document ownership
 

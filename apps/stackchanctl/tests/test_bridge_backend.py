@@ -6,6 +6,7 @@ import sys
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
     BridgeBackend,
     BridgeBackendTimeout,
     BridgeCommandResponse,
+    RclpyBridgeClient,
     _copy_created_at,
     _normalize_action_response,
 )
@@ -67,10 +69,7 @@ class FakeBridgeClient:
     def play_audio(
         self, meta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     def capture_audio(
         self,
@@ -81,22 +80,28 @@ class FakeBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     def capture_camera(
         self, meta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     @staticmethod
     def _accepted() -> BridgeCommandResponse:
         return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
+
+    @staticmethod
+    def _unsupported_media() -> BridgeCommandResponse:
+        return BridgeCommandResponse(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="bridge facade does not implement media transport yet",
+                recoverable=False,
+            ),
+        )
 
 
 def run_stackchanctl(argv: list[str], client: FakeBridgeClient):
@@ -261,6 +266,50 @@ class BridgeBackendTests(unittest.TestCase):
 
         self.assertEqual(response.result_state, ResultState.ACCEPTED)
 
+    def test_rclpy_action_waits_for_facade_result_when_not_waiting(self) -> None:
+        action = FakeActionClient()
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = object()
+        client._action_client_type = lambda node, action_type, action_name: action
+
+        response = client._send_action_goal(
+            object,
+            "/stackchan/default/cmd/say",
+            object(),
+            wait=False,
+            timeout=1.0,
+        )
+
+        self.assertTrue(response.ok)
+        self.assertEqual(response.result_state, ResultState.ACCEPTED)
+        self.assertTrue(action.goal_handle.result_requested)
+
+    def test_run_motion_waits_for_facade_result_when_not_waiting(self) -> None:
+        action = FakeActionClient()
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = object()
+        client._action_client_type = lambda node, action_type, action_name: action
+        client._run_motion_type = FakeRunMotion
+
+        response = client.run_motion(
+            SimpleNamespace(
+                device_id="default",
+                command_id="cmd-test-0001",
+                source="test",
+                created_at="2026-05-16T00:00:00Z",
+                priority=SimpleNamespace(value="NORMAL"),
+            ),
+            "nod",
+            wait=False,
+            timeout=1.0,
+        )
+
+        self.assertTrue(response.ok)
+        self.assertEqual(response.result_state, ResultState.ACCEPTED)
+        self.assertTrue(action.goal_handle.result_requested)
+
     def test_non_wait_action_preserves_facade_rejection(self) -> None:
         response = _normalize_action_response(
             BridgeCommandResponse(
@@ -301,6 +350,69 @@ class BridgeBackendTests(unittest.TestCase):
         payload = json.loads(stderr)
         self.assertEqual(payload["error"]["code"], "TRANSPORT_DISCONNECTED")
         self.assertTrue(payload["error"]["recoverable"])
+
+
+class FakeRclpy:
+    def spin_until_future_complete(self, node, future, timeout_sec: float) -> None:
+        del node, timeout_sec
+        future.completed = True
+
+
+class FakeFuture:
+    def __init__(self, result) -> None:
+        self._result = result
+        self.completed = False
+
+    def done(self) -> bool:
+        return self.completed
+
+    def result(self):
+        return self._result
+
+
+class FakeGoalHandle:
+    accepted = True
+
+    def __init__(self) -> None:
+        self.result_requested = False
+
+    def get_result_async(self):
+        self.result_requested = True
+        return FakeFuture(
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    result=SimpleNamespace(
+                        ok=True,
+                        state=2,
+                        error_code="",
+                        message="",
+                        recoverable=False,
+                    )
+                )
+            )
+        )
+
+
+class FakeActionClient:
+    def __init__(self) -> None:
+        self.goal_handle = FakeGoalHandle()
+
+    def wait_for_server(self, timeout_sec: float) -> bool:
+        del timeout_sec
+        return True
+
+    def send_goal_async(self, goal):
+        del goal
+        return FakeFuture(self.goal_handle)
+
+
+class FakeRunMotion:
+    class Goal:
+        def __init__(self) -> None:
+            self.meta = SimpleNamespace(created_at=SimpleNamespace())
+            self.name = ""
+            self.intensity = 0.0
+            self.duration_ms = 0
 
 
 if __name__ == "__main__":

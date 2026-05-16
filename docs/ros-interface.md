@@ -91,6 +91,8 @@ uint8 PRIORITY_SAFETY=3
 ```
 
 This metadata lets `stackchanctl`, bridge nodes, firmware, logs, and status messages refer to the same request.
+MCP-originated commands use the same metadata contract; the recommended
+`source` value is `mcp_agent`.
 
 Priority values:
 
@@ -535,3 +537,4 @@ Baseline QoS:
 - `ros/stackchan_bridge` owns PC-side routing and CLI-facing integration.
 - `firmware/m5stackchan-microros` owns device-side service/action handlers, publishers, and safety checks.
 - `apps/stackchanctl` owns the user-facing command surface and backend selection.
+- `apps/stackchanctl` also owns the MCP stdio adapter; it does not define new ROS resources.
