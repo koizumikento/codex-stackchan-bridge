@@ -16,6 +16,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
     BridgeBackendTimeout,
     BridgeCommandResponse,
     _copy_created_at,
+    _normalize_action_response,
 )
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
@@ -189,18 +190,20 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
 
-    def test_bridge_audio_play_keeps_json_shape(self) -> None:
+    def test_bridge_audio_play_is_unsupported_until_transport_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "audio", "play", "prompt.wav", "--json"],
             FakeBridgeClient(),
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "ACCEPTED")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"], {"type": "audio.play", "path": "prompt.wav"})
 
-    def test_bridge_audio_capture_wait_can_complete(self) -> None:
+    def test_bridge_audio_capture_is_unsupported_until_transport_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -217,13 +220,15 @@ class BridgeBackendTests(unittest.TestCase):
             FakeBridgeClient(),
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "audio.capture")
         self.assertEqual(payload["command"]["output"], "mic.wav")
 
-    def test_bridge_camera_capture_wait_can_complete(self) -> None:
+    def test_bridge_camera_capture_is_unsupported_until_transport_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -240,11 +245,38 @@ class BridgeBackendTests(unittest.TestCase):
             FakeBridgeClient(),
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "camera.capture")
         self.assertEqual(payload["command"]["quality"], 80)
+
+    def test_non_wait_action_normalizes_success_after_facade_validation(self) -> None:
+        response = _normalize_action_response(
+            BridgeCommandResponse(ok=True, result_state=ResultState.COMPLETED),
+            wait=False,
+        )
+
+        self.assertEqual(response.result_state, ResultState.ACCEPTED)
+
+    def test_non_wait_action_preserves_facade_rejection(self) -> None:
+        response = _normalize_action_response(
+            BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="INVALID_PRIORITY",
+                    message="rejected",
+                    recoverable=False,
+                ),
+            ),
+            wait=False,
+        )
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error.code, "INVALID_PRIORITY")
 
     def test_bridge_rejection_keeps_cli_error_shape(self) -> None:
         class RejectingClient(FakeBridgeClient):

@@ -37,7 +37,8 @@ Use PlatformIO with the Arduino framework.
 Dependency stance:
 
 - `StackChan-BSP` pinned to Git tag `1.1.0`
-- `micro_ros_platformio` pinned to a verified commit SHA
+- `micro_ros_platformio` pinned to a provisional commit SHA until the first
+  ROS 2 Jazzy PlatformIO build verifies it
 - ROS 2 / micro-ROS distro: Jazzy
 - micro-ROS transport: USB Serial
 
@@ -62,5 +63,12 @@ Current dependency pins:
 - `StackChan-BSP`: `1.1.0`
 - `micro_ros_platformio`: `de7a61c` from the upstream repository line used while preparing the Jazzy PlatformIO skeleton
 - micro-ROS serial baud: `921600`, chosen as the initial bring-up target for audio/camera transport headroom
+- PlatformIO monitor speed: `921600`, matching the firmware serial baud for
+  bring-up diagnostics
 
 The micro-ROS README documents `board_microros_distro = jazzy` and serial transport configuration; the first real build should re-check the pinned commit in the ROS 2 Jazzy environment before hardware flashing.
+
+The current firmware scaffold does not initialize micro-ROS publishers,
+services, actions, or executor objects yet. `try_connect_microros_agent()` is a
+guarded stub so firmware remains in degraded mode until the ROS 2 environment
+and hardware bring-up path are available.

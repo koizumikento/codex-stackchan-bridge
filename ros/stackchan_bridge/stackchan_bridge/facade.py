@@ -17,6 +17,11 @@ from stackchan_bridge.models import (
 from stackchan_bridge.registry import DeviceAvailability, DeviceRegistry
 
 CLI_SOURCES = {"cli", "codex_skill", "human_cli", "stackchanctl"}
+AVAILABILITY_ERROR_CODES = {
+    "DEVICE_NOT_FOUND",
+    "TRANSPORT_DISCONNECTED",
+    "DEVICE_ID_CONFLICT",
+}
 
 
 class StackChanBridgeFacade:
@@ -35,7 +40,7 @@ class StackChanBridgeFacade:
         self.registry = registry or DeviceRegistry()
         self.logger = logger or logging.getLogger(__name__)
         self._status: dict[str, StatusSnapshot] = {}
-        for device_id in ("default",):
+        for device_id in self.registry.device_ids():
             self._status[device_id] = StatusSnapshot(device_id=device_id)
 
     def get_status(
@@ -47,6 +52,8 @@ class StackChanBridgeFacade:
 
         if availability != DeviceAvailability.AVAILABLE:
             status.last_error = self._availability_error(availability, device_id)
+        elif status.last_error.error_code in AVAILABILITY_ERROR_CODES:
+            status.last_error = Result.accepted("")
 
         return StatusResponse(device_id=device_id, command_id=command_id, status=status)
 
@@ -125,7 +132,7 @@ class StackChanBridgeFacade:
             return checked
 
         del text
-        status = self._mark_completed(meta)
+        status = self._mark_accepted(meta)
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def play_audio(self, meta: CommandMeta) -> CommandResponse:
@@ -133,40 +140,44 @@ class StackChanBridgeFacade:
         if checked is not None:
             return checked
 
-        status = self._mark_completed(meta)
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        result = self._unsupported_media(meta, "audio playback data transport")
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def capture_audio(self, meta: CommandMeta) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
 
-        status = self._mark_completed(meta)
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        result = self._unsupported_media(meta, "audio capture data transport")
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def capture_camera(self, meta: CommandMeta) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
 
-        status = self._mark_completed(meta)
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        result = self._unsupported_media(meta, "camera capture result transport")
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def _validate(self, meta: CommandMeta) -> CommandResponse | None:
+        availability = self.registry.availability(meta.device_id)
         if meta.priority == PRIORITY_SAFETY and meta.source in CLI_SOURCES:
             result = Result.rejected(
                 "INVALID_PRIORITY",
                 "CLI-originated SAFETY priority is reserved for bridge and firmware.",
             )
-            self._record_error(meta, result)
+            self._record_error(
+                meta,
+                result,
+                connected=availability == DeviceAvailability.AVAILABLE,
+            )
             return CommandResponse(meta.device_id, meta.command_id, result)
 
-        availability = self.registry.availability(meta.device_id)
         if availability == DeviceAvailability.AVAILABLE:
             return None
 
         result = self._availability_error(availability, meta.device_id)
-        self._record_error(meta, result)
+        self._record_error(meta, result, connected=False)
         return CommandResponse(meta.device_id, meta.command_id, result)
 
     def _mark_accepted(
@@ -198,9 +209,15 @@ class StackChanBridgeFacade:
         status.last_error = Result.completed()
         return status
 
-    def _record_error(self, meta: CommandMeta, result: Result) -> None:
+    def _record_error(
+        self,
+        meta: CommandMeta,
+        result: Result,
+        *,
+        connected: bool,
+    ) -> None:
         status = self._status_for(meta.device_id)
-        status.connected = False
+        status.connected = connected
         status.last_command_id = meta.command_id
         status.last_error = result
         log_structured(
@@ -214,6 +231,14 @@ class StackChanBridgeFacade:
             error_message=result.message,
             recoverable=result.recoverable,
         )
+
+    def _unsupported_media(self, meta: CommandMeta, feature: str) -> Result:
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            f"bridge facade does not implement {feature} yet.",
+        )
+        self._record_error(meta, result, connected=True)
+        return result
 
     def _status_for(self, device_id: str) -> StatusSnapshot:
         if device_id not in self._status:

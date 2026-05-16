@@ -69,13 +69,23 @@ class FacadeTests(unittest.TestCase):
         self.assertTrue(idle.result.ok)
         self.assertEqual(bridge.get_status("default").status.motion, "idle")
 
-    def test_say_and_media_actions_complete(self) -> None:
+    def test_say_accepts_without_claiming_completion(self) -> None:
         bridge = facade()
 
-        self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_COMPLETED)
-        self.assertEqual(bridge.play_audio(meta()).result.state, STATE_COMPLETED)
-        self.assertEqual(bridge.capture_audio(meta()).result.state, STATE_COMPLETED)
-        self.assertEqual(bridge.capture_camera(meta()).result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_ACCEPTED)
+
+    def test_media_actions_are_unsupported_until_payload_transport_exists(self) -> None:
+        bridge = facade()
+
+        self.assertEqual(bridge.play_audio(meta()).result.error_code, "UNSUPPORTED_FEATURE")
+        self.assertEqual(
+            bridge.capture_audio(meta()).result.error_code,
+            "UNSUPPORTED_FEATURE",
+        )
+        self.assertEqual(
+            bridge.capture_camera(meta()).result.error_code,
+            "UNSUPPORTED_FEATURE",
+        )
 
     def test_unknown_device_returns_device_not_found(self) -> None:
         response = facade().set_face(meta("desk"), "happy")
@@ -84,10 +94,20 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(response.result.error_code, "DEVICE_NOT_FOUND")
         self.assertEqual(response.device_id, "desk")
 
-    def test_disconnected_configured_device_returns_transport_disconnected(self) -> None:
+    def test_configured_non_default_device_accepts_commands(self) -> None:
         bridge = facade(
-            DeviceRegistry([DeviceRecord("default", connected=False)])
+            DeviceRegistry([DeviceRecord("default"), DeviceRecord("desk")])
         )
+
+        response = bridge.set_face(meta("desk"), "happy")
+
+        self.assertTrue(response.result.ok)
+        self.assertEqual(response.device_id, "desk")
+        self.assertTrue(bridge.get_status("desk").status.connected)
+
+    def test_disconnected_configured_device_returns_transport_disconnected(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        bridge = facade(registry)
 
         response = bridge.set_led(meta(), "progress")
 
@@ -95,11 +115,21 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(response.result.error_code, "TRANSPORT_DISCONNECTED")
         self.assertTrue(response.result.recoverable)
 
+        registry.set_connected("default", True)
+        status = bridge.get_status("default").status
+
+        self.assertTrue(status.connected)
+        self.assertEqual(status.last_error.error_code, "")
+
     def test_safety_priority_from_cli_is_rejected(self) -> None:
-        response = facade().run_motion(meta(priority=PRIORITY_SAFETY), "nod")
+        bridge = facade()
+
+        response = bridge.run_motion(meta(priority=PRIORITY_SAFETY), "nod")
+        status = bridge.get_status("default").status
 
         self.assertFalse(response.result.ok)
         self.assertEqual(response.result.error_code, "INVALID_PRIORITY")
+        self.assertTrue(status.connected)
 
 
 if __name__ == "__main__":

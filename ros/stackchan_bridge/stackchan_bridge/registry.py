@@ -60,6 +60,9 @@ class DeviceRegistry:
     def get(self, device_id: str) -> DeviceRecord | None:
         return self._records.get(device_id)
 
+    def device_ids(self) -> tuple[str, ...]:
+        return tuple(self._records)
+
     def availability(self, device_id: str) -> DeviceAvailability:
         record = self.get(device_id)
         if record is None or not record.configured:

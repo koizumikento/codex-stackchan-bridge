@@ -16,6 +16,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("board = m5stack-cores3", platformio)
         self.assertIn("board_microros_transport = serial", platformio)
         self.assertIn("board_microros_distro = jazzy", platformio)
+        self.assertIn("monitor_speed = 921600", platformio)
+        self.assertIn("STACKCHAN_MICROROS_SERIAL_BAUD=921600", platformio)
         self.assertIn("StackChan-BSP.git#1.1.0", platformio)
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
 
@@ -39,6 +41,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("RuntimeState::Fault", state_machine)
         self.assertIn("agent_disconnected", state_machine)
         self.assertIn("recovered", state_machine)
+        self.assertIn("state_ != RuntimeState::Fault", state_machine)
 
     def test_motion_safety_rejects_unknown_and_bounds_intensity(self) -> None:
         safety = (ROOT / "include" / "stackchan" / "motion_safety.hpp").read_text()
@@ -51,15 +54,17 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("intensity < 0.0f || intensity > 1.0f", safety)
         self.assertRegex(safety, re.compile(r"constexpr ServoLimits kDefaultServoLimits"))
 
-    def test_main_rejects_cli_safety_priority_and_publishes_heartbeat(self) -> None:
+    def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
         self.assertIn('"INVALID_PRIORITY"', main)
+        self.assertIn("meta.priority == stackchan::Priority::Safety", main)
+        self.assertNotIn("is_cli_source", main)
         self.assertIn("publish_status_heartbeat", main)
         self.assertIn("try_connect_microros_agent", main)
-        self.assertIn("state_machine.agent_disconnected()", main)
+        self.assertIn("check_microros_agent_connection", main)
+        self.assertIn("update_agent_connection(false)", main)
         self.assertIn("copy_bounded", main)
-        self.assertIn("is_cli_source", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()

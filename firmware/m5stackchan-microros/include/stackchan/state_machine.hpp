@@ -17,7 +17,11 @@ class StateMachine {
 
   void booted() { state_ = RuntimeState::WaitingForAgent; }
 
-  void agent_connected() { state_ = RuntimeState::Idle; }
+  void agent_connected() {
+    if (state_ != RuntimeState::Fault) {
+      state_ = RuntimeState::Idle;
+    }
+  }
 
   void command_started() {
     if (state_ == RuntimeState::Idle) {
@@ -31,7 +35,11 @@ class StateMachine {
     }
   }
 
-  void agent_disconnected() { state_ = RuntimeState::Degraded; }
+  void agent_disconnected() {
+    if (state_ != RuntimeState::Fault) {
+      state_ = RuntimeState::Degraded;
+    }
+  }
 
   void recovered() {
     if (state_ == RuntimeState::Degraded || state_ == RuntimeState::Fault) {

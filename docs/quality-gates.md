@@ -37,7 +37,9 @@ Required for CLI changes:
 
 Required for message, service, or action changes:
 
-- Interface definitions build successfully.
+- Interface definitions build successfully when a ROS 2 Jazzy environment is
+  available; otherwise run the repository contract checker and mark the
+  `colcon` build unavailable in the change notes.
 - New command-bearing interfaces include required metadata.
 - Namespaces follow `/stackchan/<device_id>`.
 - Response/error shapes follow the documented error model.
@@ -48,7 +50,10 @@ Required for message, service, or action changes:
 
 Required for firmware changes:
 
-- Firmware build-only check passes for the supported board target.
+- Firmware build-only check passes for the supported board target when a
+  PlatformIO/micro-ROS-capable environment is available; otherwise run the
+  hardware-free firmware contract checks and mark the PlatformIO build
+  unavailable in the change notes.
 - Safety limits remain firmware-owned.
 - Calibration storage remains firmware NVS unless a documented decision changes it.
 - Disconnect, audio underrun, mic overrun, camera failure, NFC failure, and servo/safety failure behavior remains documented.

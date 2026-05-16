@@ -35,13 +35,6 @@ void copy_bounded(char* destination, size_t size, const char* source) {
   destination[size - 1] = '\0';
 }
 
-bool is_cli_source(const char* source) {
-  return strcmp(source, "human_cli") == 0 ||
-         strcmp(source, "codex_skill") == 0 ||
-         strcmp(source, "stackchanctl") == 0 ||
-         strcmp(source, "cli") == 0;
-}
-
 bool is_known_face(const char* name) {
   return strcmp(name, "neutral") == 0 ||
          strcmp(name, "happy") == 0 ||
@@ -64,6 +57,21 @@ bool try_connect_microros_agent() {
   return false;
 }
 
+bool check_microros_agent_connection() {
+  // TODO: replace with rmw_uros_ping_agent() and executor health checks once
+  // the micro-ROS support/node/executor are initialized.
+  return microros_connected;
+}
+
+void update_agent_connection(bool connected) {
+  microros_connected = connected;
+  if (connected) {
+    state_machine.agent_connected();
+  } else {
+    state_machine.agent_disconnected();
+  }
+}
+
 void show_neutral_face() {
   copy_bounded(current_face, sizeof(current_face), "neutral");
 }
@@ -79,10 +87,10 @@ stackchan::Result handle_face_command(
     return last_error;
   }
 
-  if (meta.priority == stackchan::Priority::Safety && is_cli_source(meta.source)) {
+  if (meta.priority == stackchan::Priority::Safety) {
     last_error = stackchan::Result::rejected(
         "INVALID_PRIORITY",
-        "SAFETY priority is reserved for bridge and firmware internals");
+        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 
@@ -110,10 +118,10 @@ stackchan::Result handle_motion_command(
     return last_error;
   }
 
-  if (meta.priority == stackchan::Priority::Safety && is_cli_source(meta.source)) {
+  if (meta.priority == stackchan::Priority::Safety) {
     last_error = stackchan::Result::rejected(
         "INVALID_PRIORITY",
-        "SAFETY priority is reserved for bridge and firmware internals");
+        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 
@@ -163,13 +171,10 @@ void setup() {
 
 void loop() {
   const unsigned long now = millis();
-  if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
-    microros_connected = try_connect_microros_agent();
-    if (microros_connected) {
-      state_machine.agent_connected();
-    } else {
-      state_machine.agent_disconnected();
-    }
+  if (microros_connected && !check_microros_agent_connection()) {
+    update_agent_connection(false);
+  } else if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
+    update_agent_connection(try_connect_microros_agent());
     last_agent_attempt_ms = now;
   }
 
