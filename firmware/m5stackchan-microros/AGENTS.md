@@ -9,7 +9,7 @@ This directory owns the device firmware. Follow this file for firmware-specific 
 Firmware owns:
 
 - micro-ROS connection setup.
-- Command subscribers and status/error publishers.
+- Device-side service/action handlers and status/error publishers.
 - Display, servo, LED, audio, camera, NFC, IMU, and sensor adapters.
 - Firmware-side validation of named commands.
 - Safety-critical defaults and hard limits.
@@ -46,8 +46,17 @@ Firmware does not own:
 - Accept named intent commands first.
 - Raw servo angles are only for debug/calibration.
 - Enforce servo, LED, audio, camera, and sensor safety limits in firmware.
-- Command-bearing interfaces must preserve `command_id`, `source`, `created_at`, and `priority`.
+- Command-bearing interfaces must preserve `device_id`, `command_id`, `source`, `created_at`, and `priority`.
 - Publish structured status and errors whenever possible.
+- Use `LOW`, `NORMAL`, `HIGH`, and `SAFETY` priority values.
+- Reserve `SAFETY` for firmware and bridge internal use.
+
+## Configuration And Calibration
+
+- Hard safety limits live in firmware constants.
+- Individual device calibration lives in firmware NVS.
+- Normal operation tuning lives in ROS package YAML.
+- CLI config must not be required for device safety.
 
 ## Device Capabilities
 
@@ -66,15 +75,17 @@ Firmware capability set includes:
 
 Audio is a first-class capability. Device exchange uses PCM 16 kHz mono 16-bit unless a documented decision changes it.
 
-Camera owns snapshot support. Continuous streaming requires a documented resource and transport decision.
+Audio playback and capture use actions coordinated with bounded chunks. Chunk duration is 20 ms by default; 40 ms is allowed when transport overhead matters.
+
+Camera owns QVGA JPEG snapshot support. Continuous streaming requires a documented resource and transport decision.
 
 NFC reports tag IDs and presence events. Tag meaning belongs on the PC/Codex side.
 
 IMU exposes raw telemetry plus high-level events such as picked up, shaken, and tilted.
 
-## Resource Priority
+## Resource Arbitration
 
-Preserve this device-side priority:
+Preserve this device-side arbitration order:
 
 ```text
 safety > motion stop/neutral > audio capture/playback > command handling > camera > LED/idle

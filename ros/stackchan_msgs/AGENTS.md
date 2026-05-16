@@ -39,11 +39,12 @@ Use `device_id` for target selection and `command_id` for request correlation. D
 Response-like interfaces must include a structured result shape:
 
 - `ok`
+- `state`
 - `error_code`
 - `message`
 - `recoverable`
 
-Do not introduce ad hoc `accepted`, `success`, or `error` fields unless they wrap or map cleanly to the shared result shape.
+Use the shared result states `ACCEPTED`, `COMPLETED`, `REJECTED`, and `TIMEOUT`. Do not introduce ad hoc `accepted`, `success`, or `error` fields outside the shared `Result` shape.
 
 ## Device Namespace
 
@@ -62,6 +63,12 @@ ROS resources use:
 - Use actions for long-running, cancellable, or progress-bearing operations such as motion, speech, audio capture/playback, and camera capture.
 - Avoid one generic command envelope. Prefer feature-specific interfaces.
 
+Baseline mapping:
+
+- `face` and `led`: services.
+- `motion`, `say`, `audio play`, `audio capture`, and `camera capture`: actions.
+- `status`, `events`, `imu/raw`, and audio chunks: topics.
+
 ## Stability
 
 - Treat interface changes as cross-layer changes.
@@ -75,6 +82,10 @@ ROS resources use:
 Prefer standard ROS 2 types where they fit clearly, such as timestamps and sensor/image-like payloads. Use project-specific messages when the semantics are StackChan-specific.
 
 Do not put large unbounded payloads into simple services when an action plus chunk topic is more appropriate.
+
+Audio payloads use bounded chunk topics. Baseline audio is PCM 16 kHz mono 16-bit with 20 ms chunks by default and 40 ms chunks allowed when transport overhead matters.
+
+Camera capture is QVGA JPEG snapshot only in the baseline contract. Continuous streaming requires a documented resource and transport decision.
 
 ## Testing
 
@@ -90,4 +101,3 @@ For interface changes:
 - Update `../../docs/ros-interface.md` for every interface change.
 - Update `../../docs/quality-gates.md` if interface validation expectations change.
 - Update package READMEs only for package-local setup notes.
-

@@ -10,9 +10,9 @@ This directory owns the Python CLI. Follow this file for package-specific rules,
 
 - The public local command surface used by humans and Codex skills.
 - Command parsing and validation.
-- Backend selection between `mock` and `ros2`.
+- Backend selection between `mock` and `bridge`.
 - Device selection through `--device <device_id>`.
-- Direct ROS 2 topic, service, and action calls through `rclpy`.
+- ROS 2 calls to the `stackchan_bridge` facade through `rclpy`.
 - Human-readable output and `--json` output.
 - Command metadata creation and propagation.
 - Structured error rendering.
@@ -71,7 +71,9 @@ Keep camera capture, NFC wait, and IMU streaming as explicit commands. Do not hi
 Support at least:
 
 - `mock`: deterministic local behavior without ROS 2 or hardware.
-- `ros2`: direct ROS 2 communication through `rclpy`.
+- `bridge`: normal communication through `stackchan_bridge`.
+
+Direct CLI-to-device ROS calls are diagnostics/bring-up behavior only, not the standard backend.
 
 The mock backend is required. If a command cannot be represented in the mock backend, the command is probably underspecified.
 
@@ -95,6 +97,8 @@ Human output should be compact. `--json` output is part of the machine-readable 
 
 `device_id` must appear in JSON output, logs, status, events, and command results.
 
+Default command success means the bridge facade returned a shared `Result` with `ok=true` and `state=ACCEPTED`. `--wait` waits for `COMPLETED` when the underlying action supports it. JSON output must expose `ACCEPTED`, `COMPLETED`, `REJECTED`, or `TIMEOUT`.
+
 ## Testing
 
 For CLI changes, add or update tests for:
@@ -105,6 +109,7 @@ For CLI changes, add or update tests for:
 - command metadata
 - structured error shape
 - backend selection
+- `ACCEPTED`/`COMPLETED`/`REJECTED`/`TIMEOUT` state mapping
 
 Do not require physical hardware for CLI tests.
 

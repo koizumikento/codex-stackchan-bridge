@@ -8,7 +8,7 @@
 - Hide ROS 2 command details behind a small interface.
 - Support a mock backend so skill behavior can be tested without hardware.
 - Keep command names stable even if ROS 2 message details change.
-- Call ROS 2 topics, services, and actions directly for simple operations.
+- Send normal commands through the `stackchan_bridge` facade.
 - Support one or more StackChan devices through the same `--device` contract.
 
 ## Non-goals
@@ -31,7 +31,7 @@ Rust is reserved for targeted companion workers where performance, binary distri
 Python owns:
 
 - The `stackchanctl` executable and user-facing command surface.
-- Direct ROS 2 topic, service, and action calls through `rclpy`.
+- ROS 2 service and action calls to the `stackchan_bridge` facade through `rclpy`.
 - Command parsing, config loading, JSON output, and structured errors.
 - Mock backend behavior and CLI tests.
 - Normal-rate audio, image, NFC, IMU, and diagnostic data handling.
@@ -97,7 +97,7 @@ As of 2026-05-16, Rust is viable but still needs a proof-of-fit before being add
 
 Observed `rclrs` / `ros2_rust` state:
 
-- `ros2-rust/ros2_rust` is active, Apache-2.0 licensed, and latest release is `v0.7.0`.
+- `ros2-rust/ros2_rust` is active, Apache-2.0 licensed, and latest release is 0.7.0.
 - `rclrs` documents publishers, subscriptions, services, actions, parameters, logging, graph queries, timers, QoS, dynamic messages, and message generation.
 - The Jazzy setup is heavier than Python: the documented Jazzy workspace pulls in ROS message repositories plus `rosidl_rust`, `rosidl_runtime_rs`, and examples.
 - Open upstream issues mention Jazzy setup friction, generated-message dependency issues, executor overhead, and large-message allocation/copy behavior.
@@ -106,14 +106,14 @@ Observed `rclrs` / `ros2_rust` state:
 Implication for this project:
 
 - Rust is attractive for strict command metadata, structured errors, mock-compatible workers, and performance-sensitive local helpers.
-- Python is the chosen path for direct ROS 2 calls because `rclpy` is a core ROS 2 client library and the custom msg/srv/action path is well-trodden.
+- Python is the chosen path for ROS 2 bridge-facade calls because `rclpy` is a core ROS 2 client library and the custom msg/srv/action path is well-trodden.
 - Audio and camera data should not be routed through a Rust CLI hot path until throughput is measured. The CLI should trigger or inspect those flows; long-running transport belongs in ROS nodes.
 
 Rust worker acceptance criteria:
 
 1. Use the same `stackchan_msgs` command metadata and error model as the Python CLI.
 2. Build cleanly in the documented ROS 2 Jazzy workspace.
-3. Include `command_id`, `source`, `created_at`, and `priority` in the request.
+3. Include `device_id`, `command_id`, `source`, `created_at`, and `priority` in the request.
 4. Expose a narrow process boundary that Python can call or supervise.
 5. Demonstrate a measured benefit over Python or a ROS node implementation.
 6. Document exact setup steps, failure modes, and ownership boundary.
@@ -125,9 +125,17 @@ Decision rule:
 
 ## ROS interaction model
 
-`stackchanctl` should call ROS 2 topics, services, and actions directly for simple operations.
+The standard command path is:
 
-The PC-side `stackchan_bridge` nodes are still useful for:
+```text
+stackchanctl -> stackchan_bridge facade -> firmware
+```
+
+This keeps acknowledgement, status aggregation, diagnostics, audio/camera routing, and multi-device behavior in one PC-side place.
+
+Direct CLI-to-device ROS calls are allowed only for diagnostics and bring-up. They should not become the normal Codex-facing path.
+
+The PC-side `stackchan_bridge` nodes own:
 
 - state aggregation
 - richer behavior orchestration
@@ -135,7 +143,7 @@ The PC-side `stackchan_bridge` nodes are still useful for:
 - diagnostics
 - future policies that should stay out of firmware
 
-The CLI should not require a bridge node for every simple command if the ROS interface is already explicit.
+The CLI should still avoid exposing ROS 2 topic, service, action, or package names as the public API.
 
 ## Command groups
 
@@ -158,7 +166,7 @@ Rules:
 - If `--device` is omitted, CLI config may provide a default; otherwise use `default`.
 - `device_id` should use only ASCII letters, numbers, `_`, and `-`.
 - The ROS namespace for a device is `/stackchan/<device_id>`.
-- The mock backend uses the same `device_id` behavior as the ROS 2 backend.
+- The mock backend uses the same `device_id` behavior as the bridge backend.
 - `device_id` must appear in JSON output, logs, status, events, and command results.
 - `device_id` is separate from `command_id`.
 
@@ -177,7 +185,7 @@ Requests speech output.
 Expected backend behavior:
 
 - Normalize text.
-- Send a speech request to ROS 2.
+- Send a speech request to the bridge facade.
 - Optionally choose a face or motion while speaking.
 - Return after the request is accepted, unless the caller explicitly chooses blocking behavior.
 
@@ -226,13 +234,13 @@ Expected examples:
 
 Reads current status from the bridge.
 
-Expected output should be machine-readable by default, likely JSON:
+Default output is compact and human-readable. With `--json`, the output uses this shape:
 
 ```json
 {
   "device_id": "default",
   "connected": true,
-  "state": "idle",
+  "device_state": "idle",
   "face": "neutral",
   "last_error": null
 }
@@ -286,9 +294,42 @@ The raw stream target is 10-30 Hz.
 `stackchanctl` should support at least two backends:
 
 - `mock`: logs normalized commands and returns deterministic responses.
-- `ros2`: sends normalized commands to ROS 2 topics, services, or actions.
+- `bridge`: sends normalized commands to `stackchan_bridge`.
+
+Terminology:
+
+- `bridge backend` means the `stackchanctl` implementation backend named `bridge`.
+- `stackchan_bridge facade` means the ROS-side service/action surface under `/stackchan/<device_id>/cmd/...`.
+
+Diagnostic backends may exist separately, but they should not be the default Codex-facing path.
 
 The command contract should be shared by both backends. If a command cannot be represented in the mock backend, it is probably too vague for the bootstrap command set.
+
+## Success and waiting behavior
+
+Default command success means the bridge facade returned a shared `Result` with `ok=true` and `state=ACCEPTED`.
+
+Bridge acceptance means:
+
+- command metadata is valid
+- the target `device_id` is known and not in a disconnected state
+- the request passed bridge-side policy checks
+- the bridge has either completed the short service operation or accepted/forwarded the action goal to the next layer
+
+It is not just receipt of a request.
+
+Rules:
+
+- Default mode waits for bridge acceptance, not physical completion.
+- `--wait` waits for behavior completion when the underlying action supports completion.
+- `--timeout <duration>` bounds waiting for acceptance or completion.
+- Rejection by bridge or firmware returns a non-zero exit code.
+- Timeout returns a non-zero exit code with a recoverable structured error when retry is reasonable.
+- `--json` output must expose the shared result state as `result_state`: `ACCEPTED`, `COMPLETED`, `REJECTED`, or `TIMEOUT`.
+- Unknown devices fail immediately with `DEVICE_NOT_FOUND`.
+- Configured but disconnected devices fail with `TRANSPORT_DISCONNECTED`.
+
+This keeps short CLI calls fast while allowing Codex or humans to wait explicitly when timing matters.
 
 ## Command metadata
 
@@ -302,6 +343,22 @@ Required fields:
 - `created_at`
 - `priority`
 
+Priority values:
+
+- `LOW`
+- `NORMAL`
+- `HIGH`
+- `SAFETY`
+
+CLI and Codex commands may use `LOW`, `NORMAL`, or `HIGH`. `SAFETY` is reserved for bridge and firmware internal use.
+
+Priority behavior:
+
+- `LOW` is background/decorative.
+- `NORMAL` is the default.
+- `HIGH` may interrupt lower-priority face, LED, or motion behavior.
+- CLI requests for `SAFETY` are rejected with `INVALID_PRIORITY`.
+
 Suggested `source` values:
 
 - `human_cli`
@@ -314,11 +371,14 @@ The CLI should print the `command_id` in human output and include it in JSON out
 
 Errors should be structured as code, message, and recoverability.
 
+The ROS shared `Result.error_code` maps to CLI JSON as `error.code`. CLI JSON should keep the shorter `code` key for readability while preserving the same value.
+
 Example:
 
 ```json
 {
   "ok": false,
+  "result_state": "REJECTED",
   "device_id": "default",
   "command_id": "018f...",
   "error": {
@@ -341,13 +401,35 @@ Configuration should be split by risk.
 
 The CLI must not be the only place where servo, LED, audio, or camera safety limits exist.
 
+CLI config owns:
+
+- default backend
+- default device
+- default output mode
+- log level
+- timeout defaults
+
+CLI config must not own hardware safety limits, calibration, speech provider secrets, or raw device credentials.
+
+CLI config path:
+
+- `$XDG_CONFIG_HOME/stackchanctl/config.toml`
+- fallback: `~/.config/stackchanctl/config.toml`
+
+Environment variables may override convenience settings for automation:
+
+- `STACKCHANCTL_BACKEND`
+- `STACKCHANCTL_DEVICE`
+- `STACKCHANCTL_OUTPUT`
+- `STACKCHANCTL_LOG_LEVEL`
+
 ## Mock backend
 
 The mock backend is required, not optional.
 
 It should:
 
-- validate the same command shapes as the ROS 2 backend
+- validate the same command shapes as the bridge backend
 - emit deterministic JSON
 - support command metadata
 - simulate success and common failures
@@ -371,6 +453,10 @@ Recommended behavior:
 - `--json` prints structured results.
 - PC-side tools should use structured JSON logs.
 - Firmware errors should surface through status/error ROS interfaces.
+- Logs include `device_id`, `command_id` when available, `source` when available, and structured error fields.
+- Do not log speech text, image payloads, NFC tag IDs, or secrets by default.
+- NFC tag IDs may appear in ROS events and command results when needed for behavior, but logs should hash or redact them unless local debug opt-in is enabled.
+- Debug opt-in output must stay local and should not be mixed with normal `--json` command output.
 
 ## Relationship to ROS 2
 

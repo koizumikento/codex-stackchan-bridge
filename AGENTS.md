@@ -42,16 +42,18 @@ When behavior crosses layers, document it in `docs/`. Keep package READMEs focus
 
 - `stackchanctl` is a Python CLI using `rclpy`.
 - Rust is only for companion workers on measured hot paths or long-running helper processes.
-- `stackchanctl` calls ROS 2 topics, services, and actions directly for simple operations.
+- The standard command path is `stackchanctl -> stackchan_bridge facade -> firmware`.
+- Direct CLI-to-device ROS calls are for diagnostics and bring-up only.
 - Single-device and multi-device operation use the same `device_id` contract.
 - ROS resources live under `/stackchan/<device_id>`, with `default` as the standard single-device id.
 - ROS interfaces are feature-specific, not one generic command bus.
 - Command-bearing interfaces must include `device_id`, `command_id`, `source`, `created_at`, and `priority`.
 - Errors use `code`, `message`, and `recoverable`.
-- The mock backend is required and must share the same command contract as the ROS 2 backend.
+- Command priority is `LOW`, `NORMAL`, `HIGH`, or `SAFETY`; `SAFETY` is reserved for bridge/firmware internal use.
+- The mock backend is required and must share the same command contract as the bridge backend.
 - Firmware owns safety-critical defaults and hard limits.
 - PC-side config owns normal operation tuning.
-- CLI config owns convenience settings such as backend selection and output format.
+- CLI config owns convenience settings such as backend selection, default device, output format, log level, and timeout defaults.
 - The repository license is MIT.
 
 ## Firmware Policy
@@ -69,15 +71,16 @@ When behavior crosses layers, document it in `docs/`. Keep package READMEs focus
 - Send named intent commands first, not raw servo angles.
 - Raw servo control is for debug/calibration only.
 - Audio device exchange uses PCM 16 kHz mono 16-bit unless a documented decision changes it.
+- Audio playback/capture uses actions plus bounded audio chunks; chunk duration is 20 ms by default, with 40 ms allowed when transport overhead matters.
 - PC side owns TTS, STT, VAD, and dialog policy.
 - Firmware plays audio and captures microphone data.
-- Camera support should start with explicit snapshot commands.
+- Camera support is QVGA JPEG snapshot only in the baseline contract; continuous streaming requires a documented resource and transport decision.
 - NFC reports tag events and IDs; meaning is decided on the PC/Codex side.
 - IMU exposes raw telemetry plus high-level events such as picked up, shaken, and tilted.
 
-## Resource Priority
+## Resource Arbitration
 
-Device-side resource priority is:
+Device-side resource arbitration order is:
 
 ```text
 safety > motion stop/neutral > audio capture/playback > command handling > camera > LED/idle
@@ -95,6 +98,8 @@ Failures should degrade gracefully and publish structured status/errors where po
 - Keep device selection on the CLI surface as `--device <device_id>`.
 - Do not hide camera capture, NFC wait, or IMU streaming inside `observe`; keep them explicit commands.
 - Preserve JSON output for machine use and compact human output for shell use.
+- Default CLI success means bridge acceptance; use `--wait` for completion when the action supports it.
+- Logs include `device_id`, `command_id` when available, `source` when available, and structured error fields. Redact secrets and sensitive audio/image/NFC data by default.
 
 ## Expected Bootstrap Commands
 
@@ -123,6 +128,7 @@ stackchanctl imu stream --hz 10
 
 - Firmware target baseline is PlatformIO + Arduino framework.
 - ROS 2 baseline is Jazzy.
+- Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy; Windows development should use WSL2.
 - Pin firmware dependencies intentionally.
 - Prefer `StackChan-BSP` by Git tag.
 - Pin `micro_ros_platformio` to a verified commit SHA when release tags lag the needed ROS distro.

@@ -5,7 +5,7 @@ This document defines the quality gates for this repository. These gates are int
 ## Principles
 
 - Every command path must be testable without physical hardware.
-- The mock backend and ROS 2 backend must share the same command contract.
+- The mock backend and bridge backend must share the same command contract.
 - Single-device and multi-device behavior must share the same `device_id` contract.
 - Cross-layer contracts must be documented before implementation spreads across packages.
 - Safety behavior must be validated at the firmware boundary, not only in the CLI.
@@ -27,9 +27,10 @@ Required for CLI changes:
 
 - Unit tests for command parsing and validation.
 - Mock backend tests for deterministic JSON.
-- Error-shape tests for `code`, `message`, and `recoverable`.
-- Metadata tests for `command_id`, `source`, `created_at`, and `priority`.
+- Error-shape tests for ROS `error_code` and CLI `error.code` mapping, plus `message` and `recoverable`.
+- Metadata tests for `device_id`, `command_id`, `source`, `created_at`, and `priority`.
 - Device selection tests for default device and `--device <device_id>`.
+- Success semantics tests for `ACCEPTED`, `COMPLETED`, `REJECTED`, and `TIMEOUT` states.
 - Human output remains compact; `--json` remains machine-readable.
 
 ### ROS 2 Interfaces
@@ -41,6 +42,7 @@ Required for message, service, or action changes:
 - Namespaces follow `/stackchan/<device_id>`.
 - Response/error shapes follow the documented error model.
 - Interface changes are reflected in `docs/ros-interface.md`.
+- QoS and heartbeat decisions are documented when implementation touches status, events, IMU, audio chunks, or camera paths.
 
 ### Firmware
 
@@ -48,8 +50,9 @@ Required for firmware changes:
 
 - Firmware build-only check passes for the supported board target.
 - Safety limits remain firmware-owned.
+- Calibration storage remains firmware NVS unless a documented decision changes it.
 - Disconnect, audio underrun, mic overrun, camera failure, NFC failure, and servo/safety failure behavior remains documented.
-- Any change touching hardware control preserves resource priority:
+- Any change touching hardware control preserves resource arbitration order:
 
 ```text
 safety > motion stop/neutral > audio capture/playback > command handling > camera > LED/idle
@@ -76,13 +79,20 @@ Required before adding or expanding Rust workers:
 
 The expected CI shape is:
 
+- GitHub Actions on Ubuntu 24.04.
 - Python lint and unit tests for `apps/stackchanctl`.
 - Mock backend contract tests.
 - Multi-device/default-device contract tests.
 - ROS 2 interface build checks for `ros/stackchan_msgs`.
 - ROS 2 bridge package tests when bridge code exists.
 - Firmware build-only checks for `firmware/m5stackchan-microros`.
-- Markdown/link checks once docs stabilize.
+- Markdown formatting checks.
+
+Deferred until implementation stabilizes:
+
+- external link checks
+- hardware-in-the-loop checks
+- release packaging checks
 
 ## Manual Validation
 

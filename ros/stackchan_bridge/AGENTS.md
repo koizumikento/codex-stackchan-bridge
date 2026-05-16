@@ -9,6 +9,7 @@ This package owns PC-side ROS 2 bridge nodes. Follow this file for bridge-specif
 `stackchan_bridge` owns:
 
 - PC-side routing between `stackchanctl`, ROS 2 interfaces, micro-ROS Agent, and firmware.
+- The standard command facade used by `stackchanctl`.
 - Device status aggregation.
 - Device discovery or registration policy when it exists.
 - Audio and camera routing that is too heavy for firmware.
@@ -41,6 +42,7 @@ The bridge should make the system easier to operate, not hide the contract.
 
 Good bridge responsibilities:
 
+- Accept normal CLI commands through stable service/action facades.
 - Aggregate device and firmware status for `stackchanctl observe`.
 - Route audio chunks and camera snapshots.
 - Normalize diagnostics from firmware and PC-side workers.
@@ -53,6 +55,7 @@ Avoid:
 - Inventing private command schemas that diverge from `stackchan_msgs`.
 - Hiding long-running work behind fire-and-forget topics.
 - Logging secrets, raw private audio text, or unnecessary image/NFC data.
+- Treating direct CLI-to-device ROS calls as the standard path.
 
 ## ROS Interface Use
 
@@ -64,10 +67,10 @@ Avoid:
 
 ## QoS And Timing
 
-Document QoS choices when implementation begins.
+Use the baseline QoS choices from `../../docs/ros-interface.md`.
 
-Expected direction:
-
+- Status heartbeat is 1 Hz.
+- A device is considered disconnected after 3 missed heartbeats unless config overrides it.
 - Status should be easy for late subscribers to observe.
 - Events should avoid unbounded queues.
 - Raw IMU and audio chunks should prefer bounded queues with clear drop behavior.
@@ -80,10 +83,24 @@ Bridge config owns normal operation tuning, not firmware hard limits.
 Expected config areas:
 
 - device ids and namespace mappings
+- physical serial or hardware identity to `device_id` mappings
 - bridge node names
 - audio and camera routing limits
 - log level and structured log output
 - optional default device behavior for local development
+
+Config paths:
+
+- package defaults: `ros/stackchan_bridge/config/*.yaml`
+- local overrides: `$XDG_CONFIG_HOME/codex-stackchan-bridge/bridge.yaml`
+- fallback local overrides: `~/.config/codex-stackchan-bridge/bridge.yaml`
+
+Device registry behavior:
+
+- Unknown device ids return `DEVICE_NOT_FOUND`.
+- Configured but disconnected devices return `TRANSPORT_DISCONNECTED`.
+- Duplicate physical devices for the same `device_id` return `DEVICE_ID_CONFLICT`.
+- The bridge keeps the first healthy binding until configuration or hardware state changes.
 
 Logs must include:
 
@@ -93,6 +110,13 @@ Logs must include:
 - structured error fields when failures occur
 
 Apply redaction before logging secrets or sensitive user data.
+
+Redaction rules:
+
+- Speech text is redacted by default.
+- Image payloads are never written to normal logs.
+- NFC tag IDs may appear in events/results when needed, but logs should hash or redact them by default.
+- Local debug opt-in may expose sensitive values only in developer logs, not in normal CLI `--json` output.
 
 ## Testing
 
@@ -109,4 +133,3 @@ For bridge changes:
 - Update `../../docs/architecture.md` when bridge ownership changes.
 - Update `../../docs/quality-gates.md` if bridge validation expectations change.
 - Keep this package README focused on local setup and node entrypoints.
-

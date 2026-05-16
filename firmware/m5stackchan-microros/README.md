@@ -11,7 +11,7 @@ Design details live in [../../docs/firmware.md](../../docs/firmware.md).
 This package should own:
 
 - micro-ROS connection setup
-- command subscribers and status publishers
+- device-side service/action handlers and status publishers
 - display, servo, LED, audio, and sensor adapters
 - local safety limits
 - fallback behavior when ROS 2 is disconnected
@@ -30,11 +30,11 @@ The first useful firmware target is a minimal loop that connects to micro-ROS, p
 
 Audio, camera, NFC, and raw IMU are part of the intended firmware capability set. They should be added as independent adapters rather than by forking the factory firmware.
 
-## Initial build direction
+## Build direction
 
 Use PlatformIO with the Arduino framework.
 
-Initial dependency stance:
+Dependency stance:
 
 - `StackChan-BSP` pinned to Git tag `1.1.0`
 - `micro_ros_platformio` pinned to a verified commit SHA

@@ -83,7 +83,7 @@ Current references to re-check before implementation:
 
 Dependency and license policy is tracked in [license-notes.md](license-notes.md). In short: use `StackChan-BSP` as a dependency, treat `m5stack/StackChan` firmware as reference material, and avoid copying full upstream firmware trees into this repository.
 
-## Initial firmware decisions
+## Baseline firmware decisions
 
 - Build an independent custom firmware rather than forking the M5Stack factory firmware.
 - Use `StackChan-BSP` as the preferred hardware access dependency.
@@ -93,8 +93,30 @@ Dependency and license policy is tracked in [license-notes.md](license-notes.md)
 - Keep cloud/account/app binding out of scope.
 - Use USB Serial as the first micro-ROS transport.
 - Use named intents as the default control model.
+- Use `LOW`, `NORMAL`, `HIGH`, and `SAFETY` as the command priority model.
+- Reserve `SAFETY` for bridge and firmware internal use.
 
 The firmware should still start with a bring-up path, but the architecture should not assume that audio, camera, NFC, or raw IMU telemetry are out of scope. They are part of the target capability set.
+
+## Configuration and calibration ownership
+
+Configuration is split by risk:
+
+- Firmware constants own hard safety limits.
+- Firmware NVS owns individual device calibration, such as servo neutral offsets and safe per-device corrections.
+- ROS package YAML owns normal operation tuning.
+- CLI config owns convenience settings such as backend, default device, output mode, log level, and timeout defaults.
+
+The firmware must not rely on CLI-side validation as the only protection for hardware safety.
+
+Calibration NVS rules:
+
+- Store a calibration schema version.
+- Store servo neutral offsets and safe per-device corrections.
+- Provide a reset-to-default calibration path.
+- Export/import may be added through explicit maintenance tooling, not normal command paths.
+
+Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 
 ## Runtime responsibilities
 
@@ -105,7 +127,7 @@ stateDiagram-v2
     [*] --> Booting
     Booting --> WaitingForAgent
     WaitingForAgent --> Idle: micro-ROS connected
-    Idle --> Acting: command accepted
+    Idle --> Acting: command accepted by firmware
     Acting --> Idle: behavior complete
     Idle --> Fault: safety or hardware error
     Acting --> Fault: safety or hardware error
@@ -129,7 +151,7 @@ Expected states:
 
 The firmware should map expression names to display behavior.
 
-Initial expressions:
+Baseline expressions:
 
 - `neutral`
 - `happy`
@@ -146,7 +168,7 @@ Face commands should be idempotent. Repeating `happy` should not create a queue 
 
 The firmware should map motion names to servo trajectories.
 
-Initial motions:
+Baseline motions:
 
 - `nod`
 - `shake`
@@ -176,7 +198,7 @@ Suggested internal motion model:
 
 The firmware should map named LED patterns to local LED behavior.
 
-Initial patterns:
+Baseline patterns:
 
 - `off`
 - `progress`
@@ -191,13 +213,15 @@ LED behavior should be non-blocking. A long `progress` pattern should not preven
 
 Audio is a core capability. The firmware should support both output-oriented and input-oriented audio flows while keeping high-level dialog planning outside the device.
 
-Initial audio path:
+Baseline audio path:
 
 - PC side generates TTS audio.
 - Firmware plays audio through the device speaker.
 - Firmware captures microphone audio.
 - PC side owns STT, VAD, and dialog processing.
 - Audio transport starts with PCM 16 kHz mono 16-bit.
+- Playback and capture use actions coordinated with bounded audio chunks.
+- Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
 
 Output-oriented responsibilities:
 
@@ -225,20 +249,22 @@ The PC side may own speech-to-text, text-to-speech, voice activity detection, or
 
 Camera support should be treated as an independent capability.
 
-Initial responsibilities:
+Baseline responsibilities:
 
 - initialize the camera through the supported library path
-- provide low-rate snapshots or a constrained stream to the PC side
+- provide QVGA JPEG snapshots to the PC side
 - report capture status and errors
 - avoid blocking motion and safety handling while camera capture is active
 
 The firmware should not own high-level vision inference. Object detection, face detection, or visual reasoning should run on the PC side unless a very small local heuristic is explicitly needed.
 
+Continuous camera streaming is out of the baseline contract. It requires a documented resource, transport, and QoS decision before implementation.
+
 ### NFC
 
 NFC support should expose high-level events first.
 
-Initial responsibilities:
+Baseline responsibilities:
 
 - report tag detected / removed events
 - expose tag id or safe metadata when available
@@ -246,7 +272,7 @@ Initial responsibilities:
 
 The PC side or Codex skill should decide what a tag means.
 
-Initial events:
+Baseline events:
 
 - `nfc_detected(tag_id)`
 - `nfc_removed(tag_id)`
@@ -264,7 +290,7 @@ The firmware can expose local state through ROS 2:
 - camera capture status
 - microphone capture/playback status
 
-The first implementation should publish status needed by `stackchanctl observe`, but the interface should leave room for raw telemetry channels.
+The baseline implementation should publish status needed by `stackchanctl observe`, while leaving room for raw telemetry channels.
 
 Sensor data should be separated into two levels:
 
@@ -275,7 +301,7 @@ High-level events are more useful to Codex skills. Raw telemetry is useful for d
 
 Raw IMU should be supported as a separate stream from high-level events. The initial raw IMU stream should start around 10-30 Hz, with higher rates treated as a later tuning decision. The firmware can publish lower-rate high-level posture/activity events for Codex while still making raw IMU telemetry available for ROS tooling, logging, and future behavior work.
 
-Initial high-level IMU events:
+Baseline high-level IMU events:
 
 - `picked_up`
 - `shaken`
@@ -309,11 +335,28 @@ Minimum safety rules:
 
 Safety decisions should prefer "do nothing and report why" over trying to guess what the caller meant.
 
-## Command priority
+## Command priority and resource arbitration
 
 The firmware should support a simple priority model.
 
-Suggested priority order:
+Priority values:
+
+- `LOW`
+- `NORMAL`
+- `HIGH`
+- `SAFETY`
+
+`SAFETY` is reserved for firmware and bridge internal use. CLI and Codex-originated commands should not be allowed to request `SAFETY` priority directly.
+
+Execution semantics:
+
+- `LOW` never preempts active behavior.
+- `NORMAL` is FIFO within the same resource class.
+- `HIGH` may preempt lower-priority face, LED, or motion behavior.
+- `SAFETY` preempts everything when generated internally by firmware or bridge safety handling.
+- CLI-originated `SAFETY` must be rejected, not downgraded.
+
+Resource arbitration order:
 
 1. Safety and fault handling.
 2. Motion stop / neutral pose.
@@ -341,7 +384,7 @@ The firmware should prefer stopping a behavior and publishing a clear reason ove
 
 ## Dependency pinning
 
-Initial firmware development should use PlatformIO with the Arduino framework.
+Baseline firmware development uses PlatformIO with the Arduino framework.
 
 Recommended baseline:
 
@@ -381,20 +424,18 @@ The first firmware slice should prove the device loop and safety boundary, but i
 1. Boot and show a neutral face.
 2. Connect to micro-ROS.
 3. Publish heartbeat/status.
-4. Subscribe to one face command.
-5. Subscribe to one motion command, such as `nod`.
+4. Handle one face service command.
+5. Handle one motion action command, such as `nod`.
 6. Enforce servo limits in firmware.
-7. Publish accepted/rejected command state.
+7. Publish `ACCEPTED` or `REJECTED` command state through the shared result model.
 8. Add LED command support.
 9. Add audio playback/capture status.
 10. Add raw IMU stream.
 11. Add NFC event stream.
-12. Add constrained camera snapshot or stream support.
+12. Add constrained camera snapshot support.
 
 Face, motion, LED, audio, camera, NFC, and IMU work should be designed as independent adapters so they can advance in parallel without turning the firmware into a fork of the factory application.
 
 ## Open design questions
 
-- How should camera data be represented in ROS 2 without overloading the ESP32-S3?
-- Should calibration data live in firmware constants, non-volatile storage, or a generated config file?
 - Which verified `micro_ros_platformio` commit SHA should become the first pinned baseline after bring-up?

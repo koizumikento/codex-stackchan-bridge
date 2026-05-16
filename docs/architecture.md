@@ -30,19 +30,26 @@ Layer details:
 
 Development decisions:
 
-- `stackchanctl` will call ROS 2 directly for simple topic/service/action calls.
+- The standard command path is `stackchanctl -> stackchan_bridge facade -> firmware`.
+- Direct CLI-to-device ROS calls are for diagnostics and bring-up only.
 - `stackchanctl` is a Python `rclpy` CLI.
 - Single-device and multi-device operation use the same contract through `device_id`.
 - The default ROS namespace shape is `/stackchan/<device_id>`, with `default` as the default device id.
 - Rust is a companion-worker language for measured hot paths or long-running workers, such as audio buffering, camera pre-processing, or high-rate IMU filtering.
 - Rust workers must preserve the same command metadata and error contracts as the Python CLI.
 - ROS interfaces are feature-specific rather than one generic command bus.
-- Command-bearing interfaces include `command_id`, `source`, `created_at`, and `priority`.
+- Command-bearing interfaces include `device_id`, `command_id`, `source`, `created_at`, and `priority`.
+- Command priority is `LOW`, `NORMAL`, `HIGH`, or `SAFETY`; `SAFETY` is reserved for bridge/firmware internal use.
 - Errors use `code`, `message`, and `recoverable`.
 - Firmware owns safety defaults; PC-side config owns normal tuning.
+- Hard safety limits live in firmware constants, individual calibration lives in firmware NVS, normal tuning lives in ROS package YAML, and CLI config only owns convenience settings.
+- Device identity is mapped by bridge configuration; firmware may report hardware identity for diagnostics, but `device_id` binding belongs on the PC side.
 - Mock backend support is required for CLI and Codex skill development.
 - Logs and CLI output should support structured JSON.
 - Status, events, logs, and command results must include `device_id`.
+- Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy; Windows development should use WSL2.
+- Logs must include `device_id`, `command_id` when available, `source` when available, and structured error fields.
+- Logs must redact secrets, speech text, image payloads, and NFC tag IDs by default. Debug opt-in may expose them only in local developer logs, never in normal CLI output.
 - The repository license is MIT.
 - Work can continue on `main` until release discipline is needed.
 
@@ -65,9 +72,9 @@ Example namespaces:
 
 ```text
 /stackchan/default/status
-/stackchan/default/face/set
+/stackchan/default/cmd/face/set
 /stackchan/desk/status
-/stackchan/livingroom/audio/play
+/stackchan/livingroom/cmd/audio/play
 ```
 
 ## Layer ownership
@@ -79,7 +86,7 @@ flowchart TB
     end
 
     subgraph LocalLayer["Local PC side"]
-        CLI["stackchanctl\n- stable command surface\n- mock or ros2 backend"]
+        CLI["stackchanctl\n- stable command surface\n- mock or bridge backend"]
         Bridge["ROS 2 bridge nodes\n- routing\n- observation\n- PC-side integration"]
         Msgs["stackchan_msgs\n- topic/service/action contracts"]
     end
@@ -105,6 +112,6 @@ The repository should support useful development without hardware:
 
 1. `stackchanctl` accepts `say`, `face`, `motion`, and `led`.
 2. A mock backend logs normalized commands.
-3. A ROS 2 backend publishes the same normalized commands.
+3. A bridge backend sends the same normalized commands through `stackchan_bridge`.
 4. The Codex skill uses only the CLI surface.
 5. Rust is added only for measured worker boundaries.
