@@ -13,9 +13,14 @@ Codex App
   -> M5StackChan firmware
 ```
 
+MCP hosts can also start `stackchanctl mcp serve` as a local stdio adapter. It
+uses the same `stackchanctl` command contract and still routes through the mock
+or bridge backend.
+
 ## What this project is trying to build
 
 - `stackchanctl`: Codexにも人間にも扱いやすいローカルCLI
+- `stackchanctl mcp serve`: MCP host向けのローカルstdio adapter
 - ROS 2 bridge nodes: 表情、発話、首振り、LED、センサー入力をROSの語彙にのせるPC側ノード
 - micro-ROS firmware: ｽﾀｯｸﾁｬﾝ本体でROS 2からの指示を受けて、表情・サーボ・LEDなどを制御するファームウェア
 - Codex agent skill: 作業開始、テスト成功/失敗、ユーザー待ち、完了などの場面で自然にｽﾀｯｸﾁｬﾝへ振る舞いを送るスキル
@@ -26,6 +31,7 @@ Codex App
 通信基盤はROS 2に寄せます。MQTTや独自WebSocketではなく、最初からｽﾀｯｸﾁｬﾝを「ロボット」として扱うためです。必要になった場合、ZenohなどはROS 2の通信層として検討しますが、プロジェクトの中心はROS 2のtopic / service / actionに置きます。
 
 外部認証やクラウド連携はできるだけ避け、ローカルPC上で完結する構成を優先します。Codex Appはローカルコマンドを呼び、ROS 2がデバイスとの接続面を担当します。
+MCPを使う場合も、Codex/MCP hostがローカルの `stackchanctl mcp serve` をstdioで起動するだけで、独自ネットワークAPIは増やしません。
 
 ## Repository layout
 
@@ -63,9 +69,13 @@ stackchanctl face happy
 stackchanctl motion nod
 stackchanctl led progress
 stackchanctl observe
+stackchanctl mcp serve --transport stdio --backend mock
 ```
 
-These commands use the stable `stackchan_bridge` facade under `/stackchan/<device_id>/cmd/...`. The CLI should not publish command topics or call device-side resources directly during normal operation.
+Shell commands and MCP tool calls share the same command contract. When using
+the bridge backend, they route through the stable `stackchan_bridge` facade
+under `/stackchan/<device_id>/cmd/...`; when using the mock backend, they stay
+hardware-free.
 
 ## Status
 

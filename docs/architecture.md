@@ -7,8 +7,13 @@ Codex should not talk to StackChan through a cloud account, mobile app, or ad ho
 ```mermaid
 flowchart LR
     Codex["Codex App"] --> Skill["Agent Skill"]
+    Codex --> MCP["MCP Host\noptional stdio"]
     Skill --> CLI["stackchanctl"]
-    CLI --> Bridge["ROS 2 bridge nodes"]
+    MCP --> MCPServer["stackchanctl mcp serve"]
+    MCPServer --> CLI
+    CLI --> Mock["mock backend\nhardware-free"]
+    CLI --> BridgeBackend["bridge backend"]
+    BridgeBackend --> Bridge["stackchan_bridge facade"]
     Bridge --> Agent["micro-ROS Agent"]
     Agent --> Firmware["M5StackChan firmware"]
     Firmware --> Hardware["Face / Servo / LED / Sensors"]
@@ -18,6 +23,7 @@ flowchart LR
 
 - Codex agent skill decides when a physical expression is useful.
 - `stackchanctl` provides a small, stable command surface.
+- `stackchanctl mcp serve` provides an optional stdio MCP adapter over the same command surface.
 - ROS 2 nodes own routing, observation, and PC-side integration.
 - micro-ROS firmware owns hardware control and safety limits.
 - Shared message definitions keep the boundary explicit.
@@ -31,6 +37,7 @@ Layer details:
 Development decisions:
 
 - The standard command path is `stackchanctl -> stackchan_bridge facade -> firmware`.
+- MCP integrations use `stackchanctl mcp serve -> stackchanctl command contract -> mock or bridge backend`.
 - Direct CLI-to-device ROS calls are for diagnostics and bring-up only.
 - `stackchanctl` is a Python `rclpy` CLI.
 - Single-device and multi-device operation use the same contract through `device_id`.
@@ -46,6 +53,7 @@ Development decisions:
 - Device identity is mapped by bridge configuration; firmware may report hardware identity for diagnostics, but `device_id` binding belongs on the PC side.
 - Mock backend support is required for CLI and Codex skill development.
 - Logs and CLI output should support structured JSON.
+- MCP stdio output must keep `stdout` reserved for JSON-RPC and send logs to `stderr`.
 - Status, events, logs, and command results must include `device_id`.
 - Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy; Windows development should use WSL2.
 - Logs must include `device_id`, `command_id` when available, `source` when available, and structured error fields.
@@ -83,10 +91,14 @@ Example namespaces:
 flowchart TB
     subgraph CodexLayer["Codex side"]
         Skill["Agent Skill\n- decide when expression is useful\n- call stackchanctl only"]
+        MCPHost["MCP Host\n- optional local stdio client"]
     end
 
     subgraph LocalLayer["Local PC side"]
-        CLI["stackchanctl\n- stable command surface\n- mock or bridge backend"]
+        CLI["stackchanctl\n- stable command surface"]
+        Mock["mock backend\n- hardware-free"]
+        BridgeBackend["bridge backend"]
+        MCPServer["stackchanctl mcp serve\n- stdio adapter\n- no raw ros2"]
         Bridge["ROS 2 bridge nodes\n- routing\n- observation\n- PC-side integration"]
         Msgs["stackchan_msgs\n- topic/service/action contracts"]
     end
@@ -98,7 +110,11 @@ flowchart TB
     end
 
     Skill --> CLI
-    CLI --> Bridge
+    MCPHost --> MCPServer
+    MCPServer --> CLI
+    CLI --> Mock
+    CLI --> BridgeBackend
+    BridgeBackend --> Bridge
     Bridge --> Msgs
     Msgs --> Bridge
     Bridge --> Agent
@@ -114,4 +130,5 @@ The repository should support useful development without hardware:
 2. A mock backend logs normalized commands.
 3. A bridge backend sends the same normalized commands through `stackchan_bridge`.
 4. The Codex skill uses only the CLI surface.
-5. Rust is added only for measured worker boundaries.
+5. MCP stdio mode can expose the same mock-compatible command surface to MCP hosts.
+6. Rust is added only for measured worker boundaries.

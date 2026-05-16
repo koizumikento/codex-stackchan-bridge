@@ -18,6 +18,10 @@
 - Do not bypass firmware-side safety limits for servo, LED, audio, or display behavior.
 - Do not become the long-running bridge process.
 
+`stackchanctl mcp serve` is allowed as a long-lived local adapter. It must not
+take over bridge responsibilities such as routing, state aggregation, hardware
+coordination, or ROS resource ownership.
+
 ## Implementation language
 
 `stackchanctl` is a Python CLI that uses `rclpy` for ROS 2 integration.
@@ -144,6 +148,42 @@ The PC-side `stackchan_bridge` nodes own:
 - future policies that should stay out of firmware
 
 The CLI should still avoid exposing ROS 2 topic, service, action, or package names as the public API.
+
+## MCP stdio mode
+
+`stackchanctl` may also expose the same command contract through a local MCP
+server:
+
+```bash
+stackchanctl mcp serve --transport stdio --backend mock
+stackchanctl mcp serve --transport stdio --backend bridge
+```
+
+This mode is a thin adapter for MCP hosts. It is not a new robot control path,
+not an ad hoc network API, and not a replacement for `stackchan_bridge`.
+
+Rules:
+
+- The only baseline transport is `stdio`.
+- `stdout` is reserved for MCP JSON-RPC framing.
+- Logs, diagnostics, and debug output go to `stderr`.
+- MCP tools use the same backend command contract and validation model as the shell CLI.
+- MCP tools use the configured `mock` or `bridge` backend.
+- MCP tools do not call raw `ros2` commands or firmware-side resources.
+- Tool results preserve the CLI result shape inside the MCP result payload.
+- Rejected commands and timeouts normally return tool results with `ok=false`,
+  not MCP protocol errors.
+
+Initial tools:
+
+- `say`
+- `face`
+- `motion`
+- `led`
+- `observe`
+
+MCP mode defaults `source` to `mcp_agent`. `command_id` is generated per tool
+call and must not be copied from the MCP JSON-RPC request id.
 
 ## Command groups
 
@@ -330,6 +370,9 @@ It is not just receipt of a request.
 Rules:
 
 - Default mode waits for bridge acceptance, not physical completion.
+- For action-backed facade commands, bridge acceptance means the facade action
+  has returned its immediate shared `Result`; this must not be treated as
+  physical behavior completion.
 - `--wait` waits for behavior completion when the underlying action supports completion.
 - `--timeout <duration>` bounds waiting for acceptance or completion.
 - Rejection by bridge or firmware returns a non-zero exit code.
@@ -372,6 +415,7 @@ Suggested `source` values:
 
 - `human_cli`
 - `codex_skill`
+- `mcp_agent`
 - `test`
 
 The CLI should print the `command_id` in human output and include it in JSON output.
@@ -431,6 +475,7 @@ Environment variables may override convenience settings for automation:
 - `STACKCHANCTL_DEVICE`
 - `STACKCHANCTL_OUTPUT`
 - `STACKCHANCTL_LOG_LEVEL`
+- `STACKCHANCTL_SOURCE`
 
 ## Mock backend
 

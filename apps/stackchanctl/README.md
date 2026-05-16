@@ -15,6 +15,13 @@ stackchanctl motion nod
 stackchanctl led progress
 ```
 
+MCP hosts can use the same command contract through local stdio:
+
+```bash
+stackchanctl mcp serve --transport stdio --backend mock
+stackchanctl mcp serve --transport stdio --backend bridge
+```
+
 ## Local development
 
 Run the hardware-free mock backend with `uv`:
@@ -22,6 +29,7 @@ Run the hardware-free mock backend with `uv`:
 ```bash
 uv run --directory apps/stackchanctl stackchanctl --backend mock face happy --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock observe --json
+uv run --directory apps/stackchanctl stackchanctl mcp serve --transport stdio --backend mock
 ```
 
 Run the focused CLI tests:

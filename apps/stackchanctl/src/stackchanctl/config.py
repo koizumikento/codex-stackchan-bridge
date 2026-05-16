@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -24,7 +25,11 @@ def _config_path(env: Mapping[str, str]) -> Path:
     return Path.home() / ".config" / "stackchanctl" / "config.toml"
 
 
-def load_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
+def load_config(
+    env: Mapping[str, str] | None = None,
+    *,
+    default_source: str = "human_cli",
+) -> RuntimeConfig:
     if env is None:
         env = os.environ
     path = _config_path(env)
@@ -45,8 +50,8 @@ def load_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
         device=str(values.get("device", values.get("default_device", "default"))),
         output=str(values.get("output", "human")),
         log_level=str(values.get("log_level", "WARNING")),
-        timeout=float(values.get("timeout", 5.0)),
-        source=str(values.get("source", "human_cli")),
+        timeout=_finite_float(values.get("timeout", 5.0), default=5.0),
+        source=str(values.get("source", default_source)),
     )
 
 
@@ -58,10 +63,11 @@ def resolve_runtime_config(
     cli_source: str | None,
     cli_timeout: float | None,
     env: Mapping[str, str] | None = None,
+    default_source: str = "human_cli",
 ) -> RuntimeConfig:
     if env is None:
         env = os.environ
-    file_config = load_config(env)
+    file_config = load_config(env, default_source=default_source)
     output = env.get("STACKCHANCTL_OUTPUT", file_config.output).lower()
     if cli_json:
         output = "json"
@@ -81,5 +87,15 @@ def resolve_runtime_config(
         source=cli_source
         or env.get("STACKCHANCTL_SOURCE")
         or file_config.source
-        or "human_cli",
+        or default_source,
     )
+
+
+def _finite_float(value: object, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed

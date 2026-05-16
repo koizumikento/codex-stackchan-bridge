@@ -35,7 +35,8 @@ Use this skill whenever a change affects more than one layer's understanding of 
 1. Update the interface source of truth first.
 2. Update CLI, bridge, firmware, mock backend, and docs to match the same terms.
 3. Keep machine-readable JSON stable and explicit.
-4. Add or update tests around metadata, structured errors, and mock behavior when implementation exists.
-5. Ask `interface-contract-steward` to review if subagents are in use.
+4. For MCP stdio adapters, preserve stdout JSON-RPC framing and keep logs on stderr.
+5. Add or update tests around metadata, structured errors, and mock behavior when implementation exists.
+6. Ask `interface-contract-steward` to review if subagents are in use.
 
 If a command cannot be represented in the mock backend, tighten the command contract before implementing it.

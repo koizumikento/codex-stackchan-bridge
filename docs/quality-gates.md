@@ -10,6 +10,7 @@ This document defines the quality gates for this repository. These gates are int
 - Cross-layer contracts must be documented before implementation spreads across packages.
 - Safety behavior must be validated at the firmware boundary, not only in the CLI.
 - JSON output and structured errors are part of the public contract.
+- MCP stdio adapters must keep JSON-RPC on `stdout` and logs on `stderr`.
 
 ## Required Gates By Area
 
@@ -32,6 +33,16 @@ Required for CLI changes:
 - Device selection tests for default device and `--device <device_id>`.
 - Success semantics tests for `ACCEPTED`, `COMPLETED`, `REJECTED`, and `TIMEOUT` states.
 - Human output remains compact; `--json` remains machine-readable.
+
+Required for MCP stdio changes:
+
+- Stdio smoke tests for initialize, `tools/list`, and `tools/call`.
+- Tests that `stdout` contains only MCP JSON-RPC frames and diagnostics stay on `stderr`.
+- Mock backend tests for deterministic tool results.
+- Metadata tests for `device_id`, `command_id`, `source=mcp_agent`, `created_at`, and `priority`.
+- Tests that `SAFETY` priority is rejected with the shared structured error shape.
+- Tests that rejected commands and timeouts are returned as tool results with `ok=false`, not protocol errors.
+- Bridge fake-client tests that preserve the same command/result shape as the mock backend.
 
 ### ROS 2 Interfaces
 

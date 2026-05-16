@@ -134,6 +134,14 @@ class BridgeBackend:
             self._client = RclpyBridgeClient()
         return self._client
 
+    def close(self) -> None:
+        if self._client is None:
+            return
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+        self._client = None
+
     def _execute_command(
         self, request: CommandRequest, client: BridgeClient
     ) -> BridgeCommandResponse:
@@ -268,6 +276,8 @@ class RclpyBridgeClient:
                     recoverable=False,
                 ),
             )
+        # The facade action result is the bridge's immediate shared Result,
+        # not proof that the physical behavior has completed.
         result_future = goal_handle.get_result_async()
         self._spin_future(result_future, timeout)
         response = _response_from_ros(result_future.result().result.result)
@@ -334,6 +344,8 @@ class RclpyBridgeClient:
                     recoverable=False,
                 ),
             )
+        # The facade action result is the bridge's immediate shared Result,
+        # not proof that the physical behavior has completed.
         result_future = goal_handle.get_result_async()
         self._spin_future(result_future, timeout)
         response = _response_from_ros(result_future.result().result.result)

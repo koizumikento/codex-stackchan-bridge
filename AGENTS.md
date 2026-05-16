@@ -7,7 +7,9 @@ This file gives repository-wide instructions for AI agents and maintainers. Foll
 Build a local bridge that lets Codex use M5StackChan as a physical avatar through ROS 2.
 
 ```text
-Codex App -> Agent Skill -> stackchanctl -> ROS 2 nodes -> micro-ROS Agent -> M5StackChan firmware
+Codex App -> Agent Skill -> stackchanctl -> stackchan_bridge facade -> micro-ROS Agent -> M5StackChan firmware
+Codex App -> MCP Host -> stackchanctl mcp serve -> stackchanctl command contract -> mock backend
+Codex App -> MCP Host -> stackchanctl mcp serve -> stackchanctl command contract -> bridge backend -> stackchan_bridge facade -> micro-ROS Agent -> M5StackChan firmware
 ```
 
 Keep the system local-first. Do not introduce cloud accounts, mobile-app dependencies, or ad hoc network APIs unless the project direction explicitly changes.
@@ -33,6 +35,7 @@ Development assistant surfaces:
 
 - The standard command path is `stackchanctl -> stackchan_bridge facade -> firmware`.
 - Codex skills call `stackchanctl`, not raw `ros2` commands.
+- Codex-facing MCP integrations may use `stackchanctl mcp serve`, but must still route through the `stackchanctl` command contract and must not call raw `ros2` commands.
 - `stackchanctl` is a Python CLI using `rclpy`.
 - Rust is only for companion workers on measured hot paths or long-running helper processes.
 - ROS resources live under `/stackchan/<device_id>`, with `default` as the standard single-device id.
