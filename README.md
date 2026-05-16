@@ -41,9 +41,19 @@ Codex App
 ├── skills/
 │   └── codex-stackchan/       # Codex agent skill draft
 ├── docs/
-│   └── architecture.md        # Architecture notes
+│   ├── README.md              # Documentation map
+│   ├── architecture.md        # Architecture notes
+│   ├── stackchanctl.md        # CLI design
+│   ├── firmware.md            # Firmware design
+│   ├── ros-interface.md       # ROS 2 interface design
+│   ├── quality-gates.md       # Validation gates
+│   └── license-notes.md       # Dependency and license notes
 └── scripts/                   # Local helper scripts
 ```
+
+## Documentation
+
+Start from [docs/README.md](docs/README.md) for the reading order and cross-references.
 
 ## Early command sketch
 
@@ -60,3 +70,7 @@ These commands are expected to translate into ROS 2 operations such as publishin
 ## Status
 
 This repository is currently a scaffold. The next useful step is to define the first narrow contract between `stackchanctl` and ROS 2, then add a PC-only mock backend so the Codex skill can be developed before the physical device firmware is ready.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
