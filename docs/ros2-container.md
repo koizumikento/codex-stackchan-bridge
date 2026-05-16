@@ -12,18 +12,21 @@ container.
 From the repository root:
 
 ```bash
-docker build -f .devcontainer/Dockerfile -t codex-stackchan-ros2:jazzy .
+uv run --no-project python scripts/ros2_container.py build-image
 ```
 
 ## Run A Shell
 
-On Windows PowerShell:
+From either Windows PowerShell or bash:
 
-```powershell
-docker run --rm -it -v ${PWD}:/workspaces/codex-stackchan-bridge -w /workspaces/codex-stackchan-bridge codex-stackchan-ros2:jazzy bash
+```bash
+uv run --no-project python scripts/ros2_container.py shell
 ```
 
-On bash:
+This opens a shell with the repository mounted at
+`/workspaces/codex-stackchan-bridge`.
+
+If you need the raw Docker command instead:
 
 ```bash
 docker run --rm -it -v "$PWD":/workspaces/codex-stackchan-bridge -w /workspaces/codex-stackchan-bridge codex-stackchan-ros2:jazzy bash
@@ -38,12 +41,17 @@ source /opt/ros/jazzy/setup.bash
 
 ## Hardware-Free Readiness Checks
 
-Run these checks before hardware arrives:
+Run the full containerized readiness check before hardware arrives:
+
+```bash
+uv run --no-project python scripts/ros2_container.py smoke
+```
+
+This runs the equivalent container-side commands:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select stackchan_msgs
-colcon build --packages-select stackchan_bridge
+colcon build --packages-select stackchan_msgs stackchan_bridge
 source install/setup.bash
 python3 scripts/ros2_bridge_smoke.py
 ```
