@@ -347,6 +347,13 @@ The bridge facade may reject requests before forwarding them if metadata, device
 
 ## Baseline actions
 
+Baseline action feedback fields:
+
+- `progress`
+- `message`
+
+`progress` is a `float32` from 0.0 to 1.0 when the action can estimate progress. `message` is a bounded human-readable status string for local diagnostics and should not carry speech text, image payloads, NFC tag IDs, or secrets.
+
 ### `/stackchan/<device_id>/cmd/say`
 
 Purpose: request speech output from text.
@@ -365,6 +372,11 @@ Result fields:
 
 - `result`
 
+Feedback fields:
+
+- `progress`
+- `message`
+
 ### `/stackchan/<device_id>/cmd/motion/run`
 
 Purpose: request a named motion primitive with progress and cancellation.
@@ -379,6 +391,11 @@ Goal fields:
 Result fields:
 
 - `result`
+
+Feedback fields:
+
+- `progress`
+- `message`
 
 ### `/stackchan/<device_id>/cmd/audio/play`
 
@@ -401,6 +418,11 @@ Result fields:
 
 - `result`
 
+Feedback fields:
+
+- `progress`
+- `message`
+
 ### `/stackchan/<device_id>/cmd/camera/capture`
 
 Purpose: request a constrained camera snapshot.
@@ -417,6 +439,11 @@ Result fields:
 
 - `result`
 - `image`
+
+Feedback fields:
+
+- `progress`
+- `message`
 
 Baseline camera behavior:
 
@@ -439,6 +466,23 @@ This is reserved until the simpler service and action interfaces are useful. It 
 Purpose: capture microphone audio and stream chunks to the PC side.
 
 Baseline format: PCM 16 kHz mono 16-bit.
+
+Goal fields:
+
+- `meta`
+- `format`
+- `sample_rate`
+- `channels`
+- `duration_ms`
+
+Result fields:
+
+- `result`
+
+Feedback fields:
+
+- `progress`
+- `message`
 
 Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
 

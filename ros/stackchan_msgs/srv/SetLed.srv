@@ -1,0 +1,6 @@
+stackchan_msgs/CommandMeta meta
+string<=32 pattern
+string<=16 color
+uint32 duration_ms
+---
+stackchan_msgs/Result result

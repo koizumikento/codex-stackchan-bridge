@@ -1,0 +1,11 @@
+stackchan_msgs/CommandMeta meta
+string<=16 format
+uint32 width
+uint32 height
+uint8 quality
+---
+stackchan_msgs/Result result
+stackchan_msgs/CompressedImagePayload image
+---
+float32 progress
+string<=160 message

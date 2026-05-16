@@ -42,3 +42,24 @@ Dependency stance:
 - micro-ROS transport: USB Serial
 
 See [../../docs/firmware.md](../../docs/firmware.md) for the full dependency pinning policy.
+
+## Local development
+
+The initial PlatformIO target is `stackchan-cores3`:
+
+```bash
+pio run -d firmware/m5stackchan-microros -e stackchan-cores3
+```
+
+The firmware package also includes hardware-free contract checks:
+
+```bash
+uv run python -m unittest discover -s firmware/m5stackchan-microros/tests
+```
+
+Current dependency pins:
+
+- `StackChan-BSP`: `1.1.0`
+- `micro_ros_platformio`: `de7a61c` from the upstream repository line used while preparing the Jazzy PlatformIO skeleton
+
+The micro-ROS README documents `board_microros_distro = jazzy` and serial transport configuration; the first real build should re-check the pinned commit in the ROS 2 Jazzy environment before hardware flashing.

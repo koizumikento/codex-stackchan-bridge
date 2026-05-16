@@ -83,9 +83,9 @@ The expected CI shape is:
 - Python lint and unit tests for `apps/stackchanctl`.
 - Mock backend contract tests.
 - Multi-device/default-device contract tests.
-- ROS 2 interface build checks for `ros/stackchan_msgs`.
-- ROS 2 bridge package tests when bridge code exists.
-- Firmware build-only checks for `firmware/m5stackchan-microros`.
+- ROS 2 interface contract checks for `ros/stackchan_msgs`; replace or supplement these with `colcon` interface build checks when a ROS 2 Jazzy CI image is available.
+- ROS 2 bridge package tests for hardware-free facade logic.
+- Firmware contract checks for `firmware/m5stackchan-microros`; run PlatformIO build-only checks in a PlatformIO/micro-ROS-capable environment.
 - Markdown formatting checks.
 
 Deferred until implementation stabilizes:
