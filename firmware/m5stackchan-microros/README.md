@@ -61,5 +61,6 @@ Current dependency pins:
 
 - `StackChan-BSP`: `1.1.0`
 - `micro_ros_platformio`: `de7a61c` from the upstream repository line used while preparing the Jazzy PlatformIO skeleton
+- micro-ROS serial baud: `921600`, chosen as the initial bring-up target for audio/camera transport headroom
 
 The micro-ROS README documents `board_microros_distro = jazzy` and serial transport configuration; the first real build should re-check the pinned commit in the ROS 2 Jazzy environment before hardware flashing.

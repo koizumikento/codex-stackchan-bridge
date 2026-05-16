@@ -27,6 +27,7 @@ class CommandMeta:
     device_id: str = "default"
     command_id: str = ""
     source: str = ""
+    created_at: str = ""
     priority: int = PRIORITY_NORMAL
 
 
@@ -43,6 +44,10 @@ class Result:
     @classmethod
     def accepted(cls, message: str = "accepted") -> "Result":
         return cls(ok=True, state=STATE_ACCEPTED, message=message)
+
+    @classmethod
+    def completed(cls, message: str = "completed") -> "Result":
+        return cls(ok=True, state=STATE_COMPLETED, message=message)
 
     @classmethod
     def rejected(
@@ -76,7 +81,7 @@ class StatusSnapshot:
     face: str = "neutral"
     motion: str = "idle"
     last_command_id: str = ""
-    last_error: Result = field(default_factory=lambda: Result.accepted("ok"))
+    last_error: Result = field(default_factory=lambda: Result.accepted(""))
 
 
 @dataclass(frozen=True)

@@ -105,7 +105,7 @@ class StackChanBridgeFacade:
         if checked is not None:
             return checked
 
-        status = self._mark_accepted(meta, motion=name)
+        status = self._mark_completed(meta, motion=name)
         log_structured(
             self.logger,
             logging.INFO,
@@ -117,6 +117,39 @@ class StackChanBridgeFacade:
             intensity=intensity,
             duration_ms=duration_ms,
         )
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+
+    def say(self, meta: CommandMeta, text: str) -> CommandResponse:
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+
+        del text
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+
+    def play_audio(self, meta: CommandMeta) -> CommandResponse:
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+
+    def capture_audio(self, meta: CommandMeta) -> CommandResponse:
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+
+    def capture_camera(self, meta: CommandMeta) -> CommandResponse:
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+
+        status = self._mark_completed(meta)
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def _validate(self, meta: CommandMeta) -> CommandResponse | None:
@@ -152,6 +185,17 @@ class StackChanBridgeFacade:
             status.motion = motion
         status.last_command_id = meta.command_id
         status.last_error = Result.accepted()
+        return status
+
+    def _mark_completed(
+        self,
+        meta: CommandMeta,
+        *,
+        face: str | None = None,
+        motion: str | None = None,
+    ) -> StatusSnapshot:
+        status = self._mark_accepted(meta, face=face, motion=motion)
+        status.last_error = Result.completed()
         return status
 
     def _record_error(self, meta: CommandMeta, result: Result) -> None:

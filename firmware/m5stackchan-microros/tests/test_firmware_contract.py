@@ -26,6 +26,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("Normal = 1", contract)
         self.assertIn("High = 2", contract)
         self.assertIn("Safety = 3", contract)
+        self.assertIn("const char* created_at", contract)
         self.assertIn("Accepted = 1", contract)
         self.assertIn("Completed = 2", contract)
         self.assertIn("Rejected = 3", contract)
@@ -44,6 +45,9 @@ class FirmwareContractTests(unittest.TestCase):
 
         self.assertIn('"UNKNOWN_COMMAND"', safety)
         self.assertIn('"SERVO_LIMIT_EXCEEDED"', safety)
+        self.assertIn("kMinMotionDurationMs", safety)
+        self.assertIn("kMaxMotionDurationMs", safety)
+        self.assertIn('"MOTION_INTERRUPTED"', safety)
         self.assertIn("intensity < 0.0f || intensity > 1.0f", safety)
         self.assertRegex(safety, re.compile(r"constexpr ServoLimits kDefaultServoLimits"))
 
@@ -52,7 +56,10 @@ class FirmwareContractTests(unittest.TestCase):
 
         self.assertIn('"INVALID_PRIORITY"', main)
         self.assertIn("publish_status_heartbeat", main)
-        self.assertIn("state_machine.agent_connected()", main)
+        self.assertIn("try_connect_microros_agent", main)
+        self.assertIn("state_machine.agent_disconnected()", main)
+        self.assertIn("copy_bounded", main)
+        self.assertIn("is_cli_source", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()

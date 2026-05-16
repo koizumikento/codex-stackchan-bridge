@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <string.h>
 
 #include "stackchan/contract.hpp"
 #include "stackchan/audio.hpp"
@@ -17,29 +18,81 @@
 namespace {
 
 stackchan::StateMachine state_machine;
-const char* current_face = "neutral";
-const char* current_motion = "idle";
-const char* last_command_id = "";
+char current_face[16] = "neutral";
+char current_motion[16] = "idle";
+char last_command_id[37] = "";
 stackchan::Result last_error = stackchan::Result::accepted("ok");
 unsigned long last_heartbeat_ms = 0;
+unsigned long last_agent_attempt_ms = 0;
+bool microros_connected = false;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
 
+void copy_bounded(char* destination, size_t size, const char* source) {
+  if (size == 0) {
+    return;
+  }
+  strncpy(destination, source == nullptr ? "" : source, size - 1);
+  destination[size - 1] = '\0';
+}
+
+bool is_cli_source(const char* source) {
+  return strcmp(source, "human_cli") == 0 ||
+         strcmp(source, "codex_skill") == 0 ||
+         strcmp(source, "stackchanctl") == 0 ||
+         strcmp(source, "cli") == 0;
+}
+
+bool is_known_face(const char* name) {
+  return strcmp(name, "neutral") == 0 ||
+         strcmp(name, "happy") == 0 ||
+         strcmp(name, "thinking") == 0 ||
+         strcmp(name, "surprised") == 0 ||
+         strcmp(name, "sleepy") == 0 ||
+         strcmp(name, "error") == 0;
+}
+
+bool is_servo_safety_fault(const stackchan::Result& result) {
+  return strcmp(result.error_code, "SERVO_LIMIT_EXCEEDED") == 0 ||
+         strcmp(result.error_code, "MOTION_INTERRUPTED") == 0;
+}
+
+bool try_connect_microros_agent() {
+  // TODO: initialize StackChan-BSP hardware and micro-ROS serial transport.
+  // set_microros_serial_transports(Serial);
+  // TODO: ping micro-ROS Agent, initialize support/node/executor, and create
+  // stackchan_msgs publishers, services, and actions before returning true.
+  return false;
+}
+
 void show_neutral_face() {
-  current_face = "neutral";
+  copy_bounded(current_face, sizeof(current_face), "neutral");
 }
 
 stackchan::Result handle_face_command(
     const stackchan::CommandMeta& meta,
     const char* name) {
-  if (meta.priority == stackchan::Priority::Safety) {
+  if (state_machine.state() == stackchan::RuntimeState::Fault) {
     last_error = stackchan::Result::rejected(
-        "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware internals");
+        "FIRMWARE_BUSY",
+        "firmware is in fault state; recover before accepting face commands",
+        true);
     return last_error;
   }
 
-  current_face = name;
-  last_command_id = meta.command_id;
+  if (meta.priority == stackchan::Priority::Safety && is_cli_source(meta.source)) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for bridge and firmware internals");
+    return last_error;
+  }
+
+  if (!is_known_face(name)) {
+    last_error = stackchan::Result::rejected("UNKNOWN_COMMAND", "unknown face name");
+    return last_error;
+  }
+
+  copy_bounded(current_face, sizeof(current_face), name);
+  copy_bounded(last_command_id, sizeof(last_command_id), meta.command_id);
   last_error = stackchan::Result::accepted("face accepted");
   return last_error;
 }
@@ -49,25 +102,35 @@ stackchan::Result handle_motion_command(
     const char* name,
     float intensity,
     uint32_t duration_ms) {
-  if (meta.priority == stackchan::Priority::Safety) {
+  if (state_machine.state() == stackchan::RuntimeState::Fault) {
+    last_error = stackchan::Result::rejected(
+        "FIRMWARE_BUSY",
+        "firmware is in fault state; recover before accepting motion commands",
+        true);
+    return last_error;
+  }
+
+  if (meta.priority == stackchan::Priority::Safety && is_cli_source(meta.source)) {
     last_error = stackchan::Result::rejected(
         "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware internals");
+        "SAFETY priority is reserved for bridge and firmware internals");
     return last_error;
   }
 
   const stackchan::MotionPlan plan =
       stackchan::plan_motion(name, intensity, duration_ms);
-  last_command_id = meta.command_id;
+  copy_bounded(last_command_id, sizeof(last_command_id), meta.command_id);
   last_error = plan.result;
   if (!plan.result.ok) {
-    state_machine.fault();
-    current_motion = "idle";
+    if (is_servo_safety_fault(plan.result)) {
+      state_machine.fault();
+    }
+    copy_bounded(current_motion, sizeof(current_motion), "idle");
     return plan.result;
   }
 
   state_machine.command_started();
-  current_motion = name;
+  copy_bounded(current_motion, sizeof(current_motion), name);
   // TODO: call StackChan-BSP servo adapter with plan.target and plan.duration_ms.
   state_machine.command_finished();
   return plan.result;
@@ -96,14 +159,20 @@ void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
   show_neutral_face();
   state_machine.booted();
-
-  // TODO: initialize StackChan-BSP hardware and micro-ROS serial transport.
-  // set_microros_serial_transports(Serial);
-  state_machine.agent_connected();
 }
 
 void loop() {
   const unsigned long now = millis();
+  if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
+    microros_connected = try_connect_microros_agent();
+    if (microros_connected) {
+      state_machine.agent_connected();
+    } else {
+      state_machine.agent_disconnected();
+    }
+    last_agent_attempt_ms = now;
+  }
+
   if (now - last_heartbeat_ms >= 1000) {
     publish_status_heartbeat();
     last_heartbeat_ms = now;

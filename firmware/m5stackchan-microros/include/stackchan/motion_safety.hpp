@@ -26,6 +26,9 @@ struct MotionPlan {
 
 constexpr ServoLimits kDefaultServoLimits{-45, 45, -30, 30};
 constexpr ServoTarget kNeutralTarget{0, 0};
+constexpr uint32_t kMinMotionDurationMs = 100;
+constexpr uint32_t kMaxMotionDurationMs = 2000;
+constexpr uint32_t kDefaultMotionDurationMs = 500;
 
 inline int clamp_int(int value, int min_value, int max_value) {
   if (value < min_value) {
@@ -62,6 +65,15 @@ inline MotionPlan plan_motion(
     };
   }
 
+  if (duration_ms != 0 &&
+      (duration_ms < kMinMotionDurationMs || duration_ms > kMaxMotionDurationMs)) {
+    return {
+        Result::rejected("MOTION_INTERRUPTED", "motion duration out of safe range", true),
+        kNeutralTarget,
+        0,
+    };
+  }
+
   ServoTarget target = kNeutralTarget;
   if (strcmp(name, "nod") == 0) {
     target.y = static_cast<int>(20.0f * intensity);
@@ -73,7 +85,7 @@ inline MotionPlan plan_motion(
   return {
       Result::accepted("motion accepted"),
       target,
-      duration_ms == 0 ? 500U : duration_ms,
+      duration_ms == 0 ? kDefaultMotionDurationMs : duration_ms,
   };
 }
 

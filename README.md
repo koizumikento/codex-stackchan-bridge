@@ -2,7 +2,7 @@
 
 Codex AppからROS 2経由でM5Stack版ｽﾀｯｸﾁｬﾝを制御するための実験リポジトリです。
 
-目標は、ｽﾀｯｸﾁｬﾝを単なる通知端末ではなく、Codexのローカルな物理アバターとして扱えるようにすることです。CodexのエージェントスキルからローカルCLIを呼び出し、そのCLIがROS 2のtopic / service / actionへ変換し、PC側ノードとmicro-ROS経由でｽﾀｯｸﾁｬﾝ本体を動かします。
+目標は、ｽﾀｯｸﾁｬﾝを単なる通知端末ではなく、Codexのローカルな物理アバターとして扱えるようにすることです。CodexのエージェントスキルからローカルCLIを呼び出し、そのCLIがPC側のROS 2 bridge facadeへ命令を送り、bridgeがmicro-ROS経由でｽﾀｯｸﾁｬﾝ本体へ転送します。
 
 ```text
 Codex App
@@ -65,11 +65,19 @@ stackchanctl led progress
 stackchanctl observe
 ```
 
-These commands are expected to translate into ROS 2 operations such as publishing a face/motion command, calling a speech service, or reading a status topic.
+These commands use the stable `stackchan_bridge` facade under `/stackchan/<device_id>/cmd/...`. The CLI should not publish command topics or call device-side resources directly during normal operation.
 
 ## Status
 
-This repository is currently a scaffold. The next useful step is to define the first narrow contract between `stackchanctl` and ROS 2, then add a PC-only mock backend so the Codex skill can be developed before the physical device firmware is ready.
+This repository currently contains the first MVP scaffold:
+
+- ROS 2 interface definitions in `ros/stackchan_msgs`.
+- A Python `stackchanctl` CLI with mock backend and bridge backend skeleton.
+- A hardware-free `stackchan_bridge` facade core with a lazy ROS node adapter.
+- A PlatformIO firmware scaffold with safety, audio, and sensor policy headers.
+- A Codex skill draft that calls `stackchanctl`.
+
+ROS 2 Jazzy `colcon` builds, micro-ROS firmware build/flash, and hardware behavior validation still need to run in the prepared ROS/PlatformIO environment.
 
 ## License
 

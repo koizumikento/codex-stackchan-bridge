@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 from stackchanctl.backends.mock import validate_common_request
@@ -49,6 +50,11 @@ class BridgeClient(Protocol):
 
     def run_motion(
         self, meta: CommandMeta, name: str, *, wait: bool, timeout: float
+    ) -> BridgeCommandResponse:
+        raise NotImplementedError
+
+    def say(
+        self, meta: CommandMeta, text: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
         raise NotImplementedError
 
@@ -146,6 +152,13 @@ class BridgeBackend:
                 wait=request.wait,
                 timeout=request.timeout,
             )
+        if request.command_type is CommandType.SAY:
+            return client.say(
+                request.meta,
+                str(request.args["text"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.AUDIO_PLAY:
             return client.play_audio(
                 request.meta,
@@ -181,7 +194,13 @@ class RclpyBridgeClient:
         try:
             import rclpy
             from rclpy.action import ActionClient
-            from stackchan_msgs.action import CaptureAudio, CaptureCamera, PlayAudio, RunMotion
+            from stackchan_msgs.action import (
+                CaptureAudio,
+                CaptureCamera,
+                PlayAudio,
+                RunMotion,
+                Say,
+            )
             from stackchan_msgs.srv import GetStatus, SetFace, SetLed
         except ImportError as exc:
             raise BridgeBackendError(
@@ -195,6 +214,7 @@ class RclpyBridgeClient:
         self._set_face_type = SetFace
         self._set_led_type = SetLed
         self._run_motion_type = RunMotion
+        self._say_type = Say
         self._play_audio_type = PlayAudio
         self._capture_audio_type = CaptureAudio
         self._capture_camera_type = CaptureCamera
@@ -271,6 +291,23 @@ class RclpyBridgeClient:
         result_future = goal_handle.get_result_async()
         self._spin_future(result_future, timeout)
         return _response_from_ros(result_future.result().result.result)
+
+    def say(
+        self, meta: CommandMeta, text: str, *, wait: bool, timeout: float
+    ) -> BridgeCommandResponse:
+        goal = self._say_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.text = text
+        goal.voice = ""
+        goal.face_hint = ""
+        goal.motion_hint = ""
+        return self._send_action_goal(
+            self._say_type,
+            f"/stackchan/{meta.device_id}/cmd/say",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def play_audio(
         self, meta: CommandMeta, path: str, *, wait: bool, timeout: float
@@ -391,7 +428,17 @@ def _copy_meta(target, meta: CommandMeta) -> None:
     target.device_id = meta.device_id
     target.command_id = meta.command_id
     target.source = meta.source
+    _copy_created_at(target.created_at, meta.created_at)
     target.priority = _priority_value(meta.priority.value)
+
+
+def _copy_created_at(target, created_at: str) -> None:
+    value = created_at
+    if value.endswith("Z"):
+        value = f"{value[:-1]}+00:00"
+    parsed = datetime.fromisoformat(value).astimezone(UTC)
+    target.sec = int(parsed.timestamp())
+    target.nanosec = parsed.microsecond * 1000
 
 
 def _priority_value(priority: str) -> int:
@@ -423,6 +470,8 @@ def _state_from_ros(state: int) -> ResultState:
 
 
 def _error_from_ros(result) -> ErrorDetail | None:
+    if getattr(result, "ok", False):
+        return None
     error_code = getattr(result, "error_code", "")
     message = getattr(result, "message", "")
     recoverable = bool(getattr(result, "recoverable", False))

@@ -22,6 +22,7 @@ struct CommandMeta {
   const char* device_id;
   const char* command_id;
   const char* source;
+  const char* created_at;
   Priority priority;
 };
 

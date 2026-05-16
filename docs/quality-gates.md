@@ -86,10 +86,10 @@ The expected CI shape is:
 - ROS 2 interface contract checks for `ros/stackchan_msgs`; replace or supplement these with `colcon` interface build checks when a ROS 2 Jazzy CI image is available.
 - ROS 2 bridge package tests for hardware-free facade logic.
 - Firmware contract checks for `firmware/m5stackchan-microros`; run PlatformIO build-only checks in a PlatformIO/micro-ROS-capable environment.
-- Markdown formatting checks.
 
 Deferred until implementation stabilizes:
 
+- Markdown formatting checks.
 - external link checks
 - hardware-in-the-loop checks
 - release packaging checks

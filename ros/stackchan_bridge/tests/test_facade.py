@@ -7,6 +7,7 @@ from stackchan_bridge.models import (
     PRIORITY_NORMAL,
     PRIORITY_SAFETY,
     STATE_ACCEPTED,
+    STATE_COMPLETED,
     CommandMeta,
 )
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
@@ -26,6 +27,7 @@ def meta(device_id: str = "default", priority: int = PRIORITY_NORMAL) -> Command
         device_id=device_id,
         command_id="cmd-test-0001",
         source="human_cli",
+        created_at="2026-05-16T00:00:00Z",
         priority=priority,
     )
 
@@ -63,8 +65,17 @@ class FacadeTests(unittest.TestCase):
         idle = bridge.run_motion(meta(), "idle")
 
         self.assertTrue(nod.result.ok)
+        self.assertEqual(nod.result.state, STATE_COMPLETED)
         self.assertTrue(idle.result.ok)
         self.assertEqual(bridge.get_status("default").status.motion, "idle")
+
+    def test_say_and_media_actions_complete(self) -> None:
+        bridge = facade()
+
+        self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.play_audio(meta()).result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.capture_audio(meta()).result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.capture_camera(meta()).result.state, STATE_COMPLETED)
 
     def test_unknown_device_returns_device_not_found(self) -> None:
         response = facade().set_face(meta("desk"), "happy")

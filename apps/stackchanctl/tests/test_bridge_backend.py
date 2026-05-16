@@ -15,6 +15,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
     BridgeBackend,
     BridgeBackendTimeout,
     BridgeCommandResponse,
+    _copy_created_at,
 )
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
@@ -49,6 +50,14 @@ class FakeBridgeClient:
     ) -> BridgeCommandResponse:
         if self.timeout:
             raise BridgeBackendTimeout()
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
+
+    def say(
+        self, meta, text: str, *, wait: bool, timeout: float
+    ) -> BridgeCommandResponse:
         return BridgeCommandResponse(
             ok=True,
             result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
@@ -144,6 +153,28 @@ class BridgeBackendTests(unittest.TestCase):
 
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
+
+    def test_bridge_say_wait_can_complete(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "say", "hello", "--wait", "--json"],
+            FakeBridgeClient(),
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(payload["command"], {"type": "say", "text_length": 5})
+
+    def test_created_at_is_copied_to_ros_time(self) -> None:
+        class Stamp:
+            sec = 0
+            nanosec = 0
+
+        stamp = Stamp()
+        _copy_created_at(stamp, "2026-05-16T00:00:01Z")
+
+        self.assertEqual(stamp.sec, 1778889601)
+        self.assertEqual(stamp.nanosec, 0)
 
     def test_bridge_timeout_maps_to_recoverable_structured_error(self) -> None:
         code, stdout, stderr = run_stackchanctl(
