@@ -44,11 +44,25 @@ Run these checks before hardware arrives:
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select stackchan_msgs
 colcon build --packages-select stackchan_bridge
+source install/setup.bash
+python3 scripts/ros2_bridge_smoke.py
 ```
 
 The build writes `build/`, `install/`, and `log/` at the repository root. These
 directories are ignored by git and can be removed when you want a clean local
 workspace.
+
+The smoke script starts `stackchan_bridge_node` with
+`device_connected:=false`, then calls `stackchanctl --backend bridge` through
+ROS 2. It should pass without hardware by confirming that the configured
+`default` device reports `TRANSPORT_DISCONNECTED`.
+
+To simulate an already-connected facade while still staying hardware-free,
+start the node with:
+
+```bash
+stackchan_bridge_node --ros-args -p device_connected:=true
+```
 
 ## Ready-For-Device Checklist
 
@@ -57,6 +71,7 @@ Before the physical StackChan is connected, the goal is:
 - The container image builds.
 - `stackchan_msgs` builds with colcon.
 - `stackchan_bridge` builds with colcon.
+- `python3 scripts/ros2_bridge_smoke.py` confirms the no-device bridge path.
 - Host-side mock tests still pass with `uv`.
 - The remaining unchecked items are only device, micro-ROS Agent, firmware, and
   USB/serial passthrough behavior.

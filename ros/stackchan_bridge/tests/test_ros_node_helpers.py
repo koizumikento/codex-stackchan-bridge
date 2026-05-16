@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from stackchan_bridge.ros_node import _meta_from_ros, _normalize_device_ids
+from stackchan_bridge.ros_node import (
+    _configured_device_records,
+    _meta_from_ros,
+    _normalize_device_ids,
+)
 
 
 class RosNodeHelperTests(unittest.TestCase):
@@ -29,6 +33,13 @@ class RosNodeHelperTests(unittest.TestCase):
         )
         self.assertEqual(_normalize_device_ids("desk"), ["desk"])
         self.assertEqual(_normalize_device_ids([]), ["default"])
+
+    def test_configured_records_can_start_disconnected_without_hardware(self) -> None:
+        records = _configured_device_records(["default", "desk"], connected=False)
+
+        self.assertEqual([record.device_id for record in records], ["default", "desk"])
+        self.assertFalse(records[0].connected)
+        self.assertFalse(records[1].connected)
 
 
 if __name__ == "__main__":

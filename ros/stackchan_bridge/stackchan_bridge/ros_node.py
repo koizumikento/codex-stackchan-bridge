@@ -33,6 +33,12 @@ def _normalize_device_ids(value: object) -> list[str]:
     return device_ids or ["default"]
 
 
+def _configured_device_records(
+    device_ids: list[str], *, connected: bool
+) -> list[DeviceRecord]:
+    return [DeviceRecord(device_id, connected=connected) for device_id in device_ids]
+
+
 def _copy_result(result: object, source: object) -> None:
     result.ok = source.ok
     result.state = source.state
@@ -70,8 +76,13 @@ def main(args: list[str] | None = None) -> None:
             configured_device_ids = _normalize_device_ids(
                 self.get_parameter("device_ids").value
             )
+            self.declare_parameter("device_connected", False)
+            device_connected = bool(self.get_parameter("device_connected").value)
             registry = DeviceRegistry(
-                [DeviceRecord(device_id) for device_id in configured_device_ids]
+                _configured_device_records(
+                    configured_device_ids,
+                    connected=device_connected,
+                )
             )
             self.facade = StackChanBridgeFacade(
                 registry=registry,

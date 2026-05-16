@@ -19,3 +19,8 @@ The `stackchan_bridge_node` entrypoint requires a sourced ROS 2 Jazzy environmen
 Use [../../docs/ros2-container.md](../../docs/ros2-container.md) when you want
 that environment isolated in Docker/devcontainer instead of installed on the
 host.
+
+By default, `stackchan_bridge_node` configures the `default` device as present
+but disconnected so hardware-free smoke tests can verify
+`TRANSPORT_DISCONNECTED`. Use `--ros-args -p device_connected:=true` only when
+you intentionally want to simulate an already-connected facade.
