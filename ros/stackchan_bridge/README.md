@@ -11,8 +11,11 @@ Interface details live in [../../docs/ros-interface.md](../../docs/ros-interface
 The hardware-free facade core can be tested without ROS 2:
 
 ```bash
-uv run --directory ros/stackchan_bridge python -m unittest discover -s tests
-uv run --directory ros/stackchan_bridge ruff check .
+uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests
+uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .
 ```
 
 The `stackchan_bridge_node` entrypoint requires a sourced ROS 2 Jazzy environment.
+Use [../../docs/ros2-container.md](../../docs/ros2-container.md) when you want
+that environment isolated in Docker/devcontainer instead of installed on the
+host.

@@ -1,0 +1,21 @@
+{
+  "name": "codex-stackchan ROS 2 Jazzy",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/codex-stackchan-bridge",
+  "containerEnv": {
+    "ROS_DISTRO": "jazzy"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-python.python",
+        "ms-vscode.cpptools"
+      ]
+    }
+  },
+  "postCreateCommand": "rosdep update --rosdistro jazzy || true"
+}

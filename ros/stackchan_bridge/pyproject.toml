@@ -1,18 +1,3 @@
-[project]
-name = "stackchan-bridge"
-version = "0.1.0"
-description = "PC-side ROS 2 bridge facade for StackChan command routing"
-requires-python = ">=3.11"
-
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-
-[dependency-groups]
-dev = [
-    "ruff>=0.15.13",
-]
