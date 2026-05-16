@@ -14,3 +14,18 @@ stackchanctl face happy
 stackchanctl motion nod
 stackchanctl led progress
 ```
+
+## Local development
+
+Run the hardware-free mock backend with `uv`:
+
+```bash
+uv run --directory apps/stackchanctl stackchanctl --backend mock face happy --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock observe --json
+```
+
+Run the focused CLI tests:
+
+```bash
+uv run --directory apps/stackchanctl python -m unittest discover -s tests
+```

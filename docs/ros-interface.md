@@ -2,7 +2,7 @@
 
 This document describes the baseline contract between `stackchanctl`, PC-side ROS 2 nodes, and M5StackChan firmware.
 
-Avoid using version labels in this document unless a released compatibility policy exists. Treat the sections below as the current implementation contract.
+Avoid using version labels in this document unless a released compatibility policy exists. Treat the sections below as the intended baseline contract, with scaffold limitations called out inline where the current implementation deliberately returns `UNSUPPORTED_FEATURE` or acceptance-only results.
 
 ## Interface principles
 
@@ -225,6 +225,9 @@ Recommended IDL details:
 
 - strings are bounded to 32 characters unless the field is an error/message field.
 - `last_error` uses the shared `Result` shape.
+- `connected` reflects current registry/transport availability, not whether the
+  previous command succeeded. A healthy device may still report a historical
+  command rejection in `last_error` until a later command result replaces it.
 
 ### `/stackchan/<device_id>/imu/raw`
 
@@ -347,11 +350,21 @@ The bridge facade may reject requests before forwarding them if metadata, device
 
 ## Baseline actions
 
+Baseline action feedback fields:
+
+- `progress`
+- `message`
+
+`progress` is a `float32` from 0.0 to 1.0 when the action can estimate progress. `message` is a bounded human-readable status string for local diagnostics and should not carry speech text, image payloads, NFC tag IDs, or secrets.
+
 ### `/stackchan/<device_id>/cmd/say`
 
 Purpose: request speech output from text.
 
 This is a bridge facade action. The bridge owns TTS, voice selection, speech policy, and coordination with face/motion hints. Firmware must not receive `text` or `voice` fields. After TTS, the bridge sends audio through `/stackchan/<device_id>/cmd/audio/play` or the corresponding device audio path.
+
+The current bridge scaffold validates and accepts `say` requests but does not
+claim speech playback completion until TTS/audio routing is implemented.
 
 Goal fields:
 
@@ -364,6 +377,11 @@ Goal fields:
 Result fields:
 
 - `result`
+
+Feedback fields:
+
+- `progress`
+- `message`
 
 ### `/stackchan/<device_id>/cmd/motion/run`
 
@@ -380,11 +398,19 @@ Result fields:
 
 - `result`
 
+Feedback fields:
+
+- `progress`
+- `message`
+
 ### `/stackchan/<device_id>/cmd/audio/play`
 
 Purpose: play speech or prompt audio on the device speaker.
 
 Do not put large PCM payloads in a single service request. Coordinate playback with this action and send payload through `/stackchan/<device_id>/device/audio/chunks`.
+
+The current bridge scaffold returns `UNSUPPORTED_FEATURE` for playback until
+audio chunk transport is implemented.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -400,6 +426,11 @@ Goal fields:
 Result fields:
 
 - `result`
+
+Feedback fields:
+
+- `progress`
+- `message`
 
 ### `/stackchan/<device_id>/cmd/camera/capture`
 
@@ -418,6 +449,11 @@ Result fields:
 - `result`
 - `image`
 
+Feedback fields:
+
+- `progress`
+- `message`
+
 Baseline camera behavior:
 
 - snapshot only
@@ -427,6 +463,8 @@ Baseline camera behavior:
 - `image` uses `CompressedImagePayload`
 - maximum image payload is 96 KiB
 - timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
+- the current bridge scaffold returns `UNSUPPORTED_FEATURE` until image result
+  transport is implemented
 
 ### `/stackchan/<device_id>/cmd/perform`
 
@@ -440,7 +478,27 @@ Purpose: capture microphone audio and stream chunks to the PC side.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
+Goal fields:
+
+- `meta`
+- `format`
+- `sample_rate`
+- `channels`
+- `duration_ms`
+
+Result fields:
+
+- `result`
+
+Feedback fields:
+
+- `progress`
+- `message`
+
 Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
+
+The current bridge scaffold returns `UNSUPPORTED_FEATURE` for microphone
+capture until audio chunk transport is implemented.
 
 Baseline chunk policy:
 

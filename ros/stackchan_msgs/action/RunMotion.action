@@ -1,0 +1,9 @@
+stackchan_msgs/CommandMeta meta
+string<=32 name
+float32 intensity
+uint32 duration_ms
+---
+stackchan_msgs/Result result
+---
+float32 progress
+string<=160 message

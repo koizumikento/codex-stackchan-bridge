@@ -1,0 +1,10 @@
+stackchan_msgs/CommandMeta meta
+string<=512 text
+string<=64 voice
+string<=32 face_hint
+string<=32 motion_hint
+---
+stackchan_msgs/Result result
+---
+float32 progress
+string<=160 message

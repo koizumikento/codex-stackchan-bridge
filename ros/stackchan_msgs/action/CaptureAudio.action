@@ -1,0 +1,10 @@
+stackchan_msgs/CommandMeta meta
+string<=16 format
+uint32 sample_rate
+uint8 channels
+uint32 duration_ms
+---
+stackchan_msgs/Result result
+---
+float32 progress
+string<=160 message

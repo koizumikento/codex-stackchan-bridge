@@ -187,7 +187,8 @@ Expected backend behavior:
 - Normalize text.
 - Send a speech request to the bridge facade.
 - Optionally choose a face or motion while speaking.
-- Return after the request is accepted, unless the caller explicitly chooses blocking behavior.
+- Return after the request is accepted. The current bridge scaffold does not
+  claim speech playback completion.
 
 ### `face`
 
@@ -259,6 +260,10 @@ stackchanctl audio capture --seconds 3 --output mic.wav
 
 Device exchange should use PCM 16 kHz mono 16-bit, even if the CLI accepts or writes WAV files for human convenience.
 
+The current bridge backend rejects audio play/capture with
+`UNSUPPORTED_FEATURE` until chunk transport is implemented. The mock backend
+keeps deterministic responses for CLI development.
+
 ### Camera commands
 
 Camera support should start with snapshots rather than continuous streaming.
@@ -268,6 +273,10 @@ stackchanctl camera capture --output frame.jpg
 ```
 
 The CLI should keep this as an explicit command instead of hiding image capture inside `observe`.
+
+The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
+until image result transport is implemented. The mock backend keeps
+deterministic camera validation behavior for CLI development.
 
 ### NFC commands
 

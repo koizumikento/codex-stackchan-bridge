@@ -1,0 +1,21 @@
+[project]
+name = "stackchanctl"
+version = "0.1.0"
+description = "Local CLI for StackChan bridge commands"
+requires-python = ">=3.11"
+
+[project.scripts]
+stackchanctl = "stackchanctl.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.13",
+]
