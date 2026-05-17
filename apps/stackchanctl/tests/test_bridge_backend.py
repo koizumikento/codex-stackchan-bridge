@@ -428,6 +428,28 @@ class BridgeBackendTests(unittest.TestCase):
         )
         self.assertIsNone(client.play_audio_args)
 
+    def test_bridge_media_rejects_safety_priority_before_unsupported_feature(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "--priority",
+                "SAFETY",
+                "audio",
+                "play",
+                "prompt.wav",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "INVALID_PRIORITY")
+        self.assertIsNone(client.play_audio_args)
+
     def test_bridge_audio_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
@@ -571,17 +593,26 @@ class BridgeBackendTests(unittest.TestCase):
     def test_bridge_payload_json_redacts_sensitive_object_fields(self) -> None:
         payload = _payload_from_json(
             '{"raw_ir_code":"0xDEADBEEF","tag_id":"04AABB","protocol_dump":"NEC raw",'
-            '"speech_text":"hello","nested":{"remote_code":"volume_up"},"level":3}'
+            '"speech_text":"hello","asr_transcript":"open the window",'
+            '"full_transcript":"turn the light on","utterance_text":"hello again",'
+            '"utterance_id":"mock-utt-001","nested":{"remote_code":"volume_up"},"level":3}'
         )
 
         self.assertEqual(payload["raw_ir_code"], "<redacted>")
         self.assertEqual(payload["tag_id"], "<redacted>")
         self.assertEqual(payload["protocol_dump"], "<redacted>")
         self.assertEqual(payload["speech_text"], "<redacted>")
+        self.assertEqual(payload["asr_transcript"], "<redacted>")
+        self.assertEqual(payload["full_transcript"], "<redacted>")
+        self.assertEqual(payload["utterance_text"], "<redacted>")
+        self.assertEqual(payload["utterance_id"], "mock-utt-001")
         self.assertEqual(payload["nested"]["remote_code"], "<redacted>")
         self.assertEqual(payload["level"], 3)
         self.assertNotIn("0xDEADBEEF", str(payload))
         self.assertNotIn("04AABB", str(payload))
+        self.assertNotIn("open the window", str(payload))
+        self.assertNotIn("turn the light on", str(payload))
+        self.assertNotIn("hello again", str(payload))
 
     def test_bridge_payload_json_redacts_valid_object_secrets_and_images(self) -> None:
         payload = _payload_from_json(

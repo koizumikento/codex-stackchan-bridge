@@ -93,7 +93,11 @@ class SensitiveEventBackend:
                         "tag_id": "04AABB",
                         "nested": {"raw_ir_code": "0xDEADBEEF"},
                         "transcript": "turn the light on",
+                        "full_transcript": "turn the lamp blue",
+                        "asr_transcript": "open the window",
                         "utterance": "hello stackchan",
+                        "utterance_text": "hello again",
+                        "utterance_id": "mock-utt-001",
                         "level": 3,
                     },
                 )
@@ -340,13 +344,20 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(payload["tag_id"], "<redacted>")
         self.assertEqual(payload["nested"]["raw_ir_code"], "<redacted>")
         self.assertEqual(payload["transcript"], "<redacted>")
+        self.assertEqual(payload["full_transcript"], "<redacted>")
+        self.assertEqual(payload["asr_transcript"], "<redacted>")
         self.assertEqual(payload["utterance"], "<redacted>")
+        self.assertEqual(payload["utterance_text"], "<redacted>")
+        self.assertEqual(payload["utterance_id"], "mock-utt-001")
         self.assertEqual(payload["level"], 3)
         self.assertEqual(json.loads(result["content"][0]["text"]), structured)
         self.assertNotIn("04AABB", result["content"][0]["text"])
         self.assertNotIn("0xDEADBEEF", result["content"][0]["text"])
         self.assertNotIn("turn the light on", result["content"][0]["text"])
+        self.assertNotIn("turn the lamp blue", result["content"][0]["text"])
+        self.assertNotIn("open the window", result["content"][0]["text"])
         self.assertNotIn("hello stackchan", result["content"][0]["text"])
+        self.assertNotIn("hello again", result["content"][0]["text"])
 
     def test_events_next_tool_empty_after_cursor_exhaustion_is_ok(self) -> None:
         code, responses, stderr = run_mcp(

@@ -85,6 +85,7 @@ SENSITIVE_EVENT_MARKERS = (
     "secret",
     "token",
 )
+SENSITIVE_EVENT_KEY_PARTS = ("transcript", "speech_text")
 
 
 def run_mcp_stdio(
@@ -275,9 +276,7 @@ def _redact_event_payload(payload: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, value in payload.items():
             normalized_key = str(key).strip().lower()
-            if normalized_key in SENSITIVE_EVENT_FIELDS or any(
-                marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS
-            ):
+            if _is_sensitive_event_key(normalized_key):
                 redacted[str(key)] = REDACTED
             else:
                 redacted[str(key)] = _redact_event_payload(value)
@@ -287,6 +286,16 @@ def _redact_event_payload(payload: Any) -> Any:
     if isinstance(payload, list):
         return [_redact_event_payload(item) for item in payload]
     return payload
+
+
+def _is_sensitive_event_key(normalized_key: str) -> bool:
+    utterance_text_key = "utterance" in normalized_key and normalized_key != "utterance_id"
+    return (
+        normalized_key in SENSITIVE_EVENT_FIELDS
+        or any(marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS)
+        or any(part in normalized_key for part in SENSITIVE_EVENT_KEY_PARTS)
+        or utterance_text_key
+    )
 
 
 def _build_tool_request(

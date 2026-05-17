@@ -125,18 +125,18 @@ void show_neutral_face() {
 stackchan::Result handle_face_command(
     const stackchan::CommandMeta& meta,
     const char* name) {
+  if (meta.priority == stackchan::Priority::Safety) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for firmware-internal fault handling");
+    return last_error;
+  }
+
   if (state_machine.state() == stackchan::RuntimeState::Fault) {
     last_error = stackchan::Result::rejected(
         "FIRMWARE_BUSY",
         "firmware is in fault state; recover before accepting face commands",
         true);
-    return last_error;
-  }
-
-  if (meta.priority == stackchan::Priority::Safety) {
-    last_error = stackchan::Result::rejected(
-        "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 
@@ -156,18 +156,18 @@ stackchan::Result handle_motion_command(
     const char* name,
     float intensity,
     uint32_t duration_ms) {
+  if (meta.priority == stackchan::Priority::Safety) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for firmware-internal fault handling");
+    return last_error;
+  }
+
   if (state_machine.state() == stackchan::RuntimeState::Fault) {
     last_error = stackchan::Result::rejected(
         "FIRMWARE_BUSY",
         "firmware is in fault state; recover before accepting motion commands",
         true);
-    return last_error;
-  }
-
-  if (meta.priority == stackchan::Priority::Safety) {
-    last_error = stackchan::Result::rejected(
-        "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 

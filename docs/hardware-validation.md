@@ -30,19 +30,26 @@ hardware bring-up issue complete.
 
 ## Audio
 
-- Confirm `stackchanctl --backend bridge audio play prompt.wav --json` returns a
-  structured accepted or completed result without printing PCM bytes.
-- Confirm microphone capture publishes bounded 16 kHz mono PCM chunks and that
-  overrun/underrun events are visible through `stackchanctl events`.
+- Until firmware-confirmed audio transport exists, confirm
+  `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
+  capture return structured `UNSUPPORTED_FEATURE` results while still reporting
+  metadata and never printing PCM bytes.
+- With firmware-confirmed audio transport, confirm playback/capture return
+  structured accepted or completed results, microphone capture publishes bounded
+  16 kHz mono PCM chunks, and overrun/underrun events are visible through
+  `stackchanctl events`.
 - Confirm malformed format, sequence gaps, disconnect, and timeout cases produce
   structured recoverable errors.
 
 ## Camera
 
-- Confirm `stackchanctl --backend bridge camera capture --output frame.jpg --quality 80 --json`
-  returns metadata only and never prints JPEG/base64 bytes.
-- Confirm the device produces QVGA JPEG snapshots and rejects or discards frames
-  larger than 96 KiB with `CAMERA_CAPTURE_FAILED`.
+- Until firmware-confirmed camera transport exists, confirm
+  `stackchanctl --backend bridge camera capture --output frame.jpg --quality 80 --json`
+  returns structured `UNSUPPORTED_FEATURE` with metadata only and never prints
+  JPEG/base64 bytes.
+- With firmware-confirmed camera transport, confirm the device produces QVGA
+  JPEG snapshots and rejects or discards frames larger than 96 KiB with
+  `CAMERA_CAPTURE_FAILED`.
 - Confirm camera failure does not block motion, audio, safety, or event handling.
 
 ## Events And Redaction
