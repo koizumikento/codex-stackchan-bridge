@@ -831,6 +831,7 @@ This is separate from named motion. `motion/run` remains intent-like, while `mot
 Goal fields:
 
 - `meta`
+- `home`
 - `pan_deg`
 - `tilt_deg`
 - `speed`
@@ -853,9 +854,13 @@ Rules:
 - `tilt_deg` range is `0.0..90.0` inclusive.
 - `speed` range is `0..1000`; `0` means firmware default speed.
 - `duration_ms` is `0` or `100..2000`; `0` means firmware default duration/planning bound.
+- `home=false` means `pan_deg` and `tilt_deg` are explicit external absolute pose targets.
+- `home=true` means firmware-owned home/neutral behavior; `pan_deg` and `tilt_deg` are ignored by the device-side planner and should be published as the resulting home pose when accepted.
 - External explicit pose values outside limits are rejected with `SERVO_LIMIT_EXCEEDED` or `MOTION_INTERRUPTED`; they are not clamped.
+- Non-finite explicit pose values are rejected before they can be published as state.
 - Firmware owns the final safety validation even if the CLI or bridge rejected obvious invalid input earlier.
-- `motion home` is a CLI/MCP command that uses firmware-owned home behavior and is not a raw calibration command.
+- `motion home` is a CLI/MCP command that sends `home=true`; it uses firmware-owned home behavior and is not a raw calibration command or a `pose(0,0)` alias.
+- Firmware may reject pose/home with `FIRMWARE_BUSY` when a pose action is already active or the command rate exceeds the configured minimum interval.
 
 ### `/stackchan/<device_id>/cmd/audio/play`
 

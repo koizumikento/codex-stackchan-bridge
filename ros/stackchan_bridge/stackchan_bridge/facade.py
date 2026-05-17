@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from stackchan_bridge.logging import log_structured
@@ -171,7 +172,26 @@ class StackChanBridgeFacade:
         speed: int = 0,
         duration_ms: int = 0,
     ) -> CommandResponse:
-        return self.move_head_pose(meta, 0.0, 0.0, speed, duration_ms)
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+        validation = self._validate_head_pose_timing(speed, duration_ms)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
+
+        status = self._mark_completed(meta, motion="home")
+        log_structured(
+            self.logger,
+            logging.INFO,
+            "motion_home_accepted",
+            device_id=meta.device_id,
+            command_id=meta.command_id,
+            source=meta.source,
+            speed=speed,
+            duration_ms=duration_ms,
+        )
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def say(self, meta: CommandMeta, text: str) -> CommandResponse:
         checked = self._validate(meta)
@@ -234,6 +254,12 @@ class StackChanBridgeFacade:
         speed: int,
         duration_ms: int,
     ) -> Result | None:
+        if not math.isfinite(pan_deg) or not math.isfinite(tilt_deg):
+            return Result.rejected(
+                "SERVO_LIMIT_EXCEEDED",
+                "motion pose angles must be finite",
+                recoverable=True,
+            )
         if pan_deg < PAN_MIN_DEG or pan_deg > PAN_MAX_DEG:
             return Result.rejected(
                 "SERVO_LIMIT_EXCEEDED",
@@ -246,6 +272,13 @@ class StackChanBridgeFacade:
                 "motion pose tilt_deg is outside 0..90",
                 recoverable=True,
             )
+        return StackChanBridgeFacade._validate_head_pose_timing(speed, duration_ms)
+
+    @staticmethod
+    def _validate_head_pose_timing(
+        speed: int,
+        duration_ms: int,
+    ) -> Result | None:
         if speed < SPEED_MIN or speed > SPEED_MAX:
             return Result.rejected(
                 "SERVO_LIMIT_EXCEEDED",

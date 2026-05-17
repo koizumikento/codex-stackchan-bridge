@@ -68,6 +68,12 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"SERVO_READ_FAILED"', safety)
         self.assertIn('"CALIBRATION_INVALID"', safety)
         self.assertIn("plan_head_home", safety)
+        self.assertIn('"FIRMWARE_BUSY"', safety)
+        self.assertIn("pose_slot_available", safety)
+        self.assertIn("elapsed_since_last_command_ms", safety)
+        self.assertNotIn("bool calibration_valid = true", safety)
+        self.assertNotIn("bool servo_read_ok = true", safety)
+        self.assertNotIn("bool fault_state = false", safety)
         self.assertNotIn("clamp_head_pose", safety)
 
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:

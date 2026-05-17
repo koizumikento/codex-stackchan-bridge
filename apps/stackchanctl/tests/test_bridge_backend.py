@@ -44,6 +44,8 @@ class FakeBridgeClient:
         self.next_event_args = None
         self.clear_events_args = None
         self.power_status_args = None
+        self.move_head_pose_args = None
+        self.home_head_pose_args = None
 
     def get_status(self, meta, timeout: float) -> DeviceStatus:
         if self.timeout:
@@ -67,6 +69,52 @@ class FakeBridgeClient:
     ) -> BridgeCommandResponse:
         if self.timeout:
             raise BridgeBackendTimeout()
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
+
+    def move_head_pose(
+        self,
+        meta,
+        pan_deg: float,
+        tilt_deg: float,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        self.move_head_pose_args = (
+            meta.device_id,
+            pan_deg,
+            tilt_deg,
+            speed,
+            duration_ms,
+            wait,
+            timeout,
+        )
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
+
+    def home_head_pose(
+        self,
+        meta,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        self.home_head_pose_args = (
+            meta.device_id,
+            speed,
+            duration_ms,
+            wait,
+            timeout,
+        )
         return BridgeCommandResponse(
             ok=True,
             result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
@@ -253,6 +301,55 @@ class BridgeBackendTests(unittest.TestCase):
 
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
+
+    def test_bridge_motion_pose_passes_absolute_pose_to_client(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "motion",
+                "pose",
+                "--pan-deg",
+                "30",
+                "--tilt-deg",
+                "20",
+                "--speed",
+                "500",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "motion.pose")
+        self.assertEqual(
+            client.move_head_pose_args,
+            ("default", 30.0, 20.0, 500, 0, False, 5.0),
+        )
+        self.assertIsNone(client.home_head_pose_args)
+
+    def test_bridge_motion_home_uses_home_client_not_pose_zero_alias(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "motion",
+                "home",
+                "--speed",
+                "500",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "motion.home")
+        self.assertEqual(client.home_head_pose_args, ("default", 500, 0, False, 5.0))
+        self.assertIsNone(client.move_head_pose_args)
 
     def test_bridge_say_wait_can_complete(self) -> None:
         code, stdout, stderr = run_stackchanctl(

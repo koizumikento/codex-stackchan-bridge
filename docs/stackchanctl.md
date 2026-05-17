@@ -290,6 +290,8 @@ Rules:
 - `speed` accepts `0..1000`; `0` means firmware default speed.
 - `duration_ms` accepts `0` or `100..2000`; `0` means firmware default.
 - Out-of-range explicit pose values are rejected, not clamped.
+- `motion home` uses firmware-owned home behavior. It is not sent to firmware
+  as an external `pose(0,0)` target.
 - Raw servo ticks, PWM, torque, relative movement, continuous rotation, and
   home calibration are not normal CLI/MCP control surfaces.
 

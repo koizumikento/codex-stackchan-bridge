@@ -155,6 +155,8 @@ def main() -> int:
         require("stackchan_msgs/Result result" in text, f"{action.name} missing result")
         require("float32 progress" in text, f"{action.name} missing progress feedback")
         require("string<=160 message" in text, f"{action.name} missing message feedback")
+        if action.name == "MoveHeadPose.action":
+            require("bool home" in text, "MoveHeadPose missing home mode flag")
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")

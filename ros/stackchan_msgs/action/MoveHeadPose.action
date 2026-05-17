@@ -1,4 +1,5 @@
 stackchan_msgs/CommandMeta meta
+bool home
 float32 pan_deg
 float32 tilt_deg
 uint16 speed

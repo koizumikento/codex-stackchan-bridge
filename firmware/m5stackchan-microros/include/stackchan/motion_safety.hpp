@@ -27,6 +27,7 @@ struct HeadPoseLimits {
   uint16_t max_speed;
   uint32_t min_nonzero_duration_ms;
   uint32_t max_duration_ms;
+  uint32_t min_command_interval_ms;
 };
 
 struct HeadPoseTarget {
@@ -58,6 +59,7 @@ constexpr HeadPoseLimits kDefaultHeadPoseLimits{
     1000,
     100,
     2000,
+    50,
 };
 constexpr HeadPoseTarget kHomeHeadPose{0.0f, 0.0f, 0, 0};
 constexpr uint32_t kMinMotionDurationMs = 100;
@@ -112,10 +114,19 @@ inline HeadPosePlan plan_head_pose(
     float tilt_deg,
     uint16_t speed,
     uint32_t duration_ms,
-    bool calibration_valid = true,
-    bool servo_read_ok = true,
-    bool fault_state = false,
-    HeadPoseLimits limits = kDefaultHeadPoseLimits) {
+    bool pose_slot_available,
+    uint32_t elapsed_since_last_command_ms,
+    bool calibration_valid,
+    bool servo_read_ok,
+    bool fault_state,
+    HeadPoseLimits limits) {
+  if (!pose_slot_available ||
+      elapsed_since_last_command_ms < limits.min_command_interval_ms) {
+    return {
+        Result::rejected("FIRMWARE_BUSY", "head pose command rate limited", true),
+        kHomeHeadPose,
+    };
+  }
   if (!calibration_valid) {
     return {
         Result::rejected("CALIBRATION_INVALID", "head pose calibration is invalid", true),
@@ -145,15 +156,19 @@ inline HeadPosePlan plan_head_pose(
 inline HeadPosePlan plan_head_home(
     uint16_t speed,
     uint32_t duration_ms,
-    bool calibration_valid = true,
-    bool servo_read_ok = true,
-    bool fault_state = false,
-    HeadPoseLimits limits = kDefaultHeadPoseLimits) {
+    bool pose_slot_available,
+    uint32_t elapsed_since_last_command_ms,
+    bool calibration_valid,
+    bool servo_read_ok,
+    bool fault_state,
+    HeadPoseLimits limits) {
   return plan_head_pose(
       kHomeHeadPose.pan_deg,
       kHomeHeadPose.tilt_deg,
       speed,
       duration_ms,
+      pose_slot_available,
+      elapsed_since_last_command_ms,
       calibration_valid,
       servo_read_ok,
       fault_state,

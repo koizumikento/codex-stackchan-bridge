@@ -435,6 +435,7 @@ class RclpyBridgeClient:
     ) -> BridgeCommandResponse:
         goal = self._move_head_pose_type.Goal()
         _copy_meta(goal.meta, meta)
+        goal.home = False
         goal.pan_deg = pan_deg
         goal.tilt_deg = tilt_deg
         goal.speed = speed
@@ -456,12 +457,17 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        return self.move_head_pose(
-            meta,
-            0.0,
-            0.0,
-            speed,
-            duration_ms,
+        goal = self._move_head_pose_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.home = True
+        goal.pan_deg = 0.0
+        goal.tilt_deg = 0.0
+        goal.speed = speed
+        goal.duration_ms = duration_ms
+        return self._send_action_goal(
+            self._move_head_pose_type,
+            f"/stackchan/{meta.device_id}/cmd/motion/pose",
+            goal,
             wait=wait,
             timeout=timeout,
         )

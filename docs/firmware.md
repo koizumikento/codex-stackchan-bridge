@@ -196,8 +196,10 @@ Suggested internal motion model:
 
 Explicit head pose control is a separate safety path from named motion. It uses
 home-frame absolute `pan_deg` and `tilt_deg` values, not StackChan-BSP `X/Y` as
-a planar coordinate system. Firmware converts degrees to BSP units with
-`deg * 10` and calls `M5StackChan.Motion.move(...)` or `goHome(...)`.
+a planar coordinate system. Firmware converts explicit pose degrees to BSP
+units with `deg * 10` and calls `M5StackChan.Motion.move(...)`. `motion home`
+is carried as a separate home mode and calls `goHome(...)`; it must not be
+collapsed into an external `pose(0,0)` command before firmware planning.
 
 Explicit pose safety rules:
 
@@ -214,8 +216,12 @@ Explicit pose safety rules:
   neutral offsets are missing, the home basis is corrupted, servo read fails, or
   firmware is in fault state.
 - At most one pose action may be active per device. Repeated pose commands must
-  be rate-limited or coalesced; safety, neutral, and fault handling preempt all
-  pose commands.
+  be rate-limited or coalesced; the baseline helper rejects unavailable slots or
+  commands inside the minimum interval with `FIRMWARE_BUSY`. Safety, neutral,
+  and fault handling preempt all pose commands.
+- Firmware safety helpers require callers to pass calibration validity, servo
+  read state, fault state, active-slot availability, and elapsed time since the
+  previous pose command. Unknown state should be treated as unsafe.
 
 ### LED
 

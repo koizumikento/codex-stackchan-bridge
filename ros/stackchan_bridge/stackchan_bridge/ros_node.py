@@ -842,20 +842,28 @@ def main(args: list[str] | None = None) -> None:
         def _handle_move_head_pose(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
             meta = _meta_from_ros(request.meta, device_id)
-            command_response = self.facade.move_head_pose(
-                meta,
-                float(request.pan_deg),
-                float(request.tilt_deg),
-                int(request.speed),
-                int(request.duration_ms),
-            )
+            is_home = bool(getattr(request, "home", False))
+            if is_home:
+                command_response = self.facade.home_head_pose(
+                    meta,
+                    int(request.speed),
+                    int(request.duration_ms),
+                )
+            else:
+                command_response = self.facade.move_head_pose(
+                    meta,
+                    float(request.pan_deg),
+                    float(request.tilt_deg),
+                    int(request.speed),
+                    int(request.duration_ms),
+                )
             result = MoveHeadPose.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
                 snapshot = HeadPoseSnapshot(
                     device_id=meta.device_id,
-                    pan_deg=float(request.pan_deg),
-                    tilt_deg=float(request.tilt_deg),
+                    pan_deg=0.0 if is_home else float(request.pan_deg),
+                    tilt_deg=0.0 if is_home else float(request.tilt_deg),
                     moving=False,
                     frame="home",
                     stamp=self.get_clock().now().nanoseconds / 1_000_000_000,
