@@ -545,6 +545,21 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertNotIn("0xDEADBEEF", str(payload))
         self.assertNotIn("04AABB", str(payload))
 
+    def test_bridge_payload_json_redacts_valid_object_secrets_and_images(self) -> None:
+        payload = _payload_from_json(
+            '{"api_key":"sk-test-123","authorization":"Bearer abc","frame":"base64-image",'
+            '"token":"tok","level":3}'
+        )
+
+        self.assertEqual(payload["api_key"], "<redacted>")
+        self.assertEqual(payload["authorization"], "<redacted>")
+        self.assertEqual(payload["frame"], "<redacted>")
+        self.assertEqual(payload["token"], "<redacted>")
+        self.assertEqual(payload["level"], 3)
+        self.assertNotIn("sk-test-123", str(payload))
+        self.assertNotIn("Bearer abc", str(payload))
+        self.assertNotIn("base64-image", str(payload))
+
     def test_bridge_speech_transcript_is_unsupported_until_service_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             [
