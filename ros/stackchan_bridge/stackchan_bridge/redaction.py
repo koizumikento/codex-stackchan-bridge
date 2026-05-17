@@ -85,6 +85,8 @@ def redact_payload_json(
         payload = json.loads(payload_json)
     except json.JSONDecodeError:
         return json.dumps(INVALID_PAYLOAD_MARKER, sort_keys=True)
+    if not isinstance(payload, Mapping):
+        return json.dumps(INVALID_PAYLOAD_MARKER, sort_keys=True)
     return json.dumps(redact_payload(payload, policy=policy), sort_keys=True)
 
 

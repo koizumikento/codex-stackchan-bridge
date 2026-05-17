@@ -122,7 +122,7 @@ def normalize_payload(payload: Mapping[str, Any] | str | None) -> dict[str, Any]
             return dict(INVALID_PAYLOAD_MARKER)
         if isinstance(loaded, Mapping):
             return dict(redact_payload(loaded))
-        return {"value": redact_payload(loaded)}
+        return dict(INVALID_PAYLOAD_MARKER)
     return dict(redact_payload(payload))
 
 

@@ -98,6 +98,20 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("0xDEADBEEF", redacted_json)
         self.assertNotIn("04AABB", redacted_json)
 
+    def test_non_object_payload_json_returns_safe_marker(self) -> None:
+        for raw_payload in (
+            '"raw_ir_code=0xDEADBEEF tag_id=04AABB"',
+            '["raw_ir_code=0xDEADBEEF", "tag_id=04AABB"]',
+        ):
+            with self.subTest(raw_payload=raw_payload):
+                redacted_json = redact_payload_json(raw_payload)
+                redacted = json.loads(redacted_json)
+
+                self.assertTrue(redacted["truncated"])
+                self.assertEqual(redacted["reason"], "payload_json_invalid")
+                self.assertNotIn("0xDEADBEEF", redacted_json)
+                self.assertNotIn("04AABB", redacted_json)
+
 
 if __name__ == "__main__":
     unittest.main()
