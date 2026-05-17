@@ -735,6 +735,10 @@ def _event_from_ros(event) -> Event:
 
 
 def _payload_from_json(payload_json: str) -> dict[str, object]:
+    invalid_marker: dict[str, object] = {
+        "truncated": True,
+        "reason": "payload_json_invalid",
+    }
     if not payload_json:
         return {}
     try:
@@ -742,10 +746,10 @@ def _payload_from_json(payload_json: str) -> dict[str, object]:
 
         loaded = json.loads(payload_json)
     except ValueError:
-        return {"value": payload_json}
+        return invalid_marker
     if isinstance(loaded, dict):
         return loaded
-    return {"value": loaded}
+    return invalid_marker
 
 
 def _stamp_to_iso(stamp) -> str | None:

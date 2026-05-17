@@ -19,6 +19,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
     RclpyBridgeClient,
     _copy_created_at,
     _normalize_action_response,
+    _payload_from_json,
     _power_status_from_ros,
 )
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
@@ -512,6 +513,22 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertEqual(json.loads(stderr)["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(client.clear_events_args, ("default", "codex_skill", 5.0))
+
+    def test_bridge_payload_json_rejects_invalid_and_non_object_payloads(self) -> None:
+        cases = [
+            "raw_ir_code=0xDEADBEEF tag_id=04AABB",
+            '"raw_ir_code=0xDEADBEEF tag_id=04AABB"',
+            '["raw_ir_code=0xDEADBEEF", "tag_id=04AABB"]',
+        ]
+
+        for payload_json in cases:
+            with self.subTest(payload_json=payload_json):
+                payload = _payload_from_json(payload_json)
+
+                self.assertTrue(payload["truncated"])
+                self.assertEqual(payload["reason"], "payload_json_invalid")
+                self.assertNotIn("0xDEADBEEF", str(payload))
+                self.assertNotIn("04AABB", str(payload))
 
     def test_bridge_speech_transcript_is_unsupported_until_service_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
