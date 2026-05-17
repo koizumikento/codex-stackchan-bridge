@@ -57,6 +57,9 @@ Firmware does not own:
 - Individual device calibration lives in firmware NVS.
 - Normal operation tuning lives in ROS package YAML.
 - CLI config must not be required for device safety.
+- Calibration writes, raw hardware controls, NVS export/import, and other
+  maintenance operations must use a documented maintenance path, not the normal
+  Codex-facing command surface.
 
 ## Device Capabilities
 
@@ -79,7 +82,9 @@ Audio playback and capture use actions coordinated with bounded chunks. Chunk du
 
 Camera owns QVGA JPEG snapshot support. Continuous streaming requires a documented resource and transport decision.
 
-NFC reports tag IDs and presence events. Tag meaning belongs on the PC/Codex side.
+NFC reports tag presence and bounded metadata when the contract allows it. Tag
+meaning belongs on the PC/Codex side, and raw identifiers should be minimized or
+redacted outside explicit local diagnostic paths.
 
 IMU exposes raw telemetry plus high-level events such as picked up, shaken, and tilted.
 
@@ -103,6 +108,10 @@ Expected behavior:
 - Camera failure: publish an error and keep motion/audio/safety alive.
 - NFC failure: publish an event/error and keep other capabilities alive.
 - Servo/safety failure: stop motion, move neutral if safe, enter fault, and publish reason.
+
+Firmware events should describe device facts, not application meaning. Do not
+turn NFC tags, IR/remote codes, gestures, speech fragments, or raw sensor values
+into commands on the device.
 
 ## Testing And Validation
 

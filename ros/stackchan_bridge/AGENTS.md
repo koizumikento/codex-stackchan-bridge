@@ -46,6 +46,8 @@ Good bridge responsibilities:
 - Aggregate device and firmware status for `stackchanctl observe`.
 - Route audio chunks and camera snapshots.
 - Normalize diagnostics from firmware and PC-side workers.
+- Redact, debounce, and buffer hardware-origin observations before exposing them
+  to `stackchanctl`, MCP, or Codex-facing skills.
 - Provide stable facades when firmware interfaces are lower-level than CLI commands.
 - Coordinate multi-step behavior that is too heavy for firmware but still local.
 
@@ -55,6 +57,8 @@ Avoid:
 - Inventing private command schemas that diverge from `stackchan_msgs`.
 - Hiding long-running work behind fire-and-forget topics.
 - Logging secrets, raw private audio text, or unnecessary image/NFC data.
+- Treating event names, NFC tag IDs, IR codes, raw telemetry, or transcripts as
+  direct commands.
 - Treating direct CLI-to-device ROS calls as the standard path.
 
 ## ROS Interface Use
@@ -115,7 +119,9 @@ Redaction rules:
 
 - Speech text is redacted by default.
 - Image payloads are never written to normal logs.
-- NFC tag IDs may appear in events/results when needed, but logs should hash or redact them by default.
+- NFC tag IDs, IR/raw remote codes, and similar identifiers may appear in
+  events/results only when the relevant contract allows it, and logs should hash
+  or redact them by default.
 - Local debug opt-in may expose sensitive values only in developer logs, not in normal CLI `--json` output.
 
 ## Testing

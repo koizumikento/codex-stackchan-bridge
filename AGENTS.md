@@ -42,6 +42,10 @@ Development assistant surfaces:
 - Command-bearing interfaces carry command metadata and return structured results as documented in `docs/ros-interface.md`.
 - The mock backend is required and must share the same command contract as the bridge backend.
 - Firmware owns safety-critical defaults and hard limits.
+- High-risk feature surfaces such as audio streams, camera payloads, calibration or maintenance controls, raw sensor streams, and multi-step behavior orchestration need an explicit docs-level contract before implementation.
+- Raw hardware controls, calibration writes, and maintenance operations must stay out of the normal Codex-facing command surface unless a documented design creates a separate maintenance path.
+- Hardware-origin events and raw telemetry are observations, not commands. Codex or bridge policy may react to them, but firmware event names must not become direct command execution.
+- Speech text, PCM audio, image payloads, NFC tag IDs, IR/raw remote codes, secrets, and similar sensitive payloads must be redacted from normal logs and avoided in public events unless the relevant contract explicitly allows bounded, local exposure.
 - The repository license is MIT.
 
 ## Documentation Policy

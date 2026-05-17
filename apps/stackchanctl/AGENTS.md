@@ -25,6 +25,7 @@ This directory owns the Python CLI. Follow this file for package-specific rules,
 - TTS, STT, VAD, or dialog policy.
 - Long-running audio, camera, or IMU streaming workers.
 - Raw `ros2` command strings as the public API.
+- Calibration writes or raw hardware maintenance controls as part of the normal command surface.
 
 ## Language And Runtime
 
@@ -72,6 +73,15 @@ Expected command groups:
 - `mcp serve`
 
 Keep camera capture, NFC wait, and IMU streaming as explicit commands. Do not hide them inside `observe`.
+
+Separate maintenance/debug/calibration commands from normal expression and
+observation commands. If a maintenance surface is introduced, make it explicit
+in docs, mock behavior, JSON shape, and Codex skill restrictions before wiring it
+to firmware.
+
+Do not print speech text, PCM payloads, image payloads, NFC tag IDs, IR/raw
+remote codes, or secrets in normal output. `--json` should expose only bounded,
+contracted fields and should preserve redaction rules used by the bridge.
 
 ## Backends
 
