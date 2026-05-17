@@ -10,6 +10,7 @@ from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import CommandMeta, Result
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
+from stackchan_bridge.telemetry import PowerStatusSnapshot, PowerTelemetryStore
 
 EVENT_QOS_DEPTH = 32
 
@@ -129,8 +130,41 @@ def _copy_records(response: object, event_type: object, records: tuple[EventReco
 def _copy_transcript(response: object, transcript: SpeechTranscript) -> None:
     response.utterance_id = transcript.utterance_id
     response.transcript = transcript.text
-    response.confidence = 1.0
+    response.confidence = transcript.confidence
     _copy_seconds_to_stamp(response.expires_at, transcript.expires_at)
+
+
+def _snapshot_from_power_status(status: object, *, fallback_device_id: str) -> PowerStatusSnapshot:
+    stamp = _stamp_to_seconds(getattr(status, "stamp", None))
+    return PowerStatusSnapshot(
+        device_id=getattr(status, "device_id", "") or fallback_device_id,
+        voltage_v=float(getattr(status, "voltage_v", float("nan"))),
+        current_ma=float(getattr(status, "current_ma", float("nan"))),
+        power_mw=float(getattr(status, "power_mw", float("nan"))),
+        percentage=float(getattr(status, "percentage", float("nan"))),
+        power_source=int(getattr(status, "power_source", 0)),
+        charging=bool(getattr(status, "charging", False)),
+        powered=bool(getattr(status, "powered", False)),
+        low_battery=bool(getattr(status, "low_battery", False)),
+        brownout_risk=bool(getattr(status, "brownout_risk", False)),
+        fault_code=getattr(status, "fault_code", ""),
+        stamp=stamp if stamp is not None else 0.0,
+    )
+
+
+def _copy_power_status(target: object, snapshot: PowerStatusSnapshot) -> None:
+    target.device_id = snapshot.device_id
+    _copy_seconds_to_stamp(target.stamp, snapshot.stamp)
+    target.voltage_v = snapshot.voltage_v
+    target.current_ma = snapshot.current_ma
+    target.power_mw = snapshot.power_mw
+    target.percentage = snapshot.percentage
+    target.power_source = snapshot.power_source
+    target.charging = snapshot.charging
+    target.powered = snapshot.powered
+    target.low_battery = snapshot.low_battery
+    target.brownout_risk = snapshot.brownout_risk
+    target.fault_code = snapshot.fault_code
 
 
 def main(args: list[str] | None = None) -> None:
@@ -139,9 +173,10 @@ def main(args: list[str] | None = None) -> None:
         from rclpy.action import ActionServer
         from rclpy.node import Node
         from stackchan_msgs.action import CaptureAudio, CaptureCamera, PlayAudio, RunMotion, Say
-        from stackchan_msgs.msg import StackChanEvent
+        from stackchan_msgs.msg import LightRaw, PowerStatus, ProximityRaw, StackChanEvent, TouchState
         from stackchan_msgs.srv import (
             ClearEventCursor,
+            GetPowerStatus,
             GetStatus,
             GetTranscript,
             ListEvents,
@@ -176,9 +211,13 @@ def main(args: list[str] | None = None) -> None:
             self.event_buffer = EventBuffer()
             self.event_aggregator = EventAggregator(self.event_buffer)
             self.transcript_store = SpeechTranscriptStore()
+            self.power_store = PowerTelemetryStore()
             self._stackchan_event_type = StackChanEvent
             self._public_event_publishers = {}
             self._device_event_subscriptions = []
+            self._telemetry_publishers = {}
+            self._telemetry_subscriptions = []
+            self._power_status_type = PowerStatus
             self._action_servers = []
             for device_id in configured_device_ids:
                 self._create_device_resources(device_id)
@@ -248,11 +287,24 @@ def main(args: list[str] | None = None) -> None:
                     response,
                 ),
             )
+            self.create_service(
+                GetPowerStatus,
+                f"{prefix}/power/status",
+                lambda request, response, device_id=device_id: self._handle_get_power_status(
+                    device_id,
+                    request,
+                    response,
+                ),
+            )
             self._public_event_publishers[device_id] = self.create_publisher(
                 StackChanEvent,
                 f"/stackchan/{device_id}/events",
                 EVENT_QOS_DEPTH,
             )
+            self._create_telemetry_relay(device_id, "touch/state", TouchState, 1)
+            self._create_telemetry_relay(device_id, "proximity/raw", ProximityRaw, 10)
+            self._create_telemetry_relay(device_id, "light/raw", LightRaw, 5)
+            self._create_telemetry_relay(device_id, "power/status", PowerStatus, 1)
             self._device_event_subscriptions.append(
                 self.create_subscription(
                     StackChanEvent,
@@ -426,6 +478,71 @@ def main(args: list[str] | None = None) -> None:
             _copy_result(response.result, Result.completed("transcript found"))
             _copy_transcript(response, transcript)
             return response
+
+        def _handle_get_power_status(
+            self,
+            device_id: str,
+            request: object,
+            response: object,
+        ) -> object:
+            del request
+            snapshot, stale = self.power_store.get(device_id)
+            if snapshot is None:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "UNSUPPORTED_FEATURE",
+                        f"power telemetry for '{device_id}' has not been received",
+                    ),
+                )
+                response.stale = False
+                return response
+            if stale:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "STALE_TELEMETRY",
+                        f"power telemetry for '{device_id}' is stale",
+                        recoverable=True,
+                    ),
+                )
+            else:
+                _copy_result(response.result, Result.completed("power status found"))
+            _copy_power_status(response.status, snapshot)
+            response.stale = stale
+            return response
+
+        def _create_telemetry_relay(self, device_id: str, tail: str, message_type: object, depth: int) -> None:
+            public_topic = f"/stackchan/{device_id}/{tail}"
+            device_topic = f"/stackchan/{device_id}/device/{tail}"
+            publisher = self.create_publisher(message_type, public_topic, depth)
+            self._telemetry_publishers[(device_id, tail)] = publisher
+            self._telemetry_subscriptions.append(
+                self.create_subscription(
+                    message_type,
+                    device_topic,
+                    lambda message, device_id=device_id, tail=tail, publisher=publisher: self._handle_telemetry(
+                        device_id,
+                        tail,
+                        message,
+                        publisher,
+                    ),
+                    depth,
+                )
+            )
+
+        def _handle_telemetry(
+            self,
+            device_id: str,
+            tail: str,
+            message: object,
+            publisher: object,
+        ) -> None:
+            if getattr(message, "device_id", "") != device_id:
+                message.device_id = device_id
+            if tail == "power/status":
+                self.power_store.update(_snapshot_from_power_status(message, fallback_device_id=device_id))
+            publisher.publish(message)
 
         def _handle_device_event(self, device_id: str, event: object) -> None:
             payload_json = getattr(event, "payload_json", "")

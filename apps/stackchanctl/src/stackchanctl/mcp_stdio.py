@@ -38,6 +38,7 @@ SUPPORTED_TOOLS = (
     "events_next",
     "events_clear",
     "speech_get_transcript",
+    "power_status",
 )
 _EXIT = object()
 
@@ -261,6 +262,9 @@ def _build_tool_request(
         if not utterance_id:
             raise ValueError("utterance_id is required")
         command_args = {"utterance_id": utterance_id}
+    elif name == "power_status":
+        command_type = CommandType.POWER_STATUS
+        command_args = {}
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"unknown tool: {name}")
 
@@ -416,6 +420,8 @@ def _tool_description(name: str) -> str:
         return f"Read stackchanctl {name.replace('_', ' ')} through the configured backend."
     if name == "speech_get_transcript":
         return "Read a speech transcript through the configured backend."
+    if name == "power_status":
+        return "Read StackChan power telemetry through the configured backend."
     return f"Send stackchanctl {name} through the configured backend."
 
 

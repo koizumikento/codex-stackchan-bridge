@@ -237,6 +237,35 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(payload["command_id"], "cmd-test-0001")
         self.assertEqual(payload["error"]["code"], "TRANSCRIPT_NOT_FOUND")
 
+    def test_power_status_mock_json_is_strict_and_deterministic(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["power", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(payload["device_id"], "default")
+        self.assertEqual(payload["power"]["power_source"], "usb")
+        self.assertTrue(payload["power"]["charging"])
+        self.assertIsNone(payload["power"]["percentage"])
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+
+    def test_power_status_stale_mock_json_is_structured_error(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "stale_power", "power", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "STALE_TELEMETRY")
+        self.assertTrue(payload["error"]["recoverable"])
+        self.assertTrue(payload["power"]["stale"])
+
     def test_camera_quality_failure_is_recoverable(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["camera", "capture", "--output", "frame.jpg", "--quality", "99", "--json"],

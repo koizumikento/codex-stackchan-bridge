@@ -19,6 +19,7 @@ from stackchanctl.contract import (
     CommandType,
     DeviceStatus,
     EventListResult,
+    PowerStatusResult,
     Priority,
     TranscriptResult,
     utc_timestamp,
@@ -171,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     imu_stream = imu_subparsers.add_parser("stream")
     imu_stream.add_argument("--hz", type=finite_float, default=10.0)
 
+    power = subparsers.add_parser("power")
+    power_subparsers = power.add_subparsers(dest="power_command", required=True)
+    power_subparsers.add_parser("status")
+
     events = subparsers.add_parser("events")
     events_subparsers = events.add_subparsers(dest="events_command", required=True)
     events_list = events_subparsers.add_parser("list")
@@ -219,6 +224,8 @@ def build_request(
             command_type = CommandType(f"events-{args.events_command}")
     elif args.command == "speech":
         command_type = CommandType(f"speech-{args.speech_command}")
+    elif args.command == "power":
+        command_type = CommandType(f"power-{args.power_command}")
     else:
         command_type = CommandType(args.command)
     meta = CommandMeta(
@@ -263,6 +270,8 @@ def build_request(
         command_args = {"consumer_id": source}
     elif command_type is CommandType.SPEECH_TRANSCRIPT:
         command_args = {"utterance_id": args.utterance_id.strip()}
+    elif command_type is CommandType.POWER_STATUS:
+        command_args = {}
     else:
         command_args = {}
 
@@ -276,7 +285,7 @@ def build_request(
 
 
 def render(
-    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult,
+    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult,
     *,
     json_output: bool,
     stdout: TextIO,
@@ -327,6 +336,19 @@ def render(
         )
         return
 
+    if isinstance(result, PowerStatusResult):
+        if not result.ok:
+            _render_error_result(result.device_id, result.error, stderr)
+            return
+        source = result.power_source
+        voltage = "unknown" if result.voltage_v is None else f"{result.voltage_v:.2f}V"
+        current = "unknown" if result.current_ma is None else f"{result.current_ma:.1f}mA"
+        stdout.write(
+            f"power device={result.device_id} source={source} voltage={voltage} "
+            f"current={current} charging={str(result.charging).lower()}\n"
+        )
+        return
+
     command = result.command.get("type", "command")
     if result.ok:
         stdout.write(
@@ -343,8 +365,10 @@ def render(
     )
 
 
-def _is_failed_result(result: CommandResult | DeviceStatus | EventListResult | TranscriptResult) -> bool:
-    return isinstance(result, (CommandResult, EventListResult, TranscriptResult)) and not result.ok
+def _is_failed_result(
+    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult,
+) -> bool:
+    return isinstance(result, (CommandResult, EventListResult, TranscriptResult, PowerStatusResult)) and not result.ok
 
 
 def _render_error_result(device_id: str, error, stderr: TextIO) -> None:

@@ -6,13 +6,16 @@ from types import SimpleNamespace
 
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    _copy_power_status,
     _copy_event_record,
     _configured_device_records,
+    _snapshot_from_power_status,
     _records_after_event_id,
     _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
 )
+from stackchan_bridge.telemetry import PowerStatusSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,14 +95,21 @@ class RosNodeHelperTests(unittest.TestCase):
             "NextEvent",
             "ClearEventCursor",
             "GetTranscript",
+            "GetPowerStatus",
+            "TouchState",
+            "ProximityRaw",
+            "LightRaw",
+            "PowerStatus",
             "StackChanEvent",
             "EVENT_QOS_DEPTH = 32",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",
             "/speech/transcript/get",
+            "/power/status",
             "/events",
             "/device/events",
+            "device/{tail}",
         ):
             self.assertIn(name, source)
 
@@ -107,6 +117,39 @@ class RosNodeHelperTests(unittest.TestCase):
             "record = self.event_aggregator.add(\n                device_id,",
             source,
         )
+
+    def test_power_status_helpers_copy_ros_like_shapes(self) -> None:
+        message = type(
+            "Power",
+            (),
+            {
+                "device_id": "",
+                "stamp": type("Stamp", (), {"sec": 1778889601, "nanosec": 0})(),
+                "voltage_v": 4.9,
+                "current_ma": 180.0,
+                "power_mw": 882.0,
+                "percentage": float("nan"),
+                "power_source": 2,
+                "charging": True,
+                "powered": True,
+                "low_battery": False,
+                "brownout_risk": False,
+                "fault_code": "",
+            },
+        )()
+
+        snapshot = _snapshot_from_power_status(message, fallback_device_id="default")
+
+        self.assertEqual(snapshot.device_id, "default")
+        self.assertEqual(snapshot.power_source, 2)
+
+        target = type("Target", (), {"stamp": type("Stamp", (), {"sec": 0, "nanosec": 0})()})()
+        _copy_power_status(target, PowerStatusSnapshot("desk", voltage_v=3.7, stamp=1.5))
+
+        self.assertEqual(target.device_id, "desk")
+        self.assertEqual(target.voltage_v, 3.7)
+        self.assertEqual(target.stamp.sec, 1)
+        self.assertEqual(target.stamp.nanosec, 500000000)
 
 
 if __name__ == "__main__":

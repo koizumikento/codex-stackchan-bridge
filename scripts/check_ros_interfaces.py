@@ -11,10 +11,15 @@ EXPECTED_INTERFACES = [
     "msg/CommandMeta.msg",
     "msg/CompressedImagePayload.msg",
     "msg/ImuRaw.msg",
+    "msg/LightRaw.msg",
+    "msg/PowerStatus.msg",
+    "msg/ProximityRaw.msg",
     "msg/Result.msg",
     "msg/StackChanEvent.msg",
     "msg/StackChanStatus.msg",
+    "msg/TouchState.msg",
     "srv/ClearEventCursor.srv",
+    "srv/GetPowerStatus.srv",
     "srv/GetTranscript.srv",
     "srv/GetStatus.srv",
     "srv/ListEvents.srv",
@@ -92,6 +97,12 @@ SERVICE_FIELDS = {
         "float32 confidence",
         "builtin_interfaces/Time expires_at",
     ],
+    "GetPowerStatus.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/PowerStatus status",
+        "bool stale",
+    ],
     "GetStatus.srv": [
         "stackchan_msgs/CommandMeta meta",
         "string<=32 device_id",
@@ -138,6 +149,39 @@ def main() -> int:
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")
+
+    for message_name, fields in {
+        "TouchState.msg": [
+            "string<=32 device_id",
+            "builtin_interfaces/Time stamp",
+            "uint8[<=3] intensities",
+            "string<=32 surface",
+        ],
+        "ProximityRaw.msg": [
+            "string<=32 device_id",
+            "builtin_interfaces/Time stamp",
+            "float32 distance_m",
+            "uint16 raw",
+        ],
+        "LightRaw.msg": [
+            "string<=32 device_id",
+            "builtin_interfaces/Time stamp",
+            "float32 illuminance_lux",
+            "uint16 raw",
+        ],
+        "PowerStatus.msg": [
+            "string<=32 device_id",
+            "builtin_interfaces/Time stamp",
+            "float32 voltage_v",
+            "float32 current_ma",
+            "float32 power_mw",
+            "float32 percentage",
+            "string<=32 fault_code",
+        ],
+    }.items():
+        text = (MSGS / "msg" / message_name).read_text()
+        for field in fields:
+            require(field in text, f"{message_name} missing {field}")
 
     image = (MSGS / "msg" / "CompressedImagePayload.msg").read_text()
     require("uint8[<=98304] data" in image, "camera payload bound drifted")

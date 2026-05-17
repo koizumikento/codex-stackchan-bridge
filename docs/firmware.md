@@ -310,6 +310,21 @@ Baseline high-level IMU events:
 - `face_up`
 - `face_down`
 
+Official StackChan K151 observability also includes:
+
+- Si12T three-zone touch state on `/stackchan/<device_id>/device/touch/state`
+- LTR-553ALS-WA proximity telemetry on `/stackchan/<device_id>/device/proximity/raw`
+- LTR-553ALS-WA ambient light telemetry on `/stackchan/<device_id>/device/light/raw`
+- IR receiver/transmitter semantic events such as `remote_button_pressed`,
+  `remote_command_received`, `ir_transmit_finished`, and `ir_transmit_failed`
+- INA226 battery monitor and AXP2101 power-management telemetry on
+  `/stackchan/<device_id>/device/power/status`
+
+Firmware should publish the numeric telemetry at low rates and queue the
+corresponding high-level events without blocking safety, motion-neutral, or
+fault handling. Raw IR code/protocol dumps are debug-only and not part of the
+normal ROS/Codex contract.
+
 ### Device-side event publishing
 
 Firmware publishes hardware-origin high-level events to
@@ -335,6 +350,14 @@ Baseline firmware event sources:
 - audio device errors: `mic_overrun`, `audio_playback_underrun`,
   `audio_capture_started`, `audio_capture_finished`, `audio_capture_failed`
 - device health: `camera_capture_failed`, `battery_low`, `transport_unstable`
+- touch/proximity/light: `touched`, `touch_released`, `touch_held`,
+  `proximity_near`, `proximity_clear`, `light_changed`, `dark_detected`,
+  `bright_detected`
+- remote/IR: `remote_button_pressed`, `remote_button_released`,
+  `remote_button_held`, `remote_command_received`, `ir_transmit_started`,
+  `ir_transmit_finished`, `ir_transmit_failed`
+- power: `battery_recovered`, `charging_started`, `charging_stopped`,
+  `power_source_changed`, `brownout_risk`, `power_fault`
 
 `button_held` uses a firmware-owned 700 ms default threshold. Bridge may
 coalesce repeated events, but hardware bounce belongs on the device side.

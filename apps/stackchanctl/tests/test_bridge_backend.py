@@ -26,6 +26,7 @@ from stackchanctl.contract import (  # noqa: E402
     DeviceStatus,
     ErrorDetail,
     EventListResult,
+    PowerStatusResult,
     ResultState,
     TranscriptResult,
 )
@@ -41,6 +42,7 @@ class FakeBridgeClient:
         self.list_events_args = None
         self.next_event_args = None
         self.clear_events_args = None
+        self.power_status_args = None
 
     def get_status(self, meta, timeout: float) -> DeviceStatus:
         if self.timeout:
@@ -134,6 +136,26 @@ class FakeBridgeClient:
                 message="bridge facade does not implement transcripts yet",
                 recoverable=False,
             ),
+        )
+
+    def get_power_status(self, meta, timeout: float) -> PowerStatusResult:
+        self.power_status_args = (meta.device_id, meta.command_id, timeout)
+        return PowerStatusResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=meta.device_id,
+            voltage_v=4.9,
+            current_ma=180.0,
+            power_mw=882.0,
+            percentage=None,
+            power_source="usb",
+            charging=True,
+            powered=True,
+            low_battery=False,
+            brownout_risk=False,
+            stale=False,
+            stamp="2026-05-16T00:00:00Z",
+            meta=meta,
         )
 
     @staticmethod
@@ -413,6 +435,19 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["device_id"], "default")
         self.assertEqual(payload["utterance_id"], "u-1")
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+
+    def test_bridge_power_status_uses_client_shape(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "power", "status", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["power"]["power_source"], "usb")
+        self.assertEqual(payload["power"]["voltage_v"], 4.9)
+        self.assertEqual(client.power_status_args, ("default", "cmd-test-0001", 5.0))
 
     def test_non_wait_action_normalizes_success_after_facade_validation(self) -> None:
         response = _normalize_action_response(

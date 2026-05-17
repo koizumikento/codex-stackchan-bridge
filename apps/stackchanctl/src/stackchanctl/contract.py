@@ -30,6 +30,7 @@ class CommandType(StrEnum):
     EVENTS_NEXT = "events-next"
     EVENTS_CLEAR = "events-clear"
     SPEECH_TRANSCRIPT = "speech-transcript"
+    POWER_STATUS = "power-status"
     AUDIO_PLAY = "audio-play"
     AUDIO_CAPTURE = "audio-capture"
     CAMERA_CAPTURE = "camera-capture"
@@ -191,6 +192,53 @@ class TranscriptResult:
             "transcript": self.transcript,
             "confidence": self.confidence,
             "expires_at": self.expires_at,
+        }
+        if self.error is not None:
+            payload["error"] = self.error.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class PowerStatusResult:
+    ok: bool
+    result_state: ResultState
+    device_id: str
+    voltage_v: float | None
+    current_ma: float | None
+    power_mw: float | None
+    percentage: float | None
+    power_source: str
+    charging: bool
+    powered: bool
+    low_battery: bool
+    brownout_risk: bool
+    fault_code: str | None = None
+    stale: bool = False
+    stamp: str | None = None
+    meta: CommandMeta | None = None
+    error: ErrorDetail | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "result_state": self.result_state.value,
+            "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
+            "power": {
+                "voltage_v": self.voltage_v,
+                "current_ma": self.current_ma,
+                "power_mw": self.power_mw,
+                "percentage": self.percentage,
+                "power_source": self.power_source,
+                "charging": self.charging,
+                "powered": self.powered,
+                "low_battery": self.low_battery,
+                "brownout_risk": self.brownout_risk,
+                "fault_code": self.fault_code,
+                "stale": self.stale,
+                "stamp": self.stamp,
+            },
         }
         if self.error is not None:
             payload["error"] = self.error.to_dict()

@@ -39,6 +39,27 @@ enum class DeviceEventKind : uint8_t {
   AudioCaptureFailed,
   CameraCaptureFailed,
   BatteryLow,
+  BatteryRecovered,
+  ChargingStarted,
+  ChargingStopped,
+  PowerSourceChanged,
+  BrownoutRisk,
+  PowerFault,
+  Touched,
+  TouchReleased,
+  TouchHeld,
+  ProximityNear,
+  ProximityClear,
+  LightChanged,
+  DarkDetected,
+  BrightDetected,
+  RemoteButtonPressed,
+  RemoteButtonReleased,
+  RemoteButtonHeld,
+  RemoteCommandReceived,
+  IrTransmitStarted,
+  IrTransmitFinished,
+  IrTransmitFailed,
   TransportUnstable,
 };
 
@@ -94,6 +115,48 @@ inline const char* device_event_name(DeviceEventKind kind) {
       return "camera_capture_failed";
     case DeviceEventKind::BatteryLow:
       return "battery_low";
+    case DeviceEventKind::BatteryRecovered:
+      return "battery_recovered";
+    case DeviceEventKind::ChargingStarted:
+      return "charging_started";
+    case DeviceEventKind::ChargingStopped:
+      return "charging_stopped";
+    case DeviceEventKind::PowerSourceChanged:
+      return "power_source_changed";
+    case DeviceEventKind::BrownoutRisk:
+      return "brownout_risk";
+    case DeviceEventKind::PowerFault:
+      return "power_fault";
+    case DeviceEventKind::Touched:
+      return "touched";
+    case DeviceEventKind::TouchReleased:
+      return "touch_released";
+    case DeviceEventKind::TouchHeld:
+      return "touch_held";
+    case DeviceEventKind::ProximityNear:
+      return "proximity_near";
+    case DeviceEventKind::ProximityClear:
+      return "proximity_clear";
+    case DeviceEventKind::LightChanged:
+      return "light_changed";
+    case DeviceEventKind::DarkDetected:
+      return "dark_detected";
+    case DeviceEventKind::BrightDetected:
+      return "bright_detected";
+    case DeviceEventKind::RemoteButtonPressed:
+      return "remote_button_pressed";
+    case DeviceEventKind::RemoteButtonReleased:
+      return "remote_button_released";
+    case DeviceEventKind::RemoteButtonHeld:
+      return "remote_button_held";
+    case DeviceEventKind::RemoteCommandReceived:
+      return "remote_command_received";
+    case DeviceEventKind::IrTransmitStarted:
+      return "ir_transmit_started";
+    case DeviceEventKind::IrTransmitFinished:
+      return "ir_transmit_finished";
+    case DeviceEventKind::IrTransmitFailed:
+      return "ir_transmit_failed";
     case DeviceEventKind::TransportUnstable:
       return "transport_unstable";
   }
@@ -123,6 +186,27 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "audio_capture_failed") == 0 ||
          strcmp(name, "camera_capture_failed") == 0 ||
          strcmp(name, "battery_low") == 0 ||
+         strcmp(name, "battery_recovered") == 0 ||
+         strcmp(name, "charging_started") == 0 ||
+         strcmp(name, "charging_stopped") == 0 ||
+         strcmp(name, "power_source_changed") == 0 ||
+         strcmp(name, "brownout_risk") == 0 ||
+         strcmp(name, "power_fault") == 0 ||
+         strcmp(name, "touched") == 0 ||
+         strcmp(name, "touch_released") == 0 ||
+         strcmp(name, "touch_held") == 0 ||
+         strcmp(name, "proximity_near") == 0 ||
+         strcmp(name, "proximity_clear") == 0 ||
+         strcmp(name, "light_changed") == 0 ||
+         strcmp(name, "dark_detected") == 0 ||
+         strcmp(name, "bright_detected") == 0 ||
+         strcmp(name, "remote_button_pressed") == 0 ||
+         strcmp(name, "remote_button_released") == 0 ||
+         strcmp(name, "remote_button_held") == 0 ||
+         strcmp(name, "remote_command_received") == 0 ||
+         strcmp(name, "ir_transmit_started") == 0 ||
+         strcmp(name, "ir_transmit_finished") == 0 ||
+         strcmp(name, "ir_transmit_failed") == 0 ||
          strcmp(name, "transport_unstable") == 0;
 }
 
@@ -333,6 +417,18 @@ class EventPublisher {
 
   Result audio_capture_failed(uint32_t stamp_ms, const char* command_id = "") {
     return publish(DeviceEventKind::AudioCaptureFailed, stamp_ms, command_id);
+  }
+
+  Result power_fault(uint32_t stamp_ms, const char* fault_code) {
+    char payload[kEventPayloadJsonMaxLength + 1];
+    make_string_payload(payload, sizeof(payload), "fault_code", fault_code);
+    return publish(DeviceEventKind::PowerFault, stamp_ms, "", payload);
+  }
+
+  Result remote_command_received(uint32_t stamp_ms, const char* command) {
+    char payload[kEventPayloadJsonMaxLength + 1];
+    make_string_payload(payload, sizeof(payload), "command", command);
+    return publish(DeviceEventKind::RemoteCommandReceived, stamp_ms, "", payload);
   }
 
  private:

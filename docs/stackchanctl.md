@@ -185,6 +185,7 @@ Initial tools:
 - `events_next`
 - `events_clear`
 - `speech_get_transcript`
+- `power_status`
 
 MCP mode defaults `source` to `mcp_agent`. `command_id` is generated per tool
 call and must not be copied from the MCP JSON-RPC request id.
@@ -199,6 +200,7 @@ stackchanctl led progress
 stackchanctl observe
 stackchanctl events next --json
 stackchanctl speech transcript mock-utt-001 --json
+stackchanctl power status --json
 stackchanctl --device desk face happy
 ```
 
@@ -354,6 +356,43 @@ stackchanctl speech transcript <utterance_id> --json
 ```
 
 The bridge stores transcripts in memory with a default 10 minute TTL.
+
+### Power commands
+
+Power telemetry is read explicitly instead of being folded into `observe`.
+
+```bash
+stackchanctl power status --json
+```
+
+The command returns the latest bridge-observed power status from
+`/stackchan/<device_id>/cmd/power/status`. JSON output uses strict JSON:
+unsupported numeric ROS fields such as NaN battery percentage are rendered as
+`null`.
+
+Example JSON shape:
+
+```json
+{
+  "ok": true,
+  "result_state": "COMPLETED",
+  "device_id": "default",
+  "power": {
+    "voltage_v": 4.92,
+    "current_ma": 184.0,
+    "power_mw": 905.3,
+    "percentage": null,
+    "power_source": "usb",
+    "charging": true,
+    "powered": true,
+    "low_battery": false,
+    "brownout_risk": false,
+    "fault_code": null,
+    "stale": false,
+    "stamp": "2026-05-16T00:00:03Z"
+  }
+}
+```
 
 ### Audio commands
 

@@ -13,6 +13,7 @@ stackchanctl say "hello"
 stackchanctl face happy
 stackchanctl motion nod
 stackchanctl led progress
+stackchanctl power status --json
 ```
 
 MCP hosts can use the same command contract through local stdio:

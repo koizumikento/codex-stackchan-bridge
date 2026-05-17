@@ -21,6 +21,9 @@ class SpeechTranscript:
     command_id: str = ""
     voice: str = ""
     source: str = ""
+    confidence: float = 1.0
+    language: str = ""
+    intent_hint: str = ""
 
 
 class SpeechTranscriptStore:
@@ -47,6 +50,9 @@ class SpeechTranscriptStore:
         command_id: str = "",
         voice: str = "",
         source: str = "",
+        confidence: float = 1.0,
+        language: str = "",
+        intent_hint: str = "",
     ) -> SpeechTranscript:
         """Store a transcript until TTL expiry."""
 
@@ -58,6 +64,9 @@ class SpeechTranscriptStore:
             text=text,
             voice=voice,
             source=source,
+            confidence=confidence,
+            language=language,
+            intent_hint=intent_hint,
             created_at=now,
             expires_at=now + self.ttl_seconds,
             command_id=command_id,
