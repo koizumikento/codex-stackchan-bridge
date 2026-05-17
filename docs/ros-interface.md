@@ -256,28 +256,98 @@ Fields:
 
 ### `/stackchan/<device_id>/events`
 
-Purpose: publish high-level device events useful to Codex and PC-side orchestration.
+Purpose: publish normalized high-level events useful to Codex and PC-side orchestration.
+
+This is a public bridge-owned topic. Firmware does not publish directly to this
+topic during normal operation; it publishes hardware-origin observations to
+`/stackchan/<device_id>/device/events`, and `stackchan_bridge` normalizes,
+redacts, debounces, buffers, and republishes them here.
 
 Fields:
 
+- `event_id`
 - `device_id`
 - `event_name`
+- `source`
 - `stamp`
 - `command_id`
 - `payload_json`
 
-Baseline event names:
+IDL constraints:
+
+- `event_id` is `string<=36`.
+- `device_id` and `event_name` are `string<=32`.
+- `source` is `string<=32`.
+- `command_id` is `string<=36`.
+- `payload_json` remains `string<=256`.
+
+Field semantics:
+
+- `event_id`: event correlation id. Bridge must set one on public events and
+  may preserve a firmware-provided id when valid.
+- `device_id`: selected StackChan device id.
+- `event_name`: bounded known event name.
+- `source`: recommended values include `firmware`, `bridge`,
+  `speech_session`, and `test`.
+- `stamp`: event occurrence time. Bridge may use receive time when a device
+  timestamp is unavailable or unreliable.
+- `command_id`: command correlation id for command-origin events. Sensor-origin
+  events may leave this empty.
+- `payload_json`: bounded metadata only. It must not carry speech transcripts,
+  image payloads, PCM audio, or large data.
+
+Baseline firmware/device event names:
 
 - `picked_up`
+- `placed_down`
 - `shaken`
 - `tilted`
+- `face_up`
+- `face_down`
+- `button_pressed`
+- `button_released`
+- `button_held`
 - `nfc_detected`
 - `nfc_removed`
-- `audio_started`
-- `audio_finished`
+- `nfc_read_failed`
+- `mic_overrun`
+- `audio_playback_underrun`
+- `audio_capture_started`
+- `audio_capture_finished`
+- `audio_capture_failed`
 - `camera_capture_failed`
+- `battery_low`
+- `transport_unstable`
 
-`payload_json` is bounded to 256 characters. Use it only for small metadata, not image or audio payloads.
+Baseline bridge/PC event names:
+
+- `speech_detected`
+- `transcript_ready`
+- `transcript_failed`
+- `tts_started`
+- `tts_finished`
+- `tts_failed`
+- `device_connected`
+- `device_disconnected`
+- `device_conflict_detected`
+
+`transcript_ready` carries an `utterance_id` in `payload_json`; full transcript
+text is retrieved through the speech transcript query service, not embedded in
+the event.
+
+### `/stackchan/<device_id>/device/events`
+
+Purpose: carry hardware-origin high-level events from firmware to the bridge.
+
+Fields mirror `StackChanEvent`.
+
+Rules:
+
+- Firmware publishes only device facts such as button, IMU posture/activity,
+  NFC presence, battery, transport, camera error, and audio buffer events.
+- Firmware must not assign application meaning to tags, gestures, or speech.
+- Bridge owns public normalization, redaction, and consumer buffering.
+- Firmware may leave `event_id` empty; bridge fills it before republishing.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -341,7 +411,15 @@ Response fields:
 
 Purpose: return the latest status snapshot for `stackchanctl observe`.
 
+Request fields:
+
+- `meta`
+
 Response fields mirror `/stackchan/<device_id>/status`.
+
+IDL constraints:
+
+- `meta` is `stackchan_msgs/CommandMeta`.
 
 Device-side service mirrors:
 
@@ -349,6 +427,109 @@ Device-side service mirrors:
 - `/stackchan/<device_id>/device/led/set`
 
 The bridge facade may reject requests before forwarding them if metadata, device availability, priority, or policy checks fail.
+
+### `/stackchan/<device_id>/cmd/events/list`
+
+Purpose: return recent buffered public events for one device.
+
+Service type: `stackchan_msgs/srv/ListEvents`.
+
+Request fields:
+
+- `meta`
+- `limit`
+- `since_event_id`
+
+Response fields:
+
+- `result`
+- `events`
+- `cursor`
+
+IDL constraints:
+
+- `limit` is `uint8`, with service constant `MAX_EVENTS=32`.
+- `meta` is `stackchan_msgs/CommandMeta`.
+- `since_event_id` and `cursor` are `string<=36`.
+- `events` is `StackChanEvent[<=32]`.
+
+### `/stackchan/<device_id>/cmd/events/next`
+
+Purpose: return the next unread public event for a consumer cursor.
+
+Service type: `stackchan_msgs/srv/NextEvent`.
+
+Request fields:
+
+- `meta`
+- `consumer_id`
+- `after_event_id`
+- `timeout_ms`
+
+Response fields:
+
+- `result`
+- `events`
+- `cursor`
+
+No unread event is a successful empty event list, not a protocol error.
+
+IDL constraints:
+
+- `consumer_id` is `string<=64`.
+- `meta` is `stackchan_msgs/CommandMeta`.
+- `after_event_id` and `cursor` are `string<=36`.
+- `events` is `StackChanEvent[<=1]`.
+
+### `/stackchan/<device_id>/cmd/events/clear_cursor`
+
+Purpose: clear the caller's unread cursor without deleting the bridge event ring buffer.
+
+Service type: `stackchan_msgs/srv/ClearEventCursor`.
+
+Request fields:
+
+- `meta`
+- `consumer_id`
+
+Response fields:
+
+- `result`
+- `cursor`
+
+IDL constraints:
+
+- `consumer_id` is `string<=64`.
+- `meta` is `stackchan_msgs/CommandMeta`.
+- `cursor` is `string<=36`.
+
+### `/stackchan/<device_id>/cmd/speech/transcript/get`
+
+Purpose: retrieve a transcript by `utterance_id` after a `transcript_ready` event.
+
+Service type: `stackchan_msgs/srv/GetTranscript`.
+
+Request fields:
+
+- `meta`
+- `utterance_id`
+
+Response fields:
+
+- `result`
+- `utterance_id`
+- `transcript`
+- `confidence`
+- `expires_at`
+
+IDL constraints:
+
+- `meta` is `stackchan_msgs/CommandMeta`.
+- `utterance_id` is `string<=64`.
+- `transcript` is `string<=2048`, with service constant `MAX_TRANSCRIPT_CHARS=2048`.
+
+Bridge stores transcripts in memory with a default 10 minute TTL. Persistent
+transcript storage is out of scope unless a later design decision changes it.
 
 ## Baseline actions
 
@@ -526,6 +707,7 @@ Baseline QoS:
 - A device is considered disconnected after 3 missed heartbeats unless config overrides it.
 - `/stackchan/<device_id>/status`: reliable, transient local, keep last 1.
 - `/stackchan/<device_id>/events`: reliable, volatile, keep last 32.
+- `/stackchan/<device_id>/device/events`: reliable, volatile, keep last 32.
 - `/stackchan/<device_id>/device/imu/raw`: best effort, volatile, keep last 10.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - Service and action request/response paths use reliable QoS.

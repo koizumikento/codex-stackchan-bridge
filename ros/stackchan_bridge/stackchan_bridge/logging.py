@@ -5,27 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-SENSITIVE_FIELDS = {
-    "audio",
-    "image",
-    "image_payload",
-    "nfc_tag_id",
-    "payload",
-    "secret",
-    "speech_text",
-    "text",
-    "token",
-}
-
-
-def redact_fields(fields: dict[str, Any]) -> dict[str, Any]:
-    redacted: dict[str, Any] = {}
-    for key, value in fields.items():
-        if key in SENSITIVE_FIELDS:
-            redacted[key] = "<redacted>"
-        else:
-            redacted[key] = value
-    return redacted
+from stackchan_bridge.redaction import redact_fields
 
 
 def log_structured(

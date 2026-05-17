@@ -1,7 +1,15 @@
 {
+  "command_id": "cmd-test-0001",
   "connected": true,
   "device_id": "default",
   "device_state": "idle",
   "face": "neutral",
-  "last_error": null
+  "last_error": null,
+  "metadata": {
+    "device_id": "default",
+    "command_id": "cmd-test-0001",
+    "source": "human_cli",
+    "created_at": "2026-05-16T00:00:00Z",
+    "priority": "NORMAL"
+  }
 }

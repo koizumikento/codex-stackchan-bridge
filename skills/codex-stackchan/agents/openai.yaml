@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex StackChan"
-  short_description: "Signal Codex work state through StackChan"
-  default_prompt: "Use $codex-stackchan to signal Codex work progress through the local StackChan."
+  short_description: "Signal Codex work state and read StackChan observations"
+  default_prompt: "Use $codex-stackchan to signal Codex work progress or interpret local StackChan observations through stackchanctl."
 policy:
   allow_implicit_invocation: true

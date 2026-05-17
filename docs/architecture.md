@@ -19,6 +19,32 @@ flowchart LR
     Firmware --> Hardware["Face / Servo / LED / Sensors"]
 ```
 
+StackChan can also report local device events back toward Codex. This reverse
+path is observational, not a device-side command path:
+
+```mermaid
+flowchart LR
+    Hardware["Sensors / Buttons / Audio / NFC / IMU"] --> Firmware["M5StackChan firmware\nstate estimation"]
+    Firmware --> DeviceEvents["/stackchan/<device_id>/device/events"]
+    DeviceEvents --> Bridge["stackchan_bridge\nevent aggregation"]
+    Bridge --> PublicEvents["/stackchan/<device_id>/events"]
+    Bridge --> Buffer["event buffer\nconsumer cursors"]
+    Buffer --> CLI["stackchanctl events / speech"]
+    Buffer --> MCPServer["stackchanctl mcp serve"]
+    CLI --> Skill["Codex skill"]
+    MCPServer --> MCP["MCP Host"]
+    Skill --> Decision["Codex policy decision"]
+    MCP --> Decision
+    Decision --> CLI
+```
+
+The split is:
+
+- State estimation belongs to firmware and bridge.
+- Policy and behavior choice belong to Codex.
+- Safety and hard limits belong to firmware.
+- Routing, redaction, buffering, and PC-side speech sessions belong to bridge.
+
 ## Responsibility split
 
 - Codex agent skill decides when a physical expression is useful.
@@ -55,6 +81,15 @@ Development decisions:
 - Logs and CLI output should support structured JSON.
 - MCP stdio output must keep `stdout` reserved for JSON-RPC and send logs to `stderr`.
 - Status, events, logs, and command results must include `device_id`.
+- Firmware publishes hardware-origin events under `/stackchan/<device_id>/device/events`.
+- `stackchan_bridge` owns the public `/stackchan/<device_id>/events` topic and
+  the event buffer queried by `stackchanctl` and MCP tools.
+- Codex treats events as observations. It does not execute an event name as a
+  command; it decides whether to call `say`, `face`, `motion`, `led`, audio, or
+  no command at all.
+- Speech transcripts are not placed directly in normal event payloads. Bridge
+  publishes `transcript_ready` with an `utterance_id`, and Codex explicitly
+  retrieves the transcript when it needs it.
 - Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy. Host
   machines should use the documented Docker/devcontainer workflow instead of
   installing ROS 2 directly; Windows developers should use a WSL2-backed Docker

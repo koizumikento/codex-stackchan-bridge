@@ -1,0 +1,17 @@
+{
+  "confidence": 1.0,
+  "device_id": "default",
+  "command_id": "cmd-test-0001",
+  "metadata": {
+    "device_id": "default",
+    "command_id": "cmd-test-0001",
+    "source": "human_cli",
+    "created_at": "2026-05-16T00:00:00Z",
+    "priority": "NORMAL"
+  },
+  "expires_at": "2026-05-16T00:10:02Z",
+  "ok": true,
+  "result_state": "COMPLETED",
+  "transcript": "mock transcript",
+  "utterance_id": "mock-utt-001"
+}

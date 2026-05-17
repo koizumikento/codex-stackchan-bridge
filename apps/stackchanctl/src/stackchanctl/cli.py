@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Callable, Mapping, TextIO
@@ -17,7 +18,9 @@ from stackchanctl.contract import (
     CommandResult,
     CommandType,
     DeviceStatus,
+    EventListResult,
     Priority,
+    TranscriptResult,
     utc_timestamp,
 )
 from stackchanctl.mcp_stdio import run_mcp_stdio
@@ -72,6 +75,15 @@ def run_cli(
             return 1
         return run_mcp_stdio(runtime, stderr=stderr)
 
+    if (
+        args.command == "events"
+        and args.events_command == "tail"
+        and args.follow
+        and runtime.output == "json"
+    ):
+        stderr.write("events tail --follow is only supported for human output\n")
+        return 2
+
     priority = Priority(args.priority or Priority.NORMAL.value)
     request = build_request(
         args=args,
@@ -85,9 +97,17 @@ def run_cli(
 
     backend = create_backend(runtime.backend)
     try:
+        if args.command == "events" and args.events_command == "tail" and args.follow:
+            return _run_follow_loop(
+                backend,
+                request,
+                stdout=stdout,
+                stderr=stderr,
+                poll_interval=args.poll_interval,
+            )
         result = backend.execute(request)
         render(result, json_output=runtime.output == "json", stdout=stdout, stderr=stderr)
-        if isinstance(result, CommandResult) and not result.ok:
+        if _is_failed_result(result):
             return 1
         return 0
     finally:
@@ -151,6 +171,24 @@ def build_parser() -> argparse.ArgumentParser:
     imu_stream = imu_subparsers.add_parser("stream")
     imu_stream.add_argument("--hz", type=finite_float, default=10.0)
 
+    events = subparsers.add_parser("events")
+    events_subparsers = events.add_subparsers(dest="events_command", required=True)
+    events_list = events_subparsers.add_parser("list")
+    events_list.add_argument("--limit", type=events_limit, default=32)
+    events_list.add_argument("--since-event")
+    events_next = events_subparsers.add_parser("next")
+    events_next.add_argument("--after")
+    events_tail = events_subparsers.add_parser("tail")
+    events_tail.add_argument("--limit", type=events_limit, default=10)
+    events_tail.add_argument("--follow", action="store_true")
+    events_tail.add_argument("--poll-interval", type=finite_float, default=1.0)
+    events_subparsers.add_parser("clear")
+
+    speech = subparsers.add_parser("speech")
+    speech_subparsers = speech.add_subparsers(dest="speech_command", required=True)
+    speech_transcript = speech_subparsers.add_parser("transcript")
+    speech_transcript.add_argument("utterance_id")
+
     subparsers.add_parser("observe")
 
     return parser
@@ -174,6 +212,13 @@ def build_request(
         command_type = CommandType(f"nfc-{args.nfc_command}")
     elif args.command == "imu":
         command_type = CommandType(f"imu-{args.imu_command}")
+    elif args.command == "events":
+        if args.events_command == "tail":
+            command_type = CommandType.EVENTS_LIST
+        else:
+            command_type = CommandType(f"events-{args.events_command}")
+    elif args.command == "speech":
+        command_type = CommandType(f"speech-{args.speech_command}")
     else:
         command_type = CommandType(args.command)
     meta = CommandMeta(
@@ -201,6 +246,23 @@ def build_request(
         command_args = {}
     elif command_type is CommandType.IMU_STREAM:
         command_args = {"hz": args.hz}
+    elif command_type is CommandType.EVENTS_LIST:
+        if args.command == "events" and args.events_command == "tail":
+            command_args = {"limit": args.limit, "follow": args.follow}
+        else:
+            since_event_id = None if args.since_event is None else args.since_event.strip()
+            command_args = {"limit": args.limit, "since_event_id": since_event_id or None}
+    elif command_type is CommandType.EVENTS_NEXT:
+        after_event_id = None if args.after is None else args.after.strip()
+        command_args = {
+            "limit": 1,
+            "after_event_id": after_event_id or None,
+            "consumer_id": source,
+        }
+    elif command_type is CommandType.EVENTS_CLEAR:
+        command_args = {"consumer_id": source}
+    elif command_type is CommandType.SPEECH_TRANSCRIPT:
+        command_args = {"utterance_id": args.utterance_id.strip()}
     else:
         command_args = {}
 
@@ -214,14 +276,14 @@ def build_request(
 
 
 def render(
-    result: CommandResult | DeviceStatus,
+    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult,
     *,
     json_output: bool,
     stdout: TextIO,
     stderr: TextIO,
 ) -> None:
     if json_output:
-        stream = stderr if isinstance(result, CommandResult) and not result.ok else stdout
+        stream = stderr if _is_failed_result(result) else stdout
         json.dump(result.to_dict(), stream, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
         stream.write("\n")
         return
@@ -234,6 +296,35 @@ def render(
         if result.last_error is not None:
             line += f" error={result.last_error.code}"
         stdout.write(line + "\n")
+        return
+
+    if isinstance(result, EventListResult):
+        if not result.ok:
+            _render_error_result(result.device_id, result.error, stderr)
+            return
+        if not result.events:
+            stdout.write(f"no events device={result.device_id}\n")
+            return
+        for event in result.events:
+            payload = json.dumps(event.payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            command_id = event.command_id or "-"
+            event_id = event.event_id or "-"
+            stdout.write(
+                f"{event.stamp} {event.event_name} event_id={event_id} device={event.device_id} "
+                f"command_id={command_id} payload={payload}\n"
+            )
+        return
+
+    if isinstance(result, TranscriptResult):
+        if not result.ok:
+            _render_error_result(result.device_id, result.error, stderr)
+            return
+        utterance_id = result.utterance_id or "-"
+        text = result.transcript or ""
+        stdout.write(
+            f"transcript device={result.device_id} utterance_id={utterance_id} "
+            f"confidence={result.confidence} text={text}\n"
+        )
         return
 
     command = result.command.get("type", "command")
@@ -250,6 +341,48 @@ def render(
         f"{result.result_state.value} {message} "
         f"device={result.meta.device_id} command_id={result.meta.command_id}\n"
     )
+
+
+def _is_failed_result(result: CommandResult | DeviceStatus | EventListResult | TranscriptResult) -> bool:
+    return isinstance(result, (CommandResult, EventListResult, TranscriptResult)) and not result.ok
+
+
+def _render_error_result(device_id: str, error, stderr: TextIO) -> None:
+    message = "unknown error" if error is None else f"{error.code}: {error.message}"
+    stderr.write(f"REJECTED {message} device={device_id}\n")
+
+
+def _run_follow_loop(
+    backend,
+    request: CommandRequest,
+    *,
+    stdout: TextIO,
+    stderr: TextIO,
+    poll_interval: float,
+) -> int:
+    if poll_interval <= 0:
+        stderr.write("events tail --follow requires a positive poll interval\n")
+        return 2
+    try:
+        follow_request = request
+        while True:
+            result = backend.execute(follow_request)
+            render(result, json_output=False, stdout=stdout, stderr=stderr)
+            if _is_failed_result(result):
+                return 1
+            if isinstance(result, EventListResult) and result.cursor:
+                follow_args = dict(follow_request.args)
+                follow_args["since_event_id"] = result.cursor
+                follow_request = CommandRequest(
+                    command_type=follow_request.command_type,
+                    meta=follow_request.meta,
+                    args=follow_args,
+                    wait=follow_request.wait,
+                    timeout=follow_request.timeout,
+                )
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _normalize_global_options(argv: list[str]) -> list[str]:
@@ -285,4 +418,21 @@ def finite_float(value: str) -> float:
         raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
     if not math.isfinite(parsed):
         raise argparse.ArgumentTypeError(f"{value!r} must be finite")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} must be positive")
+    return parsed
+
+
+def events_limit(value: str) -> int:
+    parsed = positive_int(value)
+    if parsed > 32:
+        raise argparse.ArgumentTypeError(f"{value!r} must be 32 or less")
     return parsed

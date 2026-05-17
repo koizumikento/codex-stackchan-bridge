@@ -3,6 +3,7 @@
 
 #include "stackchan/contract.hpp"
 #include "stackchan/audio.hpp"
+#include "stackchan/events.hpp"
 #include "stackchan/motion_safety.hpp"
 #include "stackchan/sensors.hpp"
 #include "stackchan/state_machine.hpp"
@@ -26,6 +27,8 @@ unsigned long last_heartbeat_ms = 0;
 unsigned long last_agent_attempt_ms = 0;
 bool microros_connected = false;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
+stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
+constexpr size_t kEventDrainBudget = 2;
 
 void copy_bounded(char* destination, size_t size, const char* source) {
   if (size == 0) {
@@ -53,7 +56,8 @@ bool try_connect_microros_agent() {
   // TODO: initialize StackChan-BSP hardware and micro-ROS serial transport.
   // set_microros_serial_transports(Serial);
   // TODO: ping micro-ROS Agent, initialize support/node/executor, and create
-  // stackchan_msgs publishers, services, and actions before returning true.
+  // stackchan_msgs publishers, including /device/events, services, and actions
+  // before returning true.
   return false;
 }
 
@@ -63,12 +67,41 @@ bool check_microros_agent_connection() {
   return microros_connected;
 }
 
+bool publish_device_event_ros(const stackchan::DeviceEvent& event, void*) {
+  if (!microros_connected) {
+    return false;
+  }
+
+  // TODO: replace this diagnostic path with rcl_publish() for
+  // /stackchan/<device_id>/device/events after support/node setup lands.
+  Serial.print("stackchan event device_id=");
+  Serial.print(event.device_id);
+  Serial.print(" name=");
+  Serial.print(event.event_name);
+  Serial.print(" source=");
+  Serial.print(event.source);
+  Serial.print(" payload=");
+  Serial.println(event.payload_json);
+  return true;
+}
+
 void update_agent_connection(bool connected) {
   microros_connected = connected;
   if (connected) {
     state_machine.agent_connected();
   } else {
     state_machine.agent_disconnected();
+  }
+}
+
+void drain_device_events() {
+  if (!microros_connected || event_publisher.queued_count() == 0) {
+    return;
+  }
+
+  const stackchan::Result result = event_publisher.drain(kEventDrainBudget);
+  if (!result.ok && strcmp(result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+    last_error = result;
   }
 }
 
@@ -158,13 +191,16 @@ void publish_status_heartbeat() {
   Serial.print(" audio_sample_rate=");
   Serial.print(audio_policy.sample_rate);
   Serial.print(" imu_min_hz=");
-  Serial.println(stackchan::kImuMinHz);
+  Serial.print(stackchan::kImuMinHz);
+  Serial.print(" events=");
+  Serial.println(stackchan::kDeviceEventsTopicSuffix);
 }
 
 }  // namespace
 
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+  event_publisher.set_callback(publish_device_event_ros);
   show_neutral_face();
   state_machine.booted();
 }
@@ -184,5 +220,6 @@ void loop() {
   }
 
   // TODO: spin micro-ROS executor and dispatch generated stackchan_msgs handlers.
+  drain_device_events();
   delay(10);
 }

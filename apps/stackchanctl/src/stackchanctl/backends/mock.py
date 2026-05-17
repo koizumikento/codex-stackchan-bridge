@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 from typing import Any
 
@@ -9,8 +10,11 @@ from stackchanctl.contract import (
     CommandType,
     DeviceStatus,
     ErrorDetail,
+    Event,
+    EventListResult,
     Priority,
     ResultState,
+    TranscriptResult,
 )
 
 
@@ -21,12 +25,20 @@ ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 BASELINE_AUDIO_FORMAT = "pcm_s16le"
 BASELINE_AUDIO_SAMPLE_RATE = 16000
 BASELINE_AUDIO_CHANNELS = 1
+MAX_EVENTS = 32
 
 
 class MockBackend:
     """Deterministic backend used by tests, skills, and hardware-free demos."""
 
-    def execute(self, request: CommandRequest) -> CommandResult | DeviceStatus:
+    def __init__(self) -> None:
+        self._events_by_device: dict[str, list[Event]] = {}
+        self._event_cursors: dict[tuple[str, str], int] = {}
+        self._transcripts_by_device: dict[str, dict[str, TranscriptResult]] = {}
+
+    def execute(
+        self, request: CommandRequest
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -35,17 +47,19 @@ class MockBackend:
             return _observe(request)
 
         if request.timeout <= 0:
-            return CommandResult(
-                ok=False,
-                result_state=ResultState.TIMEOUT,
-                meta=request.meta,
-                command=_command_payload(request),
-                error=ErrorDetail(
-                    code="TIMEOUT",
-                    message="command timed out before acceptance",
-                    recoverable=True,
-                ),
-            )
+            return _timeout_result(request)
+
+        if request.command_type is CommandType.EVENTS_LIST:
+            return self._list_events(request)
+
+        if request.command_type is CommandType.EVENTS_NEXT:
+            return self._next_event(request)
+
+        if request.command_type is CommandType.EVENTS_CLEAR:
+            return self._clear_events(request)
+
+        if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+            return self._get_transcript(request)
 
         result_state = ResultState.COMPLETED if request.wait else ResultState.ACCEPTED
         return CommandResult(
@@ -54,6 +68,127 @@ class MockBackend:
             meta=request.meta,
             command=_command_payload(request),
         )
+
+    def _list_events(self, request: CommandRequest) -> EventListResult:
+        limit = int(request.args["limit"])
+        since_event_id = request.args.get("since_event_id")
+        events = self._events_for(request.meta.device_id)
+        if since_event_id:
+            events = _events_after(events, str(since_event_id))
+        selected = events[-limit:]
+        return EventListResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            events=selected,
+            cursor=_cursor_for(selected),
+            meta=request.meta,
+        )
+
+    def _next_event(self, request: CommandRequest) -> EventListResult:
+        events = self._events_for(request.meta.device_id)
+        after_event_id = request.args.get("after_event_id")
+        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
+        if after_event_id:
+            candidates = _events_after(events, str(after_event_id))
+        else:
+            cursor = self._event_cursors.get((consumer_id, request.meta.device_id), 0)
+            candidates = events[cursor:]
+        if not candidates:
+            return EventListResult(
+                ok=True,
+                result_state=ResultState.COMPLETED,
+                device_id=request.meta.device_id,
+                events=[],
+                cursor=None,
+                meta=request.meta,
+            )
+        event = candidates[0]
+        self._event_cursors[(consumer_id, request.meta.device_id)] = events.index(event) + 1
+        return EventListResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            events=[event],
+            cursor=event.event_id,
+            meta=request.meta,
+        )
+
+    def _clear_events(self, request: CommandRequest) -> EventListResult:
+        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
+        self._event_cursors.pop((consumer_id, request.meta.device_id), None)
+        return EventListResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            events=[],
+            cursor=None,
+            meta=request.meta,
+        )
+
+    def _get_transcript(self, request: CommandRequest) -> TranscriptResult:
+        utterance_id = request.args.get("utterance_id")
+        transcripts = self._transcripts_for(request.meta.device_id)
+        if utterance_id is None:
+            return transcripts["mock-utt-001"]
+        transcript = transcripts.get(str(utterance_id))
+        if transcript is None:
+            return TranscriptResult(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                device_id=request.meta.device_id,
+                utterance_id=str(utterance_id),
+                transcript=None,
+                confidence=None,
+                expires_at=None,
+                meta=request.meta,
+                error=ErrorDetail(
+                    code="TRANSCRIPT_NOT_FOUND",
+                    message=f"transcript {utterance_id!r} was not found",
+                    recoverable=False,
+                ),
+            )
+        return replace(transcript, meta=request.meta)
+
+    def _events_for(self, device_id: str) -> list[Event]:
+        if device_id not in self._events_by_device:
+            self._events_by_device[device_id] = [
+                Event(
+                    event_id="mock-event-0001",
+                    device_id=device_id,
+                    event_name="picked_up",
+                    source="firmware",
+                    stamp="2026-05-16T00:00:01Z",
+                    command_id=None,
+                    payload={},
+                ),
+                Event(
+                    event_id="mock-event-0002",
+                    device_id=device_id,
+                    event_name="transcript_ready",
+                    source="speech_session",
+                    stamp="2026-05-16T00:00:02Z",
+                    command_id=None,
+                    payload={"utterance_id": "mock-utt-001"},
+                ),
+            ]
+        return self._events_by_device[device_id]
+
+    def _transcripts_for(self, device_id: str) -> dict[str, TranscriptResult]:
+        if device_id not in self._transcripts_by_device:
+            self._transcripts_by_device[device_id] = {
+                "mock-utt-001": TranscriptResult(
+                    ok=True,
+                    result_state=ResultState.COMPLETED,
+                    device_id=device_id,
+                    utterance_id="mock-utt-001",
+                    transcript="mock transcript",
+                    confidence=1.0,
+                    expires_at="2026-05-16T00:10:02Z",
+                    meta=None,
+                )
+            }
+        return self._transcripts_by_device[device_id]
 
 
 def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
@@ -153,6 +288,15 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
                 recoverable=False,
             )
 
+    if request.command_type in {CommandType.EVENTS_LIST, CommandType.EVENTS_NEXT}:
+        limit = int(request.args["limit"])
+        if limit < 1 or limit > MAX_EVENTS:
+            return ErrorDetail(
+                code="UNKNOWN_COMMAND",
+                message="events limit must be between 1 and 32",
+                recoverable=False,
+            )
+
     return None
 
 
@@ -168,6 +312,7 @@ def _observe(request: CommandRequest) -> DeviceStatus:
                 message="mock device is disconnected",
                 recoverable=True,
             ),
+            meta=request.meta,
         )
 
     return DeviceStatus(
@@ -175,13 +320,79 @@ def _observe(request: CommandRequest) -> DeviceStatus:
         connected=True,
         device_state="idle",
         face="neutral",
+        meta=request.meta,
     )
 
 
-def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult:
+def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | EventListResult | TranscriptResult:
+    if request.command_type in {
+        CommandType.EVENTS_LIST,
+        CommandType.EVENTS_NEXT,
+        CommandType.EVENTS_CLEAR,
+    }:
+        return EventListResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            events=[],
+            meta=request.meta,
+            error=error,
+        )
+    if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+        return TranscriptResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            utterance_id=request.args.get("utterance_id"),
+            transcript=None,
+            confidence=None,
+            expires_at=None,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
         result_state=ResultState.REJECTED,
+        meta=request.meta,
+        command=_command_payload(request),
+        error=error,
+    )
+
+
+def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult | TranscriptResult:
+    error = ErrorDetail(
+        code="TIMEOUT",
+        message="command timed out before acceptance",
+        recoverable=True,
+    )
+    if request.command_type in {
+        CommandType.EVENTS_LIST,
+        CommandType.EVENTS_NEXT,
+        CommandType.EVENTS_CLEAR,
+    }:
+        return EventListResult(
+            ok=False,
+            result_state=ResultState.TIMEOUT,
+            device_id=request.meta.device_id,
+            events=[],
+            meta=request.meta,
+            error=error,
+        )
+    if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+        return TranscriptResult(
+            ok=False,
+            result_state=ResultState.TIMEOUT,
+            device_id=request.meta.device_id,
+            utterance_id=request.args.get("utterance_id"),
+            transcript=None,
+            confidence=None,
+            expires_at=None,
+            meta=request.meta,
+            error=error,
+        )
+    return CommandResult(
+        ok=False,
+        result_state=ResultState.TIMEOUT,
         meta=request.meta,
         command=_command_payload(request),
         error=error,
@@ -241,4 +452,28 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "topic": "imu/raw",
             "status_field": False,
         }
+    if request.command_type is CommandType.EVENTS_LIST:
+        return {"type": "events.list", "limit": request.args["limit"]}
+    if request.command_type is CommandType.EVENTS_NEXT:
+        return {"type": "events.next", "limit": request.args["limit"]}
+    if request.command_type is CommandType.EVENTS_CLEAR:
+        return {"type": "events.clear"}
+    if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+        return {
+            "type": "speech.transcript",
+            "utterance_id": request.args.get("utterance_id"),
+        }
     return {"type": request.command_type.value}
+
+
+def _events_after(events: list[Event], event_id: str) -> list[Event]:
+    for index, event in enumerate(events):
+        if event.event_id == event_id:
+            return events[index + 1 :]
+    return events
+
+
+def _cursor_for(events: list[Event]) -> str | None:
+    if not events:
+        return None
+    return events[-1].event_id

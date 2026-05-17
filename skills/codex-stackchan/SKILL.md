@@ -1,6 +1,6 @@
 ---
 name: codex-stackchan
-description: Express Codex work state through a local M5StackChan by calling stackchanctl. Use when Codex should send restrained local cues for work start, progress, waiting for user input, running checks, test success or failure, blockers, or task completion through StackChan without calling raw ROS 2 commands.
+description: Express Codex work state through a local M5StackChan and read StackChan-origin observations by calling stackchanctl. Use when Codex should send restrained local cues or interpret events such as button, IMU, NFC, or transcript_ready without calling raw ROS 2 commands.
 ---
 
 # Codex StackChan
@@ -53,6 +53,45 @@ Use these defaults unless the user's context suggests a quieter cue:
 - Done: `stackchanctl motion nod` then `stackchanctl face happy` then `stackchanctl led success`
 
 Add `--source codex_skill` to each command unless `STACKCHANCTL_SOURCE=codex_skill` is already set.
+
+## Observing StackChan Events
+
+StackChan-origin events are observations, not commands. Read them through
+`stackchanctl` or MCP tools, interpret them in the current Codex task context,
+and only then decide whether to send a physical cue.
+
+Use event reads sparingly:
+
+```bash
+stackchanctl --source codex_skill events next --json
+stackchanctl --source codex_skill events list --json
+```
+
+Event policy:
+
+- Treat `button_pressed` as a request for attention or push-to-talk, not as an
+  automatic instruction.
+- After `transcript_ready`, fetch the transcript explicitly with
+  `stackchanctl speech transcript <utterance_id> --json` before deciding how to
+  respond.
+- Treat `picked_up`, `shaken`, and `tilted` as context hints. Do not assume
+  `shaken` means cancel or retry unless the surrounding conversation supports it.
+- Ignore repeated low-value events when responding would be noisy.
+- Do not call raw `ros2` commands or subscribe to ROS topics directly.
+
+Push-to-talk flow:
+
+```text
+button_pressed
+  -> face listening / led listening when useful
+  -> audio capture and local STT happen through bridge
+  -> transcript_ready { utterance_id }
+  -> fetch transcript
+  -> choose say / face / motion / led / no action
+```
+
+Do not put speech transcripts, secrets, file contents, or long command output
+into `say`.
 
 ## Voice Use
 
@@ -114,6 +153,8 @@ Run these checks from the repository root:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
 ```
 
 Expected validation result:

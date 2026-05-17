@@ -28,7 +28,17 @@ class Backend(Protocol):
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "stackchanctl", "version": "0.1.0"}
-SUPPORTED_TOOLS = ("say", "face", "motion", "led", "observe")
+SUPPORTED_TOOLS = (
+    "say",
+    "face",
+    "motion",
+    "led",
+    "observe",
+    "events_list",
+    "events_next",
+    "events_clear",
+    "speech_get_transcript",
+)
 _EXIT = object()
 
 
@@ -230,6 +240,27 @@ def _build_tool_request(
     elif name == "observe":
         command_type = CommandType.OBSERVE
         command_args = {}
+    elif name == "events_list":
+        command_type = CommandType.EVENTS_LIST
+        command_args = {
+            "limit": _optional_int(arguments, "limit", 32),
+            "since_event_id": _optional_string(arguments, "since_event_id", "").strip() or None,
+        }
+    elif name == "events_next":
+        command_type = CommandType.EVENTS_NEXT
+        command_args = {
+            "limit": 1,
+            "after_event_id": _optional_string(arguments, "after_event_id", "").strip() or None,
+        }
+    elif name == "events_clear":
+        command_type = CommandType.EVENTS_CLEAR
+        command_args = {}
+    elif name == "speech_get_transcript":
+        command_type = CommandType.SPEECH_TRANSCRIPT
+        utterance_id = _required_string(arguments, "utterance_id").strip()
+        if not utterance_id:
+            raise ValueError("utterance_id is required")
+        command_args = {"utterance_id": utterance_id}
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"unknown tool: {name}")
 
@@ -278,6 +309,21 @@ def _optional_number(arguments: Mapping[str, Any], key: str, default: float) -> 
     return _finite_number(value, key)
 
 
+def _optional_int(arguments: Mapping[str, Any], key: str, default: int) -> int:
+    if key not in arguments:
+        value = default
+    else:
+        raw = arguments[key]
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(f"{key} must be an integer")
+        value = raw
+    if value < 1:
+        raise ValueError(f"{key} must be positive")
+    if key == "limit" and value > 32:
+        raise ValueError("limit must be 32 or less")
+    return value
+
+
 def _finite_number(value: int | float, key: str) -> float:
     value = float(value)
     if not math.isfinite(value):
@@ -304,6 +350,12 @@ def _allowed_argument_keys(name: str) -> set[str]:
             keys.add("wait")
     elif name == "led":
         keys.add("pattern")
+    elif name == "events_list":
+        keys.update({"limit", "since_event_id"})
+    elif name == "events_next":
+        keys.add("after_event_id")
+    elif name == "speech_get_transcript":
+        keys.add("utterance_id")
     return keys
 
 
@@ -335,13 +387,21 @@ def _tool_schema(name: str) -> dict[str, Any]:
     elif name == "led":
         properties["pattern"] = {"type": "string"}
         required.append("pattern")
+    elif name == "events_list":
+        properties["limit"] = {"type": "integer", "minimum": 1}
+        properties["since_event_id"] = {"type": "string"}
+    elif name == "events_next":
+        properties["after_event_id"] = {"type": "string"}
+    elif name == "speech_get_transcript":
+        properties["utterance_id"] = {"type": "string"}
+        required.append("utterance_id")
 
     if name in {"say", "motion"}:
         properties["wait"] = {"type": "boolean"}
 
     return {
         "name": name,
-        "description": f"Send stackchanctl {name} through the configured backend.",
+        "description": _tool_description(name),
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -349,6 +409,14 @@ def _tool_schema(name: str) -> dict[str, Any]:
             "additionalProperties": False,
         },
     }
+
+
+def _tool_description(name: str) -> str:
+    if name.startswith("events_"):
+        return f"Read stackchanctl {name.replace('_', ' ')} through the configured backend."
+    if name == "speech_get_transcript":
+        return "Read a speech transcript through the configured backend."
+    return f"Send stackchanctl {name} through the configured backend."
 
 
 def _success_response(request_id: Any, result: Any) -> dict[str, Any]:

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
+from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    _copy_event_record,
     _configured_device_records,
+    _records_after_event_id,
+    _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class RosNodeHelperTests(unittest.TestCase):
@@ -40,6 +48,65 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual([record.device_id for record in records], ["default", "desk"])
         self.assertFalse(records[0].connected)
         self.assertFalse(records[1].connected)
+
+    def test_event_record_copies_to_ros_shape_with_compact_payload(self) -> None:
+        target = SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=0))
+        record = EventRecord(
+            sequence=1,
+            event_id="evt-0001",
+            device_id="default",
+            event_name="picked_up",
+            source="firmware",
+            stamp=1778889601.25,
+            command_id="cmd-0001",
+            payload={"utterance_id": "utt-1"},
+        )
+
+        _copy_event_record(target, record)
+
+        self.assertEqual(target.event_id, "evt-0001")
+        self.assertEqual(target.device_id, "default")
+        self.assertEqual(target.event_name, "picked_up")
+        self.assertEqual(target.source, "firmware")
+        self.assertEqual(target.stamp.sec, 1778889601)
+        self.assertEqual(target.stamp.nanosec, 250000000)
+        self.assertEqual(target.command_id, "cmd-0001")
+        self.assertEqual(target.payload_json, '{"utterance_id":"utt-1"}')
+
+    def test_records_after_event_id_supports_since_and_unknown_replay(self) -> None:
+        records = (
+            EventRecord(1, "evt-1", "default", "one", 1.0),
+            EventRecord(2, "evt-2", "default", "two", 2.0),
+        )
+
+        self.assertEqual(_records_after_event_id(records, "evt-1"), records[1:])
+        self.assertEqual(_records_after_event_id(records, "missing"), records)
+        self.assertEqual(_sequence_for_event_id(records, "evt-1"), 1)
+        self.assertIsNone(_sequence_for_event_id(records, "missing"))
+
+    def test_bridge_node_source_wires_event_services_and_topics(self) -> None:
+        source = (ROOT / "stackchan_bridge" / "ros_node.py").read_text()
+
+        for name in (
+            "ListEvents",
+            "NextEvent",
+            "ClearEventCursor",
+            "GetTranscript",
+            "StackChanEvent",
+            "EVENT_QOS_DEPTH = 32",
+            "/events/list",
+            "/events/next",
+            "/events/clear_cursor",
+            "/speech/transcript/get",
+            "/events",
+            "/device/events",
+        ):
+            self.assertIn(name, source)
+
+        self.assertIn(
+            "record = self.event_aggregator.add(\n                device_id,",
+            source,
+        )
 
 
 if __name__ == "__main__":

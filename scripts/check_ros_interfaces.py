@@ -14,7 +14,11 @@ EXPECTED_INTERFACES = [
     "msg/Result.msg",
     "msg/StackChanEvent.msg",
     "msg/StackChanStatus.msg",
+    "srv/ClearEventCursor.srv",
+    "srv/GetTranscript.srv",
     "srv/GetStatus.srv",
+    "srv/ListEvents.srv",
+    "srv/NextEvent.srv",
     "srv/SetFace.srv",
     "srv/SetLed.srv",
     "action/CaptureAudio.action",
@@ -42,6 +46,64 @@ RESULT_FIELDS = [
     "uint8 STATE_TIMEOUT=4",
 ]
 
+STACKCHAN_EVENT_FIELDS = [
+    "string<=36 event_id",
+    "string<=32 device_id",
+    "string<=32 event_name",
+    "string<=32 source",
+    "builtin_interfaces/Time stamp",
+    "string<=36 command_id",
+    "string<=256 payload_json",
+]
+
+SERVICE_FIELDS = {
+    "ListEvents.srv": [
+        "uint8 MAX_EVENTS=32",
+        "stackchan_msgs/CommandMeta meta",
+        "uint8 limit",
+        "string<=36 since_event_id",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/StackChanEvent[<=32] events",
+        "string<=36 cursor",
+    ],
+    "NextEvent.srv": [
+        "uint8 MAX_EVENTS=1",
+        "stackchan_msgs/CommandMeta meta",
+        "string<=64 consumer_id",
+        "string<=36 after_event_id",
+        "uint32 timeout_ms",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/StackChanEvent[<=1] events",
+        "string<=36 cursor",
+    ],
+    "ClearEventCursor.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "string<=64 consumer_id",
+        "stackchan_msgs/Result result",
+        "string<=36 cursor",
+    ],
+    "GetTranscript.srv": [
+        "uint16 MAX_TRANSCRIPT_CHARS=2048",
+        "stackchan_msgs/CommandMeta meta",
+        "string<=64 utterance_id",
+        "stackchan_msgs/Result result",
+        "string<=64 utterance_id",
+        "string<=2048 transcript",
+        "float32 confidence",
+        "builtin_interfaces/Time expires_at",
+    ],
+    "GetStatus.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "string<=32 device_id",
+        "bool connected",
+        "string<=32 state",
+        "string<=32 face",
+        "string<=32 motion",
+        "string<=36 last_command_id",
+        "stackchan_msgs/Result last_error",
+    ],
+}
+
 
 def main() -> int:
     cmake = (MSGS / "CMakeLists.txt").read_text()
@@ -57,6 +119,15 @@ def main() -> int:
     result = (MSGS / "msg" / "Result.msg").read_text()
     for field in RESULT_FIELDS:
         require(field in result, f"Result missing {field}")
+
+    event = (MSGS / "msg" / "StackChanEvent.msg").read_text()
+    for field in STACKCHAN_EVENT_FIELDS:
+        require(field in event, f"StackChanEvent missing {field}")
+
+    for service_name, fields in SERVICE_FIELDS.items():
+        text = (MSGS / "srv" / service_name).read_text()
+        for field in fields:
+            require(field in text, f"{service_name} missing {field}")
 
     for action in (MSGS / "action").glob("*.action"):
         text = action.read_text()

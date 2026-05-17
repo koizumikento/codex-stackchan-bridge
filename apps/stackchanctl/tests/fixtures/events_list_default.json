@@ -1,0 +1,36 @@
+{
+  "device_id": "default",
+  "command_id": "cmd-test-0001",
+  "metadata": {
+    "device_id": "default",
+    "command_id": "cmd-test-0001",
+    "source": "human_cli",
+    "created_at": "2026-05-16T00:00:00Z",
+    "priority": "NORMAL"
+  },
+  "events": [
+    {
+      "command_id": null,
+      "device_id": "default",
+      "event_id": "mock-event-0001",
+      "event_name": "picked_up",
+      "payload": {},
+      "source": "firmware",
+      "stamp": "2026-05-16T00:00:01Z"
+    },
+    {
+      "command_id": null,
+      "device_id": "default",
+      "event_id": "mock-event-0002",
+      "event_name": "transcript_ready",
+      "payload": {
+        "utterance_id": "mock-utt-001"
+      },
+      "source": "speech_session",
+      "stamp": "2026-05-16T00:00:02Z"
+    }
+  ],
+  "ok": true,
+  "result_state": "COMPLETED",
+  "cursor": "mock-event-0002"
+}

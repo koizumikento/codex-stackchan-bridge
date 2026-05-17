@@ -33,6 +33,10 @@ Required for CLI changes:
 - Device selection tests for default device and `--device <device_id>`.
 - Success semantics tests for `ACCEPTED`, `COMPLETED`, `REJECTED`, and `TIMEOUT` states.
 - Human output remains compact; `--json` remains machine-readable.
+- Event command tests cover `events list`, `events next`, `events clear`, empty
+  event results, cursor-only clear behavior, and deterministic mock events.
+- Transcript command tests cover explicit lookup by `utterance_id` and
+  structured expiry/not-found failures.
 
 Required for MCP stdio changes:
 
@@ -43,6 +47,8 @@ Required for MCP stdio changes:
 - Tests that `SAFETY` priority is rejected with the shared structured error shape.
 - Tests that rejected commands and timeouts are returned as tool results with `ok=false`, not protocol errors.
 - Bridge fake-client tests that preserve the same command/result shape as the mock backend.
+- Event observation tools preserve the same `events`/`cursor` shape as CLI JSON
+  and return empty event lists as tool results, not MCP errors.
 
 ### ROS 2 Interfaces
 
@@ -56,6 +62,22 @@ Required for message, service, or action changes:
 - Response/error shapes follow the documented error model.
 - Interface changes are reflected in `docs/ros-interface.md`.
 - QoS and heartbeat decisions are documented when implementation touches status, events, IMU, audio chunks, or camera paths.
+- Event contracts document `/stackchan/<device_id>/device/events`,
+  `/stackchan/<device_id>/events`, event query services, ownership, fields,
+  bounded payload rules, and event taxonomy.
+
+### stackchan_bridge
+
+Required for bridge event changes:
+
+- Event buffer tests cover ordering, capacity, per-device separation, consumer
+  cursors, and cursor clear without deleting the ring buffer.
+- Event aggregation tests cover firmware event normalization, bridge-origin
+  events, duplicate/debounce behavior, and unknown/disconnected/conflict events.
+- Redaction tests cover speech transcripts, image/audio payloads, and NFC tag
+  IDs in normal logs.
+- Transcript store tests cover memory-only behavior, lookup by `utterance_id`,
+  and default 10 minute TTL expiry.
 
 ### Firmware
 
@@ -73,6 +95,9 @@ Required for firmware changes:
 ```text
 safety > motion stop/neutral > audio capture/playback > command handling > camera > LED/idle
 ```
+- Event estimator changes include contract tests for bounded names and payloads,
+  optional `command_id` only for sensor-origin events, device id preservation,
+  and separation of raw IMU telemetry from high-level IMU events.
 
 ### Codex Skill
 
@@ -81,6 +106,9 @@ Required for skill changes:
 - Skill calls `stackchanctl`, not raw `ros2` commands.
 - Skill behavior works against the mock backend.
 - User-facing command timing and failure behavior is documented if it changes.
+- Event-policy behavior treats events as observations rather than direct
+  commands, fetches transcripts explicitly after `transcript_ready`, and avoids
+  noisy responses to repeated low-value events.
 
 ### Rust Companion Workers
 
@@ -128,6 +156,8 @@ Manual hardware checks should cover:
 - NFC tag event reporting.
 - IMU raw stream and high-level events.
 - Disconnect and reconnect behavior.
+- Device event publishing for button, IMU, NFC, audio overrun/underrun, and
+  public bridge event visibility through `stackchanctl events`.
 
 ## Merge Readiness
 

@@ -181,6 +181,10 @@ Initial tools:
 - `motion`
 - `led`
 - `observe`
+- `events_list`
+- `events_next`
+- `events_clear`
+- `speech_get_transcript`
 
 MCP mode defaults `source` to `mcp_agent`. `command_id` is generated per tool
 call and must not be copied from the MCP JSON-RPC request id.
@@ -193,6 +197,8 @@ stackchanctl face happy
 stackchanctl motion nod
 stackchanctl led progress
 stackchanctl observe
+stackchanctl events next --json
+stackchanctl speech transcript mock-utt-001 --json
 stackchanctl --device desk face happy
 ```
 
@@ -286,6 +292,68 @@ Default output is compact and human-readable. With `--json`, the output uses thi
   "last_error": null
 }
 ```
+
+### Event commands
+
+Event commands read bridge-normalized observations from StackChan. They are not
+robot control commands, and Codex should treat returned events as observations
+to interpret before choosing a later action.
+
+Baseline examples:
+
+```bash
+stackchanctl events list --json
+stackchanctl events next --json
+stackchanctl events next --after <event_id> --timeout 0 --json
+stackchanctl events tail --follow
+stackchanctl events clear --json
+```
+
+Rules:
+
+- `events list` returns recent buffered public events for the selected device.
+- `events next` returns the next unread event for the CLI/MCP consumer cursor.
+- No unread event returns `ok=true` with an empty `events` list.
+- `events clear` clears the consumer cursor only. It does not delete the bridge
+  ring buffer.
+- `events tail --follow` is a human diagnostic command. Codex skills and MCP
+  clients should use `events next` or `events list`. Follow mode streams
+  human-readable output and is rejected with `--json`.
+- JSON output includes `device_id`, `events`, and `cursor`.
+
+Example JSON shape:
+
+```json
+{
+  "ok": true,
+  "result_state": "COMPLETED",
+  "device_id": "default",
+  "events": [
+    {
+      "event_id": "018f...",
+      "device_id": "default",
+      "event_name": "button_pressed",
+      "source": "firmware",
+      "stamp": "2026-05-17T00:00:00Z",
+      "command_id": null,
+      "payload": {}
+    }
+  ],
+  "cursor": "018f..."
+}
+```
+
+### Speech transcript commands
+
+Speech transcripts are retrieved explicitly after a `transcript_ready` event.
+The event payload carries an `utterance_id`; full transcript text is not placed
+in normal event payloads or logs.
+
+```bash
+stackchanctl speech transcript <utterance_id> --json
+```
+
+The bridge stores transcripts in memory with a default 10 minute TTL.
 
 ### Audio commands
 
@@ -487,6 +555,7 @@ It should:
 - emit deterministic JSON
 - support command metadata
 - simulate success and common failures
+- provide deterministic event and transcript fixtures for event-policy tests
 - avoid requiring ROS 2 or physical hardware
 
 Example:
@@ -495,6 +564,8 @@ Example:
 stackchanctl --backend mock face happy --json
 stackchanctl --backend mock --device desk face happy --json
 stackchanctl --backend mock audio play prompt.wav --json
+stackchanctl --backend mock events next --json
+stackchanctl --backend mock speech transcript mock-utt-001 --json
 ```
 
 This lets the Codex skill and CLI tests advance before firmware bring-up is ready.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -12,7 +13,10 @@ from stackchanctl.contract import (
     CommandType,
     DeviceStatus,
     ErrorDetail,
+    Event,
+    EventListResult,
     ResultState,
+    TranscriptResult,
 )
 
 
@@ -35,7 +39,7 @@ class BridgeCommandResponse:
 
 
 class BridgeClient(Protocol):
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
+    def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
         raise NotImplementedError
 
     def set_face(
@@ -79,6 +83,34 @@ class BridgeClient(Protocol):
     ) -> BridgeCommandResponse:
         raise NotImplementedError
 
+    def list_events(
+        self,
+        meta: CommandMeta,
+        limit: int,
+        since_event_id: str | None,
+        timeout: float,
+    ) -> EventListResult:
+        raise NotImplementedError
+
+    def next_event(
+        self,
+        meta: CommandMeta,
+        consumer_id: str,
+        after_event_id: str | None,
+        timeout: float,
+    ) -> EventListResult:
+        raise NotImplementedError
+
+    def clear_events(
+        self, meta: CommandMeta, consumer_id: str, timeout: float
+    ) -> EventListResult:
+        raise NotImplementedError
+
+    def get_transcript(
+        self, meta: CommandMeta, utterance_id: str | None, timeout: float
+    ) -> TranscriptResult:
+        raise NotImplementedError
+
 
 class BridgeBackend:
     """Backend that talks to the stackchan_bridge facade resources."""
@@ -86,7 +118,9 @@ class BridgeBackend:
     def __init__(self, client: BridgeClient | None = None) -> None:
         self._client = client
 
-    def execute(self, request: CommandRequest) -> CommandResult | DeviceStatus:
+    def execute(
+        self, request: CommandRequest
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -94,27 +128,24 @@ class BridgeBackend:
         try:
             client = self._get_client()
             if request.command_type is CommandType.OBSERVE:
-                return client.get_status(request.meta.device_id, request.timeout)
+                return replace(
+                    client.get_status(request.meta, request.timeout),
+                    meta=request.meta,
+                )
+            if request.command_type in {
+                CommandType.EVENTS_LIST,
+                CommandType.EVENTS_NEXT,
+                CommandType.EVENTS_CLEAR,
+                CommandType.SPEECH_TRANSCRIPT,
+            }:
+                return self._execute_observation(request, client)
             response = self._execute_command(request, client)
         except BridgeBackendTimeout:
-            return CommandResult(
-                ok=False,
-                result_state=ResultState.TIMEOUT,
-                meta=request.meta,
-                command=_command_payload(request),
-                error=ErrorDetail(
-                    code="TIMEOUT",
-                    message="bridge facade call timed out",
-                    recoverable=True,
-                ),
-            )
+            return _timeout_result(request)
         except BridgeBackendError as exc:
-            return CommandResult(
-                ok=False,
-                result_state=ResultState.REJECTED,
-                meta=request.meta,
-                command=_command_payload(request),
-                error=ErrorDetail(
+            return _error_result(
+                request,
+                ErrorDetail(
                     code=exc.code,
                     message=str(exc),
                     recoverable=exc.recoverable,
@@ -179,6 +210,41 @@ class BridgeBackend:
             recoverable=False,
         )
 
+    def _execute_observation(
+        self, request: CommandRequest, client: BridgeClient
+    ) -> EventListResult | TranscriptResult:
+        if request.command_type is CommandType.EVENTS_LIST:
+            return client.list_events(
+                request.meta,
+                int(request.args["limit"]),
+                _optional_string_arg(request, "since_event_id"),
+                request.timeout,
+            )
+        if request.command_type is CommandType.EVENTS_NEXT:
+            return client.next_event(
+                request.meta,
+                str(request.args.get("consumer_id") or request.meta.source),
+                _optional_string_arg(request, "after_event_id"),
+                request.timeout,
+            )
+        if request.command_type is CommandType.EVENTS_CLEAR:
+            return client.clear_events(
+                request.meta,
+                str(request.args.get("consumer_id") or request.meta.source),
+                request.timeout,
+            )
+        if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+            return client.get_transcript(
+                request.meta,
+                request.args.get("utterance_id"),
+                request.timeout,
+            )
+        raise BridgeBackendError(
+            "UNSUPPORTED_FEATURE",
+            f"bridge backend does not support {request.command_type.value!r} yet",
+            recoverable=False,
+        )
+
 
 class RclpyBridgeClient:
     def __init__(self) -> None:
@@ -193,6 +259,12 @@ class RclpyBridgeClient:
                 Say,
             )
             from stackchan_msgs.srv import GetStatus, SetFace, SetLed
+            from stackchan_msgs.srv import (
+                ClearEventCursor,
+                GetTranscript,
+                ListEvents,
+                NextEvent,
+            )
         except ImportError as exc:
             raise BridgeBackendError(
                 "BRIDGE_BACKEND_UNAVAILABLE",
@@ -202,6 +274,10 @@ class RclpyBridgeClient:
         self._rclpy = rclpy
         self._action_client_type = ActionClient
         self._get_status_type = GetStatus
+        self._list_events_type = ListEvents
+        self._next_event_type = NextEvent
+        self._clear_event_cursor_type = ClearEventCursor
+        self._get_transcript_type = GetTranscript
         self._set_face_type = SetFace
         self._set_led_type = SetLed
         self._run_motion_type = RunMotion
@@ -212,9 +288,11 @@ class RclpyBridgeClient:
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
 
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
-        client = self._service_client(self._get_status_type, device_id, "get_status", timeout)
-        response = self._call_service(client, self._get_status_type.Request(), timeout)
+    def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
+        request = self._get_status_type.Request()
+        _copy_meta(request.meta, meta)
+        client = self._service_client(self._get_status_type, meta.device_id, "get_status", timeout)
+        response = self._call_service(client, request, timeout)
         return DeviceStatus(
             device_id=response.device_id,
             connected=bool(response.connected),
@@ -324,6 +402,75 @@ class RclpyBridgeClient:
         del meta, output, quality, wait, timeout
         return _unsupported_media("camera capture result transport")
 
+    def list_events(
+        self,
+        meta: CommandMeta,
+        limit: int,
+        since_event_id: str | None,
+        timeout: float,
+    ) -> EventListResult:
+        request = self._list_events_type.Request()
+        _copy_meta(request.meta, meta)
+        request.limit = limit
+        request.since_event_id = since_event_id or ""
+        client = self._service_client(self._list_events_type, meta.device_id, "events/list", timeout)
+        response = self._call_service(client, request, timeout)
+        return _event_list_from_ros(meta, response.result, response.events, response.cursor)
+
+    def next_event(
+        self,
+        meta: CommandMeta,
+        consumer_id: str,
+        after_event_id: str | None,
+        timeout: float,
+    ) -> EventListResult:
+        request = self._next_event_type.Request()
+        _copy_meta(request.meta, meta)
+        request.consumer_id = consumer_id
+        request.after_event_id = after_event_id or ""
+        request.timeout_ms = _timeout_ms(timeout)
+        client = self._service_client(self._next_event_type, meta.device_id, "events/next", timeout)
+        response = self._call_service(client, request, timeout)
+        return _event_list_from_ros(meta, response.result, response.events, response.cursor)
+
+    def clear_events(
+        self, meta: CommandMeta, consumer_id: str, timeout: float
+    ) -> EventListResult:
+        request = self._clear_event_cursor_type.Request()
+        _copy_meta(request.meta, meta)
+        request.consumer_id = consumer_id
+        client = self._service_client(self._clear_event_cursor_type, meta.device_id, "events/clear_cursor", timeout)
+        response = self._call_service(client, request, timeout)
+        return EventListResult(
+            ok=bool(response.result.ok),
+            result_state=_state_from_ros(int(response.result.state)),
+            device_id=meta.device_id,
+            events=[],
+            cursor=response.cursor or None,
+            meta=meta,
+            error=_error_from_ros(response.result),
+        )
+
+    def get_transcript(
+        self, meta: CommandMeta, utterance_id: str | None, timeout: float
+    ) -> TranscriptResult:
+        request = self._get_transcript_type.Request()
+        _copy_meta(request.meta, meta)
+        request.utterance_id = utterance_id or ""
+        client = self._service_client(self._get_transcript_type, meta.device_id, "speech/transcript/get", timeout)
+        response = self._call_service(client, request, timeout)
+        return TranscriptResult(
+            ok=bool(response.result.ok),
+            result_state=_state_from_ros(int(response.result.state)),
+            device_id=meta.device_id,
+            utterance_id=response.utterance_id or utterance_id,
+            transcript=response.transcript if response.transcript else None,
+            confidence=float(response.confidence),
+            expires_at=_stamp_to_iso(response.expires_at),
+            meta=meta,
+            error=_error_from_ros(response.result),
+        )
+
     def _send_action_goal(
         self, action_type, action_name: str, goal, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
@@ -395,6 +542,10 @@ def _copy_created_at(target, created_at: str) -> None:
     target.nanosec = parsed.microsecond * 1000
 
 
+def _timeout_ms(timeout: float) -> int:
+    return max(0, int(timeout * 1000))
+
+
 def _priority_value(priority: str) -> int:
     return {
         "LOW": 0,
@@ -434,6 +585,86 @@ def _unsupported_media(feature: str) -> BridgeCommandResponse:
     )
 
 
+def _event_list_from_ros(meta: CommandMeta, result, events, cursor: str) -> EventListResult:
+    return EventListResult(
+        ok=bool(result.ok),
+        result_state=_state_from_ros(int(result.state)),
+        device_id=meta.device_id,
+        events=[_event_from_ros(event) for event in events],
+        cursor=cursor or None,
+        meta=meta,
+        error=_error_from_ros(result),
+    )
+
+
+def _event_from_ros(event) -> Event:
+    return Event(
+        event_id=getattr(event, "event_id", ""),
+        device_id=getattr(event, "device_id", ""),
+        event_name=getattr(event, "event_name", ""),
+        source=getattr(event, "source", ""),
+        stamp=_stamp_to_iso(getattr(event, "stamp", None)),
+        command_id=getattr(event, "command_id", "") or None,
+        payload=_payload_from_json(getattr(event, "payload_json", "")),
+    )
+
+
+def _payload_from_json(payload_json: str) -> dict[str, object]:
+    if not payload_json:
+        return {}
+    try:
+        import json
+
+        loaded = json.loads(payload_json)
+    except ValueError:
+        return {"value": payload_json}
+    if isinstance(loaded, dict):
+        return loaded
+    return {"value": loaded}
+
+
+def _stamp_to_iso(stamp) -> str | None:
+    if stamp is None:
+        return None
+    sec = int(getattr(stamp, "sec", 0))
+    nanosec = int(getattr(stamp, "nanosec", 0))
+    if sec == 0 and nanosec == 0:
+        return None
+    value = datetime.fromtimestamp(sec + nanosec / 1_000_000_000, UTC)
+    return value.replace(microsecond=nanosec // 1000).isoformat().replace("+00:00", "Z")
+
+
+def _unsupported_events(device_id: str, feature: str) -> EventListResult:
+    return EventListResult(
+        ok=False,
+        result_state=ResultState.REJECTED,
+        device_id=device_id,
+        events=[],
+        error=ErrorDetail(
+            code="UNSUPPORTED_FEATURE",
+            message=f"bridge backend does not implement {feature} yet",
+            recoverable=False,
+        ),
+    )
+
+
+def _unsupported_transcript(device_id: str, utterance_id: str | None = None) -> TranscriptResult:
+    return TranscriptResult(
+        ok=False,
+        result_state=ResultState.REJECTED,
+        device_id=device_id,
+        utterance_id=utterance_id,
+        transcript=None,
+        confidence=None,
+        expires_at=None,
+        error=ErrorDetail(
+            code="UNSUPPORTED_FEATURE",
+            message="bridge backend does not implement speech transcript service yet",
+            recoverable=False,
+        ),
+    )
+
+
 def _state_from_ros(state: int) -> ResultState:
     return {
         1: ResultState.ACCEPTED,
@@ -458,10 +689,56 @@ def _error_from_ros(result) -> ErrorDetail | None:
     )
 
 
-def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult:
+def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | EventListResult | TranscriptResult:
+    return _error_result(request, error)
+
+
+def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult | TranscriptResult:
+    return _error_result(
+        request,
+        ErrorDetail(
+            code="TIMEOUT",
+            message="bridge facade call timed out",
+            recoverable=True,
+        ),
+        result_state=ResultState.TIMEOUT,
+    )
+
+
+def _error_result(
+    request: CommandRequest,
+    error: ErrorDetail,
+    *,
+    result_state: ResultState = ResultState.REJECTED,
+) -> CommandResult | EventListResult | TranscriptResult:
+    if request.command_type in {
+        CommandType.EVENTS_LIST,
+        CommandType.EVENTS_NEXT,
+        CommandType.EVENTS_CLEAR,
+    }:
+        return EventListResult(
+            ok=False,
+        result_state=result_state,
+        device_id=request.meta.device_id,
+        events=[],
+        meta=request.meta,
+        error=error,
+    )
+    if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+        return TranscriptResult(
+            ok=False,
+            result_state=result_state,
+            device_id=request.meta.device_id,
+            utterance_id=request.args.get("utterance_id"),
+            transcript=None,
+            confidence=None,
+            expires_at=None,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
-        result_state=ResultState.REJECTED,
+        result_state=result_state,
         meta=request.meta,
         command=_command_payload(request),
         error=error,
@@ -495,4 +772,23 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
         return {"type": "nfc.wait"}
     if request.command_type is CommandType.IMU_STREAM:
         return {"type": "imu.stream", "hz": request.args["hz"]}
+    if request.command_type is CommandType.EVENTS_LIST:
+        return {"type": "events.list", "limit": request.args["limit"]}
+    if request.command_type is CommandType.EVENTS_NEXT:
+        return {"type": "events.next", "limit": request.args["limit"]}
+    if request.command_type is CommandType.EVENTS_CLEAR:
+        return {"type": "events.clear"}
+    if request.command_type is CommandType.SPEECH_TRANSCRIPT:
+        return {
+            "type": "speech.transcript",
+            "utterance_id": request.args.get("utterance_id"),
+        }
     return {"type": request.command_type.value}
+
+
+def _optional_string_arg(request: CommandRequest, key: str) -> str | None:
+    value = request.args.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

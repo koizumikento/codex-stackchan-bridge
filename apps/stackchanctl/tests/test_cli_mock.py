@@ -147,6 +147,96 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(command["topic"], "imu/raw")
         self.assertFalse(command["status_field"])
 
+    def test_events_list_mock_json_matches_fixture(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "list", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        expected = json.loads((ROOT / "tests" / "fixtures" / "events_list_default.json").read_text())
+        self.assertEqual(json.loads(stdout), expected)
+
+    def test_events_next_mock_json_returns_single_event(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "next", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["device_id"], "default")
+        self.assertEqual(len(payload["events"]), 1)
+        self.assertEqual(payload["events"][0]["event_name"], "picked_up")
+        self.assertEqual(payload["events"][0]["event_id"], "mock-event-0001")
+        self.assertEqual(payload["events"][0]["source"], "firmware")
+        self.assertEqual(payload["cursor"], "mock-event-0001")
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+        self.assertEqual(payload["metadata"]["source"], "human_cli")
+
+    def test_events_next_mock_json_empty_after_last_event_is_ok(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "next", "--after", "mock-event-0002", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["events"], [])
+        self.assertIsNone(payload["cursor"])
+
+    def test_events_tail_mock_json_uses_count(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "tail", "--limit", "1", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(len(payload["events"]), 1)
+        self.assertEqual(payload["events"][0]["event_name"], "transcript_ready")
+
+    def test_events_clear_mock_json_empty_events_are_ok(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "clear", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["device_id"], "default")
+        self.assertEqual(payload["events"], [])
+        self.assertIsNone(payload["cursor"])
+
+    def test_speech_transcript_mock_json_matches_fixture(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["speech", "transcript", "mock-utt-001", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        expected = json.loads(
+            (ROOT / "tests" / "fixtures" / "speech_transcript_default.json").read_text()
+        )
+        self.assertEqual(json.loads(stdout), expected)
+
+    def test_speech_transcript_missing_json_is_structured_error(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["speech", "transcript", "missing", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+        self.assertEqual(payload["error"]["code"], "TRANSCRIPT_NOT_FOUND")
+
     def test_camera_quality_failure_is_recoverable(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["camera", "capture", "--output", "frame.jpg", "--quality", "99", "--json"],
