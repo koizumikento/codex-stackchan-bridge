@@ -223,6 +223,20 @@ inline bool event_payload_json_fits(const char* payload_json) {
          strlen(payload_json) <= kEventPayloadJsonMaxLength;
 }
 
+inline bool is_priority_device_event_name(const char* name) {
+  if (name == nullptr) {
+    return false;
+  }
+  return strcmp(name, "mic_overrun") == 0 ||
+         strcmp(name, "audio_playback_underrun") == 0 ||
+         strcmp(name, "audio_capture_failed") == 0 ||
+         strcmp(name, "camera_capture_failed") == 0 ||
+         strcmp(name, "battery_low") == 0 ||
+         strcmp(name, "brownout_risk") == 0 ||
+         strcmp(name, "power_fault") == 0 ||
+         strcmp(name, "transport_unstable") == 0;
+}
+
 inline char safe_json_char(char value) {
   const unsigned char byte = static_cast<unsigned char>(value);
   if (byte < 0x20 || byte > 0x7e || value == '"' || value == '\\') {
@@ -293,6 +307,9 @@ class EventPublisher {
   }
 
   size_t queued_count() const { return count_; }
+  size_t dropped_low_priority_count() const {
+    return dropped_low_priority_count_;
+  }
 
   Result drain(size_t max_events = kEventQueueCapacity) {
     if (callback_ == nullptr) {
@@ -352,7 +369,9 @@ class EventPublisher {
         sizeof(event.payload_json),
         payload_json == nullptr ? "{}" : payload_json);
 
-    if (count_ >= kEventQueueCapacity) {
+    if (count_ >= kEventQueueCapacity &&
+        (!is_priority_device_event_name(event_name) ||
+         !drop_oldest_low_priority_event())) {
       return Result::rejected(
           "FIRMWARE_BUSY",
           "device event queue is full",
@@ -447,8 +466,27 @@ class EventPublisher {
   DeviceEvent queue_[kEventQueueCapacity]{};
   size_t head_ = 0;
   size_t count_ = 0;
+  size_t dropped_low_priority_count_ = 0;
   EventPublishFn callback_ = nullptr;
   void* context_ = nullptr;
+
+  bool drop_oldest_low_priority_event() {
+    for (size_t offset = 0; offset < count_; ++offset) {
+      const size_t index = (head_ + offset) % kEventQueueCapacity;
+      if (is_priority_device_event_name(queue_[index].event_name)) {
+        continue;
+      }
+      for (size_t shift = offset; shift + 1 < count_; ++shift) {
+        const size_t current = (head_ + shift) % kEventQueueCapacity;
+        const size_t next = (head_ + shift + 1) % kEventQueueCapacity;
+        queue_[current] = queue_[next];
+      }
+      --count_;
+      ++dropped_low_priority_count_;
+      return true;
+    }
+    return false;
+  }
 };
 
 }  // namespace stackchan

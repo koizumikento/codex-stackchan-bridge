@@ -145,6 +145,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"device event publisher callback is not configured"', events)
         self.assertIn("EventPublishFn", events)
         self.assertIn("class EventPublisher", events)
+        self.assertIn("is_priority_device_event_name", events)
+        self.assertIn("drop_oldest_low_priority_event", events)
+        self.assertIn("dropped_low_priority_count", events)
 
         for name in (
             "button_pressed",

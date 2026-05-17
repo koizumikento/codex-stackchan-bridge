@@ -177,6 +177,25 @@ def _coerce_telemetry_device_id(message: object, expected_device_id: str) -> boo
     return incoming_device_id == expected_device_id
 
 
+def _relay_telemetry_message(
+    device_id: str,
+    tail: str,
+    message: object,
+    publisher: object,
+    *,
+    power_store: PowerTelemetryStore | None = None,
+    conflict_handler: object | None = None,
+) -> bool:
+    if not _coerce_telemetry_device_id(message, device_id):
+        if callable(conflict_handler):
+            conflict_handler(device_id, tail, message)
+        return False
+    if tail == "power/status" and power_store is not None:
+        power_store.update(_snapshot_from_power_status(message, fallback_device_id=device_id))
+    publisher.publish(message)
+    return True
+
+
 def main(args: list[str] | None = None) -> None:
     try:
         import rclpy
@@ -201,8 +220,8 @@ def main(args: list[str] | None = None) -> None:
             "stackchan_bridge_node requires ROS 2 Python packages."
         ) from exc
 
-    reliable_depth_1 = QoSProfile(depth=1)
     reliable_depth_2 = QoSProfile(depth=2)
+    reliable_depth_4 = QoSProfile(depth=4)
     best_effort_depth_5 = QoSProfile(depth=5)
     best_effort_depth_5.reliability = ReliabilityPolicy.BEST_EFFORT
     best_effort_depth_8 = QoSProfile(depth=8)
@@ -334,7 +353,7 @@ def main(args: list[str] | None = None) -> None:
                 "touch/state",
                 TouchState,
                 public_qos=transient_depth_1,
-                device_qos=reliable_depth_1,
+                device_qos=reliable_depth_4,
             )
             self._create_telemetry_relay(
                 device_id,
@@ -609,9 +628,23 @@ def main(args: list[str] | None = None) -> None:
             message: object,
             publisher: object,
         ) -> None:
-            if not _coerce_telemetry_device_id(message, device_id):
+            if not _relay_telemetry_message(
+                device_id,
+                tail,
+                message,
+                publisher,
+                power_store=self.power_store,
+                conflict_handler=self._handle_telemetry_device_id_conflict,
+            ):
+                return
+
+        def _handle_telemetry_device_id_conflict(self, device_id: str, tail: str, message: object) -> None:
+            received_device_id = getattr(message, "device_id", "")
+            if received_device_id == device_id:
+                return
+            if received_device_id:
                 self.get_logger().warning(
-                    f"dropping {tail} telemetry for unexpected device_id={getattr(message, 'device_id', '')!r}"
+                    f"dropping {tail} telemetry for unexpected device_id={received_device_id!r}"
                 )
                 self._handle_speech_event(
                     SpeechEvent(
@@ -620,14 +653,10 @@ def main(args: list[str] | None = None) -> None:
                         source="bridge",
                         payload={
                             "topic": tail,
-                            "received_device_id": getattr(message, "device_id", ""),
+                            "received_device_id": received_device_id,
                         },
                     )
                 )
-                return
-            if tail == "power/status":
-                self.power_store.update(_snapshot_from_power_status(message, fallback_device_id=device_id))
-            publisher.publish(message)
 
         def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:
             if not _coerce_telemetry_device_id(message, device_id):

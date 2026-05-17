@@ -15,6 +15,7 @@ from stackchan_bridge.ros_node import (
     _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
+    _relay_telemetry_message,
 )
 from stackchan_bridge.telemetry import PowerStatusSnapshot
 
@@ -103,6 +104,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "PowerStatus",
             "StackChanEvent",
             "EVENT_QOS_DEPTH = 32",
+            "reliable_depth_4 = QoSProfile(depth=4)",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",
@@ -164,6 +166,63 @@ class RosNodeHelperTests(unittest.TestCase):
         mismatched = SimpleNamespace(device_id="desk")
         self.assertFalse(_coerce_telemetry_device_id(mismatched, "default"))
         self.assertEqual(mismatched.device_id, "desk")
+
+    def test_power_telemetry_relay_fills_device_id_stores_and_publishes(self) -> None:
+        class Publisher:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def publish(self, message) -> None:
+                self.messages.append(message)
+
+        message = SimpleNamespace(
+            device_id="",
+            stamp=SimpleNamespace(sec=12, nanosec=0),
+            voltage_v=4.9,
+            current_ma=180.0,
+            power_mw=882.0,
+            percentage=float("nan"),
+            power_source=2,
+            charging=True,
+            powered=True,
+            low_battery=False,
+            brownout_risk=False,
+            fault_code="",
+        )
+        publisher = Publisher()
+        store = type("Store", (), {"snapshots": [], "update": lambda self, snapshot: self.snapshots.append(snapshot)})()
+
+        relayed = _relay_telemetry_message(
+            "default",
+            "power/status",
+            message,
+            publisher,
+            power_store=store,
+        )
+
+        self.assertTrue(relayed)
+        self.assertEqual(message.device_id, "default")
+        self.assertEqual(publisher.messages, [message])
+        self.assertEqual(store.snapshots[0].device_id, "default")
+
+    def test_telemetry_relay_drops_device_id_mismatch(self) -> None:
+        class Publisher:
+            def publish(self, message) -> None:
+                raise AssertionError(f"unexpected publish: {message}")
+
+        conflicts = []
+        message = SimpleNamespace(device_id="desk")
+
+        relayed = _relay_telemetry_message(
+            "default",
+            "touch/state",
+            message,
+            Publisher(),
+            conflict_handler=lambda device_id, tail, msg: conflicts.append((device_id, tail, msg.device_id)),
+        )
+
+        self.assertFalse(relayed)
+        self.assertEqual(conflicts, [("default", "touch/state", "desk")])
 
 
 if __name__ == "__main__":

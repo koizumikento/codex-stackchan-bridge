@@ -19,6 +19,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
     RclpyBridgeClient,
     _copy_created_at,
     _normalize_action_response,
+    _power_status_from_ros,
 )
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
@@ -448,6 +449,104 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["power"]["power_source"], "usb")
         self.assertEqual(payload["power"]["voltage_v"], 4.9)
         self.assertEqual(client.power_status_args, ("default", "cmd-test-0001", 5.0))
+
+    def test_bridge_power_status_stale_error_matches_cli_shape(self) -> None:
+        class StalePowerClient(FakeBridgeClient):
+            def get_power_status(self, meta, timeout: float) -> PowerStatusResult:
+                return PowerStatusResult(
+                    ok=False,
+                    result_state=ResultState.REJECTED,
+                    device_id=meta.device_id,
+                    voltage_v=None,
+                    current_ma=None,
+                    power_mw=None,
+                    percentage=None,
+                    power_source="usb",
+                    charging=False,
+                    powered=False,
+                    low_battery=False,
+                    brownout_risk=False,
+                    stale=True,
+                    meta=meta,
+                    error=ErrorDetail(
+                        code="STALE_TELEMETRY",
+                        message="power telemetry is stale",
+                        recoverable=True,
+                    ),
+                )
+
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "power", "status", "--json"],
+            StalePowerClient(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "STALE_TELEMETRY")
+        self.assertTrue(payload["error"]["recoverable"])
+        self.assertTrue(payload["power"]["stale"])
+
+    def test_bridge_power_status_unsupported_error_matches_cli_shape(self) -> None:
+        class UnsupportedPowerClient(FakeBridgeClient):
+            def get_power_status(self, meta, timeout: float) -> PowerStatusResult:
+                return PowerStatusResult(
+                    ok=False,
+                    result_state=ResultState.REJECTED,
+                    device_id=meta.device_id,
+                    voltage_v=None,
+                    current_ma=None,
+                    power_mw=None,
+                    percentage=None,
+                    power_source="unknown",
+                    charging=False,
+                    powered=False,
+                    low_battery=False,
+                    brownout_risk=False,
+                    meta=meta,
+                    error=ErrorDetail(
+                        code="UNSUPPORTED_FEATURE",
+                        message="power telemetry has not been received",
+                        recoverable=False,
+                    ),
+                )
+
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "power", "status", "--json"],
+            UnsupportedPowerClient(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertFalse(payload["error"]["recoverable"])
+        self.assertFalse(payload["power"]["stale"])
+
+    def test_bridge_power_status_ros_nan_maps_to_json_null(self) -> None:
+        meta = SimpleNamespace(device_id="default")
+        result = SimpleNamespace(ok=True, state=2, error_code="", message="", recoverable=False)
+        status = SimpleNamespace(
+            device_id="default",
+            stamp=SimpleNamespace(sec=1778889600, nanosec=0),
+            voltage_v=float("nan"),
+            current_ma=float("nan"),
+            power_mw=882.0,
+            percentage=float("nan"),
+            power_source=2,
+            charging=True,
+            powered=True,
+            low_battery=False,
+            brownout_risk=False,
+            fault_code="",
+        )
+
+        converted = _power_status_from_ros(meta, result, status, stale=False)
+
+        self.assertIsNone(converted.voltage_v)
+        self.assertIsNone(converted.current_ma)
+        self.assertIsNone(converted.percentage)
+        self.assertEqual(converted.power_mw, 882.0)
 
     def test_non_wait_action_normalizes_success_after_facade_validation(self) -> None:
         response = _normalize_action_response(
