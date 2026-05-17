@@ -179,10 +179,37 @@ inline MotionPlan plan_motion(
     const char* name,
     float intensity,
     uint32_t duration_ms,
+    bool calibration_valid,
+    bool servo_read_ok,
+    bool fault_state,
     ServoLimits limits = kDefaultServoLimits) {
   if (!is_known_motion(name)) {
     return {
         Result::rejected("UNKNOWN_COMMAND", "unknown motion name"),
+        kNeutralTarget,
+        0,
+    };
+  }
+
+  if (!calibration_valid) {
+    return {
+        Result::rejected("CALIBRATION_INVALID", "motion calibration is invalid", true),
+        kNeutralTarget,
+        0,
+    };
+  }
+
+  if (!servo_read_ok) {
+    return {
+        Result::rejected("SERVO_READ_FAILED", "servo current position read failed", true),
+        kNeutralTarget,
+        0,
+    };
+  }
+
+  if (fault_state) {
+    return {
+        Result::rejected("MOTION_INTERRUPTED", "firmware is in fault state", true),
         kNeutralTarget,
         0,
     };

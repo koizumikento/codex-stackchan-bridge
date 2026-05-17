@@ -119,8 +119,10 @@ Calibration NVS rules:
 - Provide a reset-to-default calibration path.
 - Export/import may be added through explicit maintenance tooling, not normal command paths.
 - Missing, corrupted, or schema-mismatched calibration is `CALIBRATION_INVALID`.
-  Motion pose/home/status must reject it and must not fall back to CLI config
-  for safety values.
+  All servo-actuating motion, pose, home, and status operations must reject it
+  and must not fall back to CLI config for safety values. A neutral-only
+  fallback is allowed only if firmware owns and tests that fallback as
+  non-actuating or hard-limit-safe behavior.
 
 Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 

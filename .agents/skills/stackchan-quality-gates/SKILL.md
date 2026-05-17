@@ -17,7 +17,9 @@ Use this skill to choose the smallest validation set that still covers the chang
 
 - Docs-only changes: check links, references, terminology, and cross-document consistency.
 - Agent config changes: validate TOML and confirm root `AGENTS.md` still lists routing accurately.
-- Skill changes: run the skill validator and confirm `agents/openai.yaml` matches `SKILL.md`.
+- Skill changes: inspect the changed `SKILL.md` for frontmatter, trigger scope,
+  command examples, and repo routing consistency. If a validator exists in the
+  repository, run it; otherwise report that no skill validator is present.
 - CLI changes: run Python formatting/lint/tests when available and verify deterministic mock JSON.
 - MCP stdio changes: verify JSON-RPC framing, stdout/stderr separation, mock tool results, and metadata propagation.
 - ROS interface changes: build message packages and verify CLI/bridge/firmware docs use the same names.

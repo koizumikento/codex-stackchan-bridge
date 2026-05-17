@@ -53,6 +53,14 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kMinMotionDurationMs", safety)
         self.assertIn("kMaxMotionDurationMs", safety)
         self.assertIn('"MOTION_INTERRUPTED"', safety)
+        self.assertIn('"CALIBRATION_INVALID"', safety)
+        self.assertIn('"SERVO_READ_FAILED"', safety)
+        self.assertIn("bool calibration_valid", safety)
+        self.assertIn("bool servo_read_ok", safety)
+        self.assertIn("bool fault_state", safety)
+        self.assertNotIn("bool calibration_valid = true", safety)
+        self.assertNotIn("bool servo_read_ok = true", safety)
+        self.assertNotIn("bool fault_state = false", safety)
         self.assertIn("intensity < 0.0f || intensity > 1.0f", safety)
         self.assertRegex(safety, re.compile(r"constexpr ServoLimits kDefaultServoLimits"))
 
@@ -92,6 +100,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("drain_device_events", main)
         self.assertIn("kEventDrainBudget", main)
         self.assertIn("kDeviceEventsTopicSuffix", main)
+        self.assertIn("firmware_calibration_valid", main)
+        self.assertIn("servo_position_read_available", main)
+        self.assertIn("payload_bytes=", main)
+        self.assertNotIn("Serial.println(event.payload_json)", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
@@ -229,6 +241,11 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("payload_json_key_too_long", events)
         self.assertIn("max_value_length", events)
         self.assertIn("kFirmwareEventSource", events)
+        self.assertIn("make_reference_payload", events)
+        self.assertIn('"tag_ref"', events)
+        self.assertIn('"remote_ref"', events)
+        self.assertNotIn('"tag_id", tag_id', events)
+        self.assertNotIn('"command", command', events)
 
 
 if __name__ == "__main__":
