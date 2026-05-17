@@ -295,28 +295,11 @@ class BridgeBackend:
                 timeout=request.timeout,
             )
         if request.command_type is CommandType.AUDIO_PLAY:
-            return client.play_audio(
-                request.meta,
-                str(request.args["path"]),
-                wait=request.wait,
-                timeout=request.timeout,
-            )
+            return _unsupported_media("firmware-confirmed audio playback")
         if request.command_type is CommandType.AUDIO_CAPTURE:
-            return client.capture_audio(
-                request.meta,
-                float(request.args["seconds"]),
-                str(request.args["output"]),
-                wait=request.wait,
-                timeout=request.timeout,
-            )
+            return _unsupported_media("firmware-confirmed audio capture")
         if request.command_type is CommandType.CAMERA_CAPTURE:
-            return client.capture_camera(
-                request.meta,
-                str(request.args["output"]),
-                int(request.args["quality"]),
-                wait=request.wait,
-                timeout=request.timeout,
-            )
+            return _unsupported_media("firmware-confirmed camera capture")
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -907,6 +890,18 @@ def _state_from_ros(state: int) -> ResultState:
     }.get(state, ResultState.REJECTED)
 
 
+def _unsupported_media(feature: str) -> BridgeCommandResponse:
+    return BridgeCommandResponse(
+        ok=False,
+        result_state=ResultState.REJECTED,
+        error=ErrorDetail(
+            code="UNSUPPORTED_FEATURE",
+            message=f"bridge backend does not implement {feature} yet",
+            recoverable=False,
+        ),
+    )
+
+
 def _error_from_ros(result) -> ErrorDetail | None:
     if getattr(result, "ok", False):
         return None
@@ -1038,18 +1033,35 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
     if request.command_type is CommandType.SAY:
         return {"type": "say", "text_length": len(str(request.args["text"]))}
     if request.command_type is CommandType.AUDIO_PLAY:
-        return {"type": "audio.play", "path": request.args["path"]}
+        return {
+            "type": "audio.play",
+            "path": request.args["path"],
+            "format": "pcm_s16le",
+            "sample_rate": 16000,
+            "channels": 1,
+            "chunk_ms": 20,
+            "max_chunk_ms": 40,
+        }
     if request.command_type is CommandType.AUDIO_CAPTURE:
         return {
             "type": "audio.capture",
             "seconds": request.args["seconds"],
             "output": request.args["output"],
+            "format": "pcm_s16le",
+            "sample_rate": 16000,
+            "channels": 1,
+            "chunk_ms": 20,
+            "max_chunk_ms": 40,
         }
     if request.command_type is CommandType.CAMERA_CAPTURE:
         return {
             "type": "camera.capture",
             "output": request.args["output"],
+            "format": "jpeg",
+            "width": 320,
+            "height": 240,
             "quality": request.args["quality"],
+            "max_payload_bytes": 98304,
         }
     if request.command_type is CommandType.NFC_WAIT:
         return {"type": "nfc.wait"}

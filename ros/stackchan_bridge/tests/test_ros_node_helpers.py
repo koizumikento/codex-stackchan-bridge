@@ -41,6 +41,20 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(converted.device_id, "desk")
         self.assertEqual(converted.created_at, "1778889601.250000000")
 
+    def test_meta_uses_namespace_device_id_over_caller_supplied_device_id(self) -> None:
+        stamp = SimpleNamespace(sec=1778889601, nanosec=250000000)
+        meta = SimpleNamespace(
+            device_id="desk",
+            command_id="cmd-test-0001",
+            source="human_cli",
+            created_at=stamp,
+            priority=1,
+        )
+
+        converted = _meta_from_ros(meta, "default")
+
+        self.assertEqual(converted.device_id, "default")
+
     def test_device_ids_are_normalized_for_node_resources_and_registry(self) -> None:
         self.assertEqual(
             _normalize_device_ids(["default", "desk", "desk", ""]),

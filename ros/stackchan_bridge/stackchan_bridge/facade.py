@@ -17,7 +17,6 @@ from stackchan_bridge.models import (
 )
 from stackchan_bridge.registry import DeviceAvailability, DeviceRegistry
 
-CLI_SOURCES = {"cli", "codex_skill", "human_cli", "mcp_agent", "stackchanctl"}
 AVAILABILITY_ERROR_CODES = {
     "DEVICE_NOT_FOUND",
     "TRANSPORT_DISCONNECTED",
@@ -228,19 +227,12 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_accepted(meta)
-        log_structured(
-            self.logger,
-            logging.INFO,
-            "audio_play_accepted",
-            device_id=meta.device_id,
-            command_id=meta.command_id,
-            source=meta.source,
-            format=format,
-            sample_rate=sample_rate,
-            channels=channels,
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "audio playback requires firmware-confirmed device transport.",
         )
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        self._record_error(meta, result, connected=True)
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def capture_audio(
         self,
@@ -266,20 +258,12 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_accepted(meta)
-        log_structured(
-            self.logger,
-            logging.INFO,
-            "audio_capture_accepted",
-            device_id=meta.device_id,
-            command_id=meta.command_id,
-            source=meta.source,
-            format=format,
-            sample_rate=sample_rate,
-            channels=channels,
-            duration_ms=duration_ms,
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "audio capture requires firmware-confirmed device transport.",
         )
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        self._record_error(meta, result, connected=True)
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def capture_camera(
         self,
@@ -299,27 +283,19 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_accepted(meta)
-        log_structured(
-            self.logger,
-            logging.INFO,
-            "camera_capture_accepted",
-            device_id=meta.device_id,
-            command_id=meta.command_id,
-            source=meta.source,
-            format=format,
-            width=width,
-            height=height,
-            quality=quality,
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "camera capture requires firmware-confirmed device transport.",
         )
-        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+        self._record_error(meta, result, connected=True)
+        return CommandResponse(meta.device_id, meta.command_id, result)
 
     def _validate(self, meta: CommandMeta) -> CommandResponse | None:
         availability = self.registry.availability(meta.device_id)
-        if meta.priority == PRIORITY_SAFETY and meta.source in CLI_SOURCES:
+        if meta.priority == PRIORITY_SAFETY:
             result = Result.rejected(
                 "INVALID_PRIORITY",
-                "CLI-originated SAFETY priority is reserved for bridge and firmware.",
+                "SAFETY priority is reserved for bridge and firmware internals.",
             )
             self._record_error(
                 meta,

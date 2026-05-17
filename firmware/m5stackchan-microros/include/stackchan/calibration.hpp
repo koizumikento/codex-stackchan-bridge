@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "stackchan/contract.hpp"
+#include "stackchan/motion_safety.hpp"
 
 namespace stackchan {
 
@@ -11,14 +12,15 @@ constexpr uint32_t kCalibrationMagic = 0x5354434Eu;
 constexpr uint16_t kCalibrationSchemaVersion = 1;
 constexpr const char* kCalibrationNvsNamespace = "stackchan";
 constexpr const char* kCalibrationNvsKey = "calib_v1";
+constexpr int16_t kMaxCalibrationCorrection = 30;
 
 struct ServoCalibration {
-  int16_t min_x;
-  int16_t max_x;
   int16_t home_x;
-  int16_t min_y;
-  int16_t max_y;
   int16_t home_y;
+  int16_t correction_x;
+  int16_t correction_y;
+  int16_t reserved_0;
+  int16_t reserved_1;
 };
 
 struct CalibrationRecord {
@@ -47,24 +49,30 @@ inline uint32_t calibration_checksum_without_checksum(
   hash = calibration_hash_step(hash, record.magic);
   hash = calibration_hash_step(hash, record.schema_version);
   hash = calibration_hash_step(hash, record.record_size);
-  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.min_x));
-  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.max_x));
   hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.home_x));
-  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.min_y));
-  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.max_y));
   hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.home_y));
+  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.correction_x));
+  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.correction_y));
+  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.reserved_0));
+  hash = calibration_hash_step(hash, static_cast<uint16_t>(record.servo.reserved_1));
   return hash;
 }
 
 inline bool servo_calibration_bounds_are_safe(const ServoCalibration& servo) {
-  return servo.min_x < servo.home_x &&
-         servo.home_x < servo.max_x &&
-         servo.min_y < servo.home_y &&
-         servo.home_y < servo.max_y &&
-         servo.min_x >= -180 &&
-         servo.max_x <= 180 &&
-         servo.min_y >= -180 &&
-         servo.max_y <= 180;
+  const int corrected_home_x = servo.home_x + servo.correction_x;
+  const int corrected_home_y = servo.home_y + servo.correction_y;
+  return servo.home_x >= kDefaultServoLimits.min_x &&
+         servo.home_x <= kDefaultServoLimits.max_x &&
+         servo.home_y >= kDefaultServoLimits.min_y &&
+         servo.home_y <= kDefaultServoLimits.max_y &&
+         servo.correction_x >= -kMaxCalibrationCorrection &&
+         servo.correction_x <= kMaxCalibrationCorrection &&
+         servo.correction_y >= -kMaxCalibrationCorrection &&
+         servo.correction_y <= kMaxCalibrationCorrection &&
+         corrected_home_x >= kDefaultServoLimits.min_x &&
+         corrected_home_x <= kDefaultServoLimits.max_x &&
+         corrected_home_y >= kDefaultServoLimits.min_y &&
+         corrected_home_y <= kDefaultServoLimits.max_y;
 }
 
 inline Result validate_calibration_record(const CalibrationRecord& record) {

@@ -25,7 +25,7 @@ def _time_to_string(stamp: object) -> str:
 
 def _meta_from_ros(meta: object, fallback_device_id: str = "default") -> CommandMeta:
     return CommandMeta(
-        device_id=getattr(meta, "device_id", "") or fallback_device_id,
+        device_id=fallback_device_id,
         command_id=getattr(meta, "command_id", ""),
         source=getattr(meta, "source", ""),
         created_at=_time_to_string(getattr(meta, "created_at", None)),

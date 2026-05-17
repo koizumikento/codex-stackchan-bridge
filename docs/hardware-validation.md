@@ -15,9 +15,11 @@ hardware bring-up issue complete.
 
 - Boot with no valid calibration record and confirm `motion pose`, `motion home`,
   and named servo motion reject with `CALIBRATION_INVALID`.
-- Load a valid firmware-owned calibration record through maintenance tooling or
-  a temporary local debug build; do not use normal CLI/MCP commands for writes.
-- Confirm `stackchanctl --backend bridge motion pose --pan-deg 30 --tilt-deg 20 --json`
+- When explicit maintenance tooling exists, load a valid firmware-owned
+  calibration record. Normal CLI/MCP commands must not write calibration.
+- Until that maintenance path exists, mark valid-calibration motion checks
+  unavailable and only complete the invalid-calibration rejection checks.
+- With a valid calibration record, confirm `stackchanctl --backend bridge motion pose --pan-deg 30 --tilt-deg 20 --json`
   accepts and moves to the expected absolute home-frame pose.
 - Confirm `--pan-deg 129`, `--tilt-deg -1`, and non-finite values are rejected
   without clamping or motion.

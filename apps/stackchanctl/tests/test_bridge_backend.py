@@ -402,20 +402,33 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
 
-    def test_bridge_audio_play_routes_to_action_client(self) -> None:
+    def test_bridge_audio_play_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "audio", "play", "prompt.wav", "--json"],
             client,
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "ACCEPTED")
-        self.assertEqual(payload["command"], {"type": "audio.play", "path": "prompt.wav"})
-        self.assertEqual(client.play_audio_args, ("default", "prompt.wav", False, 5.0))
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(
+            payload["command"],
+            {
+                "type": "audio.play",
+                "path": "prompt.wav",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+                "chunk_ms": 20,
+                "max_chunk_ms": 40,
+            },
+        )
+        self.assertIsNone(client.play_audio_args)
 
-    def test_bridge_audio_capture_routes_to_action_client(self) -> None:
+    def test_bridge_audio_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
@@ -433,14 +446,18 @@ class BridgeBackendTests(unittest.TestCase):
             client,
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "audio.capture")
         self.assertEqual(payload["command"]["output"], "mic.wav")
-        self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
+        self.assertEqual(payload["command"]["format"], "pcm_s16le")
+        self.assertEqual(payload["command"]["sample_rate"], 16000)
+        self.assertIsNone(client.capture_audio_args)
 
-    def test_bridge_camera_capture_routes_to_action_client(self) -> None:
+    def test_bridge_camera_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
@@ -458,12 +475,18 @@ class BridgeBackendTests(unittest.TestCase):
             client,
         )
 
-        self.assertEqual(code, 0, stderr)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "camera.capture")
+        self.assertEqual(payload["command"]["format"], "jpeg")
+        self.assertEqual(payload["command"]["width"], 320)
+        self.assertEqual(payload["command"]["height"], 240)
         self.assertEqual(payload["command"]["quality"], 80)
-        self.assertEqual(client.capture_camera_args, ("default", "frame.jpg", 80, True, 5.0))
+        self.assertEqual(payload["command"]["max_payload_bytes"], 98304)
+        self.assertIsNone(client.capture_camera_args)
 
     def test_bridge_events_list_passes_since_event_to_client(self) -> None:
         client = FakeBridgeClient()

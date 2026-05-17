@@ -129,6 +129,9 @@ Current MVP scaffold:
 - `stackchan/calibration.hpp` defines the firmware-owned calibration record,
   schema version, NVS namespace/key, checksum validation, and default-invalid
   store behavior.
+- The calibration record stores home basis and bounded per-device corrections.
+  It does not store hard min/max safety envelopes; those remain firmware
+  constants in the motion safety layer.
 - `firmware_calibration_valid()` reads only the firmware calibration store.
   Until setup loads a valid NVS record, servo-actuating commands remain gated by
   `CALIBRATION_INVALID`.

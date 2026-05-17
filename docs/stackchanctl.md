@@ -498,11 +498,10 @@ Backpressure is not acknowledged per chunk. Malformed chunks, wrong direction,
 wrong command id, sequence gaps, overrun, underrun, and disconnects are
 structured command results or events.
 
-The bridge backend now sends audio play/capture to the bridge action surface
-with baseline PCM metadata. CLI JSON still reports metadata only; payload
-chunk streaming and writing captured WAV bytes are implementation details behind
-the bridge/device action flow, not MCP output. The mock backend keeps
-deterministic responses for CLI development.
+The current bridge backend rejects audio play/capture with
+`UNSUPPORTED_FEATURE` until firmware-confirmed device transport exists. CLI JSON
+still reports the baseline metadata contract and never includes PCM bytes. The
+mock backend keeps deterministic responses for CLI development.
 
 ### Camera commands
 
@@ -523,10 +522,10 @@ Baseline camera capture is snapshot-only QVGA JPEG with `quality=1..95` and max
 payload 96 KiB. Continuous streaming, follow mode, and video-like frame
 sequences require a separate contract.
 
-The bridge backend now sends camera capture to the bridge action surface with
-QVGA JPEG metadata. CLI JSON still reports metadata only; JPEG bytes must not be
-inlined in CLI/MCP results or logs. The mock backend keeps deterministic camera
-validation behavior for CLI development.
+The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
+until firmware-confirmed device transport exists. CLI JSON still reports the
+baseline QVGA JPEG metadata contract and never includes JPEG bytes. The mock
+backend keeps deterministic camera validation behavior for CLI development.
 
 ### NFC commands
 

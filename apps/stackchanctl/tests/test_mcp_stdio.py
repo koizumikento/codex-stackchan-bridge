@@ -92,6 +92,8 @@ class SensitiveEventBackend:
                     payload={
                         "tag_id": "04AABB",
                         "nested": {"raw_ir_code": "0xDEADBEEF"},
+                        "transcript": "turn the light on",
+                        "utterance": "hello stackchan",
                         "level": 3,
                     },
                 )
@@ -337,10 +339,14 @@ class McpStdioTests(unittest.TestCase):
         payload = structured["events"][0]["payload"]
         self.assertEqual(payload["tag_id"], "<redacted>")
         self.assertEqual(payload["nested"]["raw_ir_code"], "<redacted>")
+        self.assertEqual(payload["transcript"], "<redacted>")
+        self.assertEqual(payload["utterance"], "<redacted>")
         self.assertEqual(payload["level"], 3)
         self.assertEqual(json.loads(result["content"][0]["text"]), structured)
         self.assertNotIn("04AABB", result["content"][0]["text"])
         self.assertNotIn("0xDEADBEEF", result["content"][0]["text"])
+        self.assertNotIn("turn the light on", result["content"][0]["text"])
+        self.assertNotIn("hello stackchan", result["content"][0]["text"])
 
     def test_events_next_tool_empty_after_cursor_exhaustion_is_ok(self) -> None:
         code, responses, stderr = run_mcp(

@@ -70,7 +70,9 @@ SENSITIVE_EVENT_FIELDS = frozenset(
         "tag_id",
         "text",
         "token",
+        "transcript",
         "uid",
+        "utterance",
     }
 )
 SENSITIVE_EVENT_MARKERS = (
