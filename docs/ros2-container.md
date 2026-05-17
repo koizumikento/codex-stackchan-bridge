@@ -1,11 +1,12 @@
 # Containerized ROS 2 Environment
 
 Use this environment when you want ROS 2 Jazzy readiness without installing ROS
-2 directly on the Windows host or the base WSL2 distribution.
+2 directly on your host machine.
 
-The host only needs Docker Desktop or another Docker engine. ROS 2, colcon,
-rosdep, rclpy, and interface generation dependencies stay inside the
-container.
+The host only needs Docker Desktop or another Docker-compatible engine that can
+run Linux containers. Windows, Linux, and macOS hosts should all use the same
+repository runner commands below. ROS 2, colcon, rosdep, rclpy, and interface
+generation dependencies stay inside the container.
 
 ## Build The Image
 
@@ -17,7 +18,7 @@ uv run --no-project python scripts/ros2_container.py build-image
 
 ## Run A Shell
 
-From either Windows PowerShell or bash:
+From PowerShell, bash, zsh, or another local shell:
 
 ```bash
 uv run --no-project python scripts/ros2_container.py shell
@@ -26,7 +27,8 @@ uv run --no-project python scripts/ros2_container.py shell
 This opens a shell with the repository mounted at
 `/workspaces/codex-stackchan-bridge`.
 
-If you need the raw Docker command instead:
+If you need the raw Docker command instead, adapt the host path syntax for your
+local shell:
 
 ```bash
 docker run --rm -it -v "$PWD":/workspaces/codex-stackchan-bridge -w /workspaces/codex-stackchan-bridge codex-stackchan-ros2:jazzy bash
@@ -86,4 +88,5 @@ Before the physical StackChan is connected, the goal is:
 
 When hardware arrives, validate USB/serial passthrough separately before
 claiming bridge-to-device behavior works. The exact passthrough command may
-depend on Docker Desktop, WSL2, and the serial adapter path exposed by Windows.
+depend on the host OS, Docker engine, and serial adapter path exposed to the
+container.

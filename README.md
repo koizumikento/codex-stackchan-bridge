@@ -61,7 +61,7 @@ MCPを使う場合も、Codex/MCP hostがローカルの `stackchanctl mcp serve
 
 Start from [docs/README.md](docs/README.md) for the reading order and cross-references.
 
-For ROS 2 readiness without installing ROS 2 on the Windows host, use the
+For ROS 2 readiness without installing ROS 2 on your host machine, use the
 containerized Jazzy environment in [docs/ros2-container.md](docs/ros2-container.md).
 
 ## Early command sketch
