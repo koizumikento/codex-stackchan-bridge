@@ -55,7 +55,10 @@ Development decisions:
 - Logs and CLI output should support structured JSON.
 - MCP stdio output must keep `stdout` reserved for JSON-RPC and send logs to `stderr`.
 - Status, events, logs, and command results must include `device_id`.
-- Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy; Windows development should use WSL2.
+- Canonical development environment is Ubuntu 24.04 with ROS 2 Jazzy. Host
+  machines should use the documented Docker/devcontainer workflow instead of
+  installing ROS 2 directly; Windows developers should use a WSL2-backed Docker
+  environment.
 - Logs must include `device_id`, `command_id` when available, `source` when available, and structured error fields.
 - Logs must redact secrets, speech text, image payloads, and NFC tag IDs by default. Debug opt-in may expose them only in local developer logs, never in normal CLI output.
 - The repository license is MIT.
