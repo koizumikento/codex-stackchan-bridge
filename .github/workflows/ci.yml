@@ -35,9 +35,20 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Lint stackchan_bridge
-        run: uv run --directory ros/stackchan_bridge ruff check .
+        run: uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .
       - name: Test stackchan_bridge facade
-        run: uv run --directory ros/stackchan_bridge python -m unittest discover -s tests
+        run: uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests
+
+  ros2-container-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build ROS 2 container image
+        run: uv run --no-project python scripts/ros2_container.py build-image
+      - name: Run no-device ROS 2 bridge smoke
+        run: uv run --no-project python scripts/ros2_container.py smoke
 
   firmware-contracts:
     runs-on: ubuntu-24.04

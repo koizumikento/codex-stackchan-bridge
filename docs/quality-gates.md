@@ -101,7 +101,11 @@ The expected CI shape is:
 - Multi-device/default-device contract tests.
 - ROS 2 interface contract checks for `ros/stackchan_msgs`; replace or supplement these with `colcon` interface build checks when a ROS 2 Jazzy CI image is available.
 - ROS 2 bridge package tests for hardware-free facade logic.
+- Containerized ROS 2 smoke for `stackchan_msgs`, `stackchan_bridge`, and the
+  no-device `stackchanctl --backend bridge` path.
 - Firmware contract checks for `firmware/m5stackchan-microros`; run PlatformIO build-only checks in a PlatformIO/micro-ROS-capable environment.
+- Containerized PlatformIO build-only checks for firmware when the pinned
+  micro-ROS PlatformIO dependency resolves.
 
 Deferred until implementation stabilizes:
 

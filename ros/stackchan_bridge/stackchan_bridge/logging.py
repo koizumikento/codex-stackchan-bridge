@@ -36,9 +36,7 @@ def log_structured(
 ) -> None:
     payload = {"event": event, **redact_fields(fields)}
     message = json.dumps(payload, sort_keys=True)
-    if hasattr(logger, "log"):
-        logger.log(level, message)
-    elif level >= 40 and hasattr(logger, "error"):
+    if level >= 40 and hasattr(logger, "error"):
         logger.error(message)
     elif level >= 30 and hasattr(logger, "warning"):
         logger.warning(message)
@@ -46,3 +44,5 @@ def log_structured(
         logger.warn(message)
     elif hasattr(logger, "info"):
         logger.info(message)
+    elif hasattr(logger, "log"):
+        logger.log(level, message)

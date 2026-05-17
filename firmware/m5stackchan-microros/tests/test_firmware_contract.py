@@ -17,6 +17,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("board_microros_transport = serial", platformio)
         self.assertIn("board_microros_distro = jazzy", platformio)
         self.assertIn("monitor_speed = 921600", platformio)
+        self.assertIn("-std=gnu++17", platformio)
+        self.assertIn("UART_SCLK_DEFAULT=UART_SCLK_XTAL", platformio)
         self.assertIn("STACKCHAN_MICROROS_SERIAL_BAUD=921600", platformio)
         self.assertIn("StackChan-BSP.git#1.1.0", platformio)
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
