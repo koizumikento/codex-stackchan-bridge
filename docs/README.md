@@ -12,11 +12,13 @@ This directory is the map for the project. Start here when you want to understan
    - ROS 2 topics, services, actions, and shared message boundaries.
 4. [firmware.md](firmware.md)
    - Device-side responsibilities, safety limits, and supported behaviors.
-5. [license-notes.md](license-notes.md)
+5. [speech-design.md](speech-design.md)
+   - PC bridge VAD, echo control, local ASR, transcript privacy, and speech events.
+6. [license-notes.md](license-notes.md)
    - Dependency and reference policy for StackChan-related upstream code.
-6. [quality-gates.md](quality-gates.md)
+7. [quality-gates.md](quality-gates.md)
    - Required validation gates for CLI, MCP stdio, ROS 2 interfaces, firmware, Codex skill, and Rust workers.
-7. [ros2-container.md](ros2-container.md)
+8. [ros2-container.md](ros2-container.md)
    - Docker/devcontainer setup for ROS 2 Jazzy readiness without installing ROS 2 on the host.
 
 ## Implementation areas

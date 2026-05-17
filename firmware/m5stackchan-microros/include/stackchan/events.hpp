@@ -39,6 +39,27 @@ enum class DeviceEventKind : uint8_t {
   AudioCaptureFailed,
   CameraCaptureFailed,
   BatteryLow,
+  BatteryRecovered,
+  ChargingStarted,
+  ChargingStopped,
+  PowerSourceChanged,
+  BrownoutRisk,
+  PowerFault,
+  Touched,
+  TouchReleased,
+  TouchHeld,
+  ProximityNear,
+  ProximityClear,
+  LightChanged,
+  DarkDetected,
+  BrightDetected,
+  RemoteButtonPressed,
+  RemoteButtonReleased,
+  RemoteButtonHeld,
+  RemoteCommandReceived,
+  IrTransmitStarted,
+  IrTransmitFinished,
+  IrTransmitFailed,
   TransportUnstable,
 };
 
@@ -94,6 +115,48 @@ inline const char* device_event_name(DeviceEventKind kind) {
       return "camera_capture_failed";
     case DeviceEventKind::BatteryLow:
       return "battery_low";
+    case DeviceEventKind::BatteryRecovered:
+      return "battery_recovered";
+    case DeviceEventKind::ChargingStarted:
+      return "charging_started";
+    case DeviceEventKind::ChargingStopped:
+      return "charging_stopped";
+    case DeviceEventKind::PowerSourceChanged:
+      return "power_source_changed";
+    case DeviceEventKind::BrownoutRisk:
+      return "brownout_risk";
+    case DeviceEventKind::PowerFault:
+      return "power_fault";
+    case DeviceEventKind::Touched:
+      return "touched";
+    case DeviceEventKind::TouchReleased:
+      return "touch_released";
+    case DeviceEventKind::TouchHeld:
+      return "touch_held";
+    case DeviceEventKind::ProximityNear:
+      return "proximity_near";
+    case DeviceEventKind::ProximityClear:
+      return "proximity_clear";
+    case DeviceEventKind::LightChanged:
+      return "light_changed";
+    case DeviceEventKind::DarkDetected:
+      return "dark_detected";
+    case DeviceEventKind::BrightDetected:
+      return "bright_detected";
+    case DeviceEventKind::RemoteButtonPressed:
+      return "remote_button_pressed";
+    case DeviceEventKind::RemoteButtonReleased:
+      return "remote_button_released";
+    case DeviceEventKind::RemoteButtonHeld:
+      return "remote_button_held";
+    case DeviceEventKind::RemoteCommandReceived:
+      return "remote_command_received";
+    case DeviceEventKind::IrTransmitStarted:
+      return "ir_transmit_started";
+    case DeviceEventKind::IrTransmitFinished:
+      return "ir_transmit_finished";
+    case DeviceEventKind::IrTransmitFailed:
+      return "ir_transmit_failed";
     case DeviceEventKind::TransportUnstable:
       return "transport_unstable";
   }
@@ -123,6 +186,27 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "audio_capture_failed") == 0 ||
          strcmp(name, "camera_capture_failed") == 0 ||
          strcmp(name, "battery_low") == 0 ||
+         strcmp(name, "battery_recovered") == 0 ||
+         strcmp(name, "charging_started") == 0 ||
+         strcmp(name, "charging_stopped") == 0 ||
+         strcmp(name, "power_source_changed") == 0 ||
+         strcmp(name, "brownout_risk") == 0 ||
+         strcmp(name, "power_fault") == 0 ||
+         strcmp(name, "touched") == 0 ||
+         strcmp(name, "touch_released") == 0 ||
+         strcmp(name, "touch_held") == 0 ||
+         strcmp(name, "proximity_near") == 0 ||
+         strcmp(name, "proximity_clear") == 0 ||
+         strcmp(name, "light_changed") == 0 ||
+         strcmp(name, "dark_detected") == 0 ||
+         strcmp(name, "bright_detected") == 0 ||
+         strcmp(name, "remote_button_pressed") == 0 ||
+         strcmp(name, "remote_button_released") == 0 ||
+         strcmp(name, "remote_button_held") == 0 ||
+         strcmp(name, "remote_command_received") == 0 ||
+         strcmp(name, "ir_transmit_started") == 0 ||
+         strcmp(name, "ir_transmit_finished") == 0 ||
+         strcmp(name, "ir_transmit_failed") == 0 ||
          strcmp(name, "transport_unstable") == 0;
 }
 
@@ -137,6 +221,194 @@ inline void copy_event_string(char* destination, size_t size, const char* source
 inline bool event_payload_json_fits(const char* payload_json) {
   return payload_json == nullptr ||
          strlen(payload_json) <= kEventPayloadJsonMaxLength;
+}
+
+inline bool is_priority_device_event_name(const char* name) {
+  if (name == nullptr) {
+    return false;
+  }
+  return strcmp(name, "mic_overrun") == 0 ||
+         strcmp(name, "audio_playback_underrun") == 0 ||
+         strcmp(name, "audio_capture_failed") == 0 ||
+         strcmp(name, "camera_capture_failed") == 0 ||
+         strcmp(name, "nfc_read_failed") == 0 ||
+         strcmp(name, "ir_transmit_failed") == 0 ||
+         strcmp(name, "battery_low") == 0 ||
+         strcmp(name, "brownout_risk") == 0 ||
+         strcmp(name, "power_fault") == 0 ||
+         strcmp(name, "transport_unstable") == 0;
+}
+
+inline void skip_json_ws(const char* value, size_t length, size_t* index) {
+  while (*index < length &&
+         (value[*index] == ' ' ||
+          value[*index] == '\n' ||
+          value[*index] == '\r' ||
+          value[*index] == '\t')) {
+    ++(*index);
+  }
+}
+
+inline bool is_json_hex(char value) {
+  return (value >= '0' && value <= '9') ||
+         (value >= 'a' && value <= 'f') ||
+         (value >= 'A' && value <= 'F');
+}
+
+inline bool parse_json_escape(const char* value, size_t length, size_t* index) {
+  if (*index >= length) {
+    return false;
+  }
+  const char escaped = value[*index];
+  if (escaped == '"' || escaped == '\\' || escaped == '/' ||
+      escaped == 'b' || escaped == 'f' || escaped == 'n' ||
+      escaped == 'r' || escaped == 't') {
+    ++(*index);
+    return true;
+  }
+  if (escaped != 'u') {
+    return false;
+  }
+  ++(*index);
+  for (size_t digit = 0; digit < 4; ++digit) {
+    if (*index >= length || !is_json_hex(value[*index])) {
+      return false;
+    }
+    ++(*index);
+  }
+  return true;
+}
+
+inline bool parse_json_string(const char* value, size_t length, size_t* index) {
+  if (*index >= length || value[*index] != '"') {
+    return false;
+  }
+  ++(*index);
+  while (*index < length) {
+    const char current = value[*index];
+    if (current == '"') {
+      ++(*index);
+      return true;
+    }
+    if (current == '\\') {
+      ++(*index);
+      if (!parse_json_escape(value, length, index)) {
+        return false;
+      }
+      continue;
+    } else if (static_cast<unsigned char>(current) < 0x20) {
+      return false;
+    }
+    ++(*index);
+  }
+  return false;
+}
+
+inline bool parse_json_literal(
+    const char* value,
+    size_t length,
+    size_t* index,
+    const char* literal) {
+  const size_t literal_length = strlen(literal);
+  if (*index + literal_length > length) {
+    return false;
+  }
+  if (strncmp(value + *index, literal, literal_length) != 0) {
+    return false;
+  }
+  *index += literal_length;
+  return true;
+}
+
+inline bool parse_json_number(const char* value, size_t length, size_t* index) {
+  const size_t start = *index;
+  if (*index < length && value[*index] == '-') {
+    ++(*index);
+  }
+  size_t digits = 0;
+  while (*index < length && value[*index] >= '0' && value[*index] <= '9') {
+    ++(*index);
+    ++digits;
+  }
+  if (digits == 0) {
+    *index = start;
+    return false;
+  }
+  if (*index < length && value[*index] == '.') {
+    ++(*index);
+    size_t fractional_digits = 0;
+    while (*index < length && value[*index] >= '0' && value[*index] <= '9') {
+      ++(*index);
+      ++fractional_digits;
+    }
+    if (fractional_digits == 0) {
+      *index = start;
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool parse_json_value(const char* value, size_t length, size_t* index) {
+  skip_json_ws(value, length, index);
+  if (*index >= length) {
+    return false;
+  }
+  if (value[*index] == '"') {
+    return parse_json_string(value, length, index);
+  }
+  return parse_json_literal(value, length, index, "true") ||
+         parse_json_literal(value, length, index, "false") ||
+         parse_json_literal(value, length, index, "null") ||
+         parse_json_number(value, length, index);
+}
+
+inline bool is_bounded_object_json(const char* payload_json) {
+  if (payload_json == nullptr) {
+    return true;
+  }
+  const size_t length = strlen(payload_json);
+  if (length < 2 || length > kEventPayloadJsonMaxLength) {
+    return false;
+  }
+  size_t index = 0;
+  skip_json_ws(payload_json, length, &index);
+  if (index >= length || payload_json[index] != '{') {
+    return false;
+  }
+  ++index;
+  skip_json_ws(payload_json, length, &index);
+  if (index < length && payload_json[index] == '}') {
+    ++index;
+    skip_json_ws(payload_json, length, &index);
+    return index == length;
+  }
+  while (index < length) {
+    if (!parse_json_string(payload_json, length, &index)) {
+      return false;
+    }
+    skip_json_ws(payload_json, length, &index);
+    if (index >= length || payload_json[index] != ':') {
+      return false;
+    }
+    ++index;
+    if (!parse_json_value(payload_json, length, &index)) {
+      return false;
+    }
+    skip_json_ws(payload_json, length, &index);
+    if (index < length && payload_json[index] == ',') {
+      ++index;
+      skip_json_ws(payload_json, length, &index);
+      continue;
+    }
+    if (index < length && payload_json[index] == '}') {
+      ++index;
+      skip_json_ws(payload_json, length, &index);
+      return index == length;
+    }
+    return false;
+  }
+  return false;
 }
 
 inline char safe_json_char(char value) {
@@ -174,12 +446,23 @@ inline void make_string_payload(
   }
 
   char safe_value[kEventPayloadJsonMaxLength + 1];
-  sanitize_json_value(safe_value, sizeof(safe_value), value);
+  const char* safe_key = key == nullptr ? "value" : key;
+  const size_t key_length = strlen(safe_key);
+  const size_t max_payload_length = size - 1;
+  if (key_length + 7 >= max_payload_length) {
+    copy_event_string(
+        destination,
+        size,
+        "{\"truncated\":true,\"reason\":\"payload_json_key_too_long\"}");
+    return;
+  }
+  const size_t max_value_length = max_payload_length - key_length - 7;
+  sanitize_json_value(safe_value, max_value_length + 1, value);
   snprintf(
       destination,
       size,
       "{\"%s\":\"%s\"}",
-      key == nullptr ? "value" : key,
+      safe_key,
       safe_value);
   destination[size - 1] = '\0';
 }
@@ -198,6 +481,9 @@ class EventPublisher {
   }
 
   size_t queued_count() const { return count_; }
+  size_t dropped_low_priority_count() const {
+    return dropped_low_priority_count_;
+  }
 
   Result drain(size_t max_events = kEventQueueCapacity) {
     if (callback_ == nullptr) {
@@ -238,11 +524,13 @@ class EventPublisher {
     if (!is_firmware_device_event_name(event_name)) {
       return Result::rejected("UNKNOWN_COMMAND", "unknown firmware event name");
     }
-    if (!event_payload_json_fits(payload_json)) {
-      return Result::rejected(
-          "UNSUPPORTED_FEATURE",
-          "event payload_json exceeds 256 bytes",
-          true);
+    const char* normalized_payload_json = payload_json == nullptr ? "{}" : payload_json;
+    if (!event_payload_json_fits(normalized_payload_json)) {
+      normalized_payload_json =
+          "{\"truncated\":true,\"reason\":\"payload_json_exceeds_256_bytes\"}";
+    } else if (!is_bounded_object_json(normalized_payload_json)) {
+      normalized_payload_json =
+          "{\"truncated\":true,\"reason\":\"payload_json_invalid\"}";
     }
 
     DeviceEvent event{};
@@ -255,9 +543,11 @@ class EventPublisher {
     copy_event_string(
         event.payload_json,
         sizeof(event.payload_json),
-        payload_json == nullptr ? "{}" : payload_json);
+        normalized_payload_json);
 
-    if (count_ >= kEventQueueCapacity) {
+    if (count_ >= kEventQueueCapacity &&
+        (!is_priority_device_event_name(event_name) ||
+         !drop_oldest_low_priority_event())) {
       return Result::rejected(
           "FIRMWARE_BUSY",
           "device event queue is full",
@@ -335,13 +625,44 @@ class EventPublisher {
     return publish(DeviceEventKind::AudioCaptureFailed, stamp_ms, command_id);
   }
 
+  Result power_fault(uint32_t stamp_ms, const char* fault_code) {
+    char payload[kEventPayloadJsonMaxLength + 1];
+    make_string_payload(payload, sizeof(payload), "fault_code", fault_code);
+    return publish(DeviceEventKind::PowerFault, stamp_ms, "", payload);
+  }
+
+  Result remote_command_received(uint32_t stamp_ms, const char* command) {
+    char payload[kEventPayloadJsonMaxLength + 1];
+    make_string_payload(payload, sizeof(payload), "command", command);
+    return publish(DeviceEventKind::RemoteCommandReceived, stamp_ms, "", payload);
+  }
+
  private:
   char device_id_[kEventDeviceIdMaxLength + 1]{};
   DeviceEvent queue_[kEventQueueCapacity]{};
   size_t head_ = 0;
   size_t count_ = 0;
+  size_t dropped_low_priority_count_ = 0;
   EventPublishFn callback_ = nullptr;
   void* context_ = nullptr;
+
+  bool drop_oldest_low_priority_event() {
+    for (size_t offset = 0; offset < count_; ++offset) {
+      const size_t index = (head_ + offset) % kEventQueueCapacity;
+      if (is_priority_device_event_name(queue_[index].event_name)) {
+        continue;
+      }
+      for (size_t shift = offset; shift + 1 < count_; ++shift) {
+        const size_t current = (head_ + shift) % kEventQueueCapacity;
+        const size_t next = (head_ + shift + 1) % kEventQueueCapacity;
+        queue_[current] = queue_[next];
+      }
+      --count_;
+      ++dropped_low_priority_count_;
+      return true;
+    }
+    return false;
+  }
 };
 
 }  // namespace stackchan

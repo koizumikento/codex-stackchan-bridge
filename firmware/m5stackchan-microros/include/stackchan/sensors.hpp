@@ -24,6 +24,16 @@ constexpr float kImuTiltVerticalMax = 7.0f;
 constexpr float kImuFaceDirectionMin = 7.0f;
 constexpr float kImuShakenGyroMin = 6.0f;
 constexpr uint16_t kImuShakenCooldownMs = 500;
+constexpr uint8_t kTouchZone1 = 1;
+constexpr uint8_t kTouchZone2 = 2;
+constexpr uint8_t kTouchZone3 = 4;
+constexpr uint8_t kTouchMaxZones = 3;
+constexpr float kProximityNearSignal = 0.75f;
+constexpr float kLightDarkLux = 15.0f;
+constexpr float kLightBrightLux = 500.0f;
+constexpr float kBatteryLowVoltageV = 3.55f;
+constexpr float kBatteryRecoveredVoltageV = 3.75f;
+constexpr float kBrownoutRiskVoltageV = 3.35f;
 
 struct ImuSample {
   float accel_x;
@@ -32,6 +42,56 @@ struct ImuSample {
   float gyro_x;
   float gyro_y;
   float gyro_z;
+};
+
+struct TouchStateTelemetry {
+  char device_id[33];
+  uint32_t stamp_ms;
+  uint8_t zone_mask;
+  uint8_t zone_count;
+  uint8_t intensities[kTouchMaxZones];
+  char surface[33];
+};
+
+struct ProximityRawTelemetry {
+  char device_id[33];
+  uint32_t stamp_ms;
+  uint8_t sensor_index;
+  float distance_m;
+  float signal;
+  uint16_t raw;
+  bool saturated;
+};
+
+struct LightRawTelemetry {
+  char device_id[33];
+  uint32_t stamp_ms;
+  uint8_t sensor_index;
+  float illuminance_lux;
+  uint16_t raw;
+  bool saturated;
+};
+
+enum class PowerSource : uint8_t {
+  Unknown = 0,
+  Battery = 1,
+  Usb = 2,
+  External = 3,
+};
+
+struct PowerStatusTelemetry {
+  char device_id[33];
+  uint32_t stamp_ms;
+  float voltage_v;
+  float current_ma;
+  float power_mw;
+  float percentage;
+  PowerSource power_source;
+  bool charging;
+  bool powered;
+  bool low_battery;
+  bool brownout_risk;
+  char fault_code[33];
 };
 
 inline float abs_float(float value) {
@@ -216,6 +276,109 @@ class ImuEventEstimator {
   bool face_down_ = false;
   bool shaken_emitted_ = false;
   uint32_t last_shaken_ms_ = 0;
+};
+
+class TouchEventEstimator {
+ public:
+  Result update(const TouchStateTelemetry& state, EventPublisher& events) {
+    if (!touched_ && state.zone_mask != 0) {
+      touched_ = true;
+      return events.publish(DeviceEventKind::Touched, state.stamp_ms, "", "{}");
+    }
+    if (touched_ && state.zone_mask == 0) {
+      touched_ = false;
+      held_emitted_ = false;
+      return events.publish(DeviceEventKind::TouchReleased, state.stamp_ms, "", "{}");
+    }
+    if (touched_ && !held_emitted_) {
+      held_emitted_ = true;
+      return events.publish(DeviceEventKind::TouchHeld, state.stamp_ms, "", "{}");
+    }
+    return Result::accepted("no touch event");
+  }
+
+ private:
+  bool touched_ = false;
+  bool held_emitted_ = false;
+};
+
+class ProximityEventEstimator {
+ public:
+  Result update(const ProximityRawTelemetry& telemetry, EventPublisher& events) {
+    if (!near_ && telemetry.signal >= kProximityNearSignal) {
+      near_ = true;
+      return events.publish(DeviceEventKind::ProximityNear, telemetry.stamp_ms, "", "{}");
+    }
+    if (near_ && telemetry.signal < kProximityNearSignal) {
+      near_ = false;
+      return events.publish(DeviceEventKind::ProximityClear, telemetry.stamp_ms, "", "{}");
+    }
+    return Result::accepted("no proximity event");
+  }
+
+ private:
+  bool near_ = false;
+};
+
+class LightEventEstimator {
+ public:
+  Result update(const LightRawTelemetry& telemetry, EventPublisher& events) {
+    if (telemetry.illuminance_lux <= kLightDarkLux && light_state_ != -1) {
+      light_state_ = -1;
+      return events.publish(DeviceEventKind::DarkDetected, telemetry.stamp_ms, "", "{}");
+    }
+    if (telemetry.illuminance_lux >= kLightBrightLux && light_state_ != 1) {
+      light_state_ = 1;
+      return events.publish(DeviceEventKind::BrightDetected, telemetry.stamp_ms, "", "{}");
+    }
+    if (telemetry.illuminance_lux > kLightDarkLux &&
+        telemetry.illuminance_lux < kLightBrightLux &&
+        light_state_ != 0) {
+      light_state_ = 0;
+      return events.publish(DeviceEventKind::LightChanged, telemetry.stamp_ms, "", "{}");
+    }
+    return Result::accepted("no light event");
+  }
+
+ private:
+  int8_t light_state_ = 0;
+};
+
+class PowerEventEstimator {
+ public:
+  Result update(const PowerStatusTelemetry& telemetry, EventPublisher& events) {
+    if (telemetry.fault_code[0] != '\0') {
+      return events.power_fault(telemetry.stamp_ms, telemetry.fault_code);
+    }
+    if (!brownout_ && telemetry.voltage_v <= kBrownoutRiskVoltageV) {
+      brownout_ = true;
+      return events.publish(DeviceEventKind::BrownoutRisk, telemetry.stamp_ms);
+    }
+    if (!low_ && telemetry.voltage_v <= kBatteryLowVoltageV) {
+      low_ = true;
+      return events.publish(DeviceEventKind::BatteryLow, telemetry.stamp_ms);
+    }
+    if (low_ && telemetry.voltage_v >= kBatteryRecoveredVoltageV) {
+      low_ = false;
+      brownout_ = false;
+      return events.publish(DeviceEventKind::BatteryRecovered, telemetry.stamp_ms);
+    }
+    if (seen_source_ && telemetry.power_source != last_source_) {
+      last_source_ = telemetry.power_source;
+      return events.publish(DeviceEventKind::PowerSourceChanged, telemetry.stamp_ms);
+    }
+    if (!seen_source_) {
+      seen_source_ = true;
+      last_source_ = telemetry.power_source;
+    }
+    return Result::accepted("no power event");
+  }
+
+ private:
+  bool low_ = false;
+  bool brownout_ = false;
+  bool seen_source_ = false;
+  PowerSource last_source_ = PowerSource::Unknown;
 };
 
 }  // namespace stackchan

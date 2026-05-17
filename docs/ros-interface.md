@@ -174,6 +174,15 @@ Baseline error codes:
 - `MOTION_INTERRUPTED`
 - `AUDIO_UNDERRUN`
 - `MIC_OVERRUN`
+- `AUDIO_FORMAT_UNSUPPORTED`
+- `MALFORMED_AUDIO_CHUNK`
+- `ASR_UNAVAILABLE`
+- `ASR_TIMEOUT`
+- `ASR_WORKER_FAILED`
+- `ASR_EMPTY_RESULT`
+- `ASR_INVALID_OUTPUT`
+- `TRANSCRIPT_NOT_FOUND`
+- `STALE_TELEMETRY`
 - `CAMERA_CAPTURE_FAILED`
 - `NFC_READ_FAILED`
 - `TRANSPORT_DISCONNECTED`
@@ -254,6 +263,130 @@ Fields:
 - `mag`
 - `temperature`
 
+### `/stackchan/<device_id>/touch/state`
+
+Purpose: public bridge-facing three-zone touch state for the official StackChan K151 body touch panel.
+
+Fields mirror `/stackchan/<device_id>/device/touch/state`.
+
+Message: `stackchan_msgs/TouchState`.
+
+Fields:
+
+- `device_id`
+- `stamp`
+- `zone_mask`
+- `zone_count`
+- `intensities`
+- `surface`
+
+Rules:
+
+- `surface` defaults to `head` for the body touch panel.
+- `zone_mask` uses `ZONE_1`, `ZONE_2`, and `ZONE_3`.
+- `intensities` is bounded to 3 entries.
+- Raw capacitive baselines are not published in normal telemetry.
+
+### `/stackchan/<device_id>/device/touch/state`
+
+Purpose: firmware-origin touch telemetry that the bridge republishes publicly.
+
+Fields mirror `/stackchan/<device_id>/touch/state`.
+
+### `/stackchan/<device_id>/proximity/raw`
+
+Purpose: public low-rate proximity telemetry for calibration, debugging, and future local behavior.
+
+Fields mirror `/stackchan/<device_id>/device/proximity/raw`.
+
+Message: `stackchan_msgs/ProximityRaw`.
+
+Fields:
+
+- `device_id`
+- `stamp`
+- `sensor_index`
+- `distance_m`
+- `signal`
+- `raw`
+- `saturated`
+
+Rules:
+
+- Baseline rate is 2-10 Hz.
+- `distance_m` may be NaN when the sensor is not calibrated for distance.
+- `signal` is normalized `0.0..1.0` when available.
+
+### `/stackchan/<device_id>/device/proximity/raw`
+
+Purpose: firmware-origin LTR-553ALS-WA proximity telemetry.
+
+Fields mirror `/stackchan/<device_id>/proximity/raw`.
+
+### `/stackchan/<device_id>/light/raw`
+
+Purpose: public low-rate ambient light telemetry.
+
+Fields mirror `/stackchan/<device_id>/device/light/raw`.
+
+Message: `stackchan_msgs/LightRaw`.
+
+Fields:
+
+- `device_id`
+- `stamp`
+- `sensor_index`
+- `illuminance_lux`
+- `raw`
+- `saturated`
+
+Rules:
+
+- Baseline rate is 1-5 Hz.
+- `illuminance_lux` may be NaN when calibration is unavailable.
+
+### `/stackchan/<device_id>/device/light/raw`
+
+Purpose: firmware-origin LTR-553ALS-WA ambient light telemetry.
+
+Fields mirror `/stackchan/<device_id>/light/raw`.
+
+### `/stackchan/<device_id>/power/status`
+
+Purpose: public power and battery telemetry from INA226 and AXP2101 surfaces.
+
+Fields mirror `/stackchan/<device_id>/device/power/status`.
+
+Message: `stackchan_msgs/PowerStatus`.
+
+Fields:
+
+- `device_id`
+- `stamp`
+- `voltage_v`
+- `current_ma`
+- `power_mw`
+- `percentage`
+- `power_source`
+- `charging`
+- `powered`
+- `low_battery`
+- `brownout_risk`
+- `fault_code`
+
+Rules:
+
+- Baseline rate is 0.2-1 Hz.
+- Use NaN for unsupported numeric fields such as uncalibrated `percentage`.
+- `percentage` is `0.0..1.0` when available.
+- Raw power telemetry is not stuffed into `/status`; `/status.connected` remains transport/registry availability.
+
+### `/stackchan/<device_id>/device/power/status`
+
+Purpose: firmware-origin power telemetry for bridge republishing and `stackchanctl power status`.
+
+Fields mirror `/stackchan/<device_id>/power/status`.
+
 ### `/stackchan/<device_id>/events`
 
 Purpose: publish normalized high-level events useful to Codex and PC-side orchestration.
@@ -317,6 +450,27 @@ Baseline firmware/device event names:
 - `audio_capture_failed`
 - `camera_capture_failed`
 - `battery_low`
+- `battery_recovered`
+- `charging_started`
+- `charging_stopped`
+- `power_source_changed`
+- `brownout_risk`
+- `power_fault`
+- `touched`
+- `touch_released`
+- `touch_held`
+- `proximity_near`
+- `proximity_clear`
+- `light_changed`
+- `dark_detected`
+- `bright_detected`
+- `remote_button_pressed`
+- `remote_button_released`
+- `remote_button_held`
+- `remote_command_received`
+- `ir_transmit_started`
+- `ir_transmit_finished`
+- `ir_transmit_failed`
 - `transport_unstable`
 
 Baseline bridge/PC event names:
@@ -324,6 +478,7 @@ Baseline bridge/PC event names:
 - `speech_detected`
 - `transcript_ready`
 - `transcript_failed`
+- `voice_semantic_event`
 - `tts_started`
 - `tts_finished`
 - `tts_failed`
@@ -334,6 +489,10 @@ Baseline bridge/PC event names:
 `transcript_ready` carries an `utterance_id` in `payload_json`; full transcript
 text is retrieved through the speech transcript query service, not embedded in
 the event.
+
+`voice_semantic_event` carries metadata such as `utterance_id`, `confidence`,
+`intent_hint`, `requires_codex`, `safety_action`, `echo_state`, and
+`suppressed_reason`. It must not carry transcript text.
 
 ### `/stackchan/<device_id>/device/events`
 
@@ -531,6 +690,28 @@ IDL constraints:
 Bridge stores transcripts in memory with a default 10 minute TTL. Persistent
 transcript storage is out of scope unless a later design decision changes it.
 
+### `/stackchan/<device_id>/cmd/power/status`
+
+Purpose: return the latest bridge-observed power telemetry for `stackchanctl power status`.
+
+Service type: `stackchan_msgs/srv/GetPowerStatus`.
+
+Request fields:
+
+- `meta`
+
+Response fields:
+
+- `result`
+- `status`
+- `stale`
+
+Rules:
+
+- Missing telemetry returns `UNSUPPORTED_FEATURE`.
+- Stale telemetry returns `STALE_TELEMETRY` with `recoverable=true`.
+- CLI JSON converts unsupported NaN numeric values to JSON `null`.
+
 ## Baseline actions
 
 Baseline action feedback fields:
@@ -709,6 +890,14 @@ Baseline QoS:
 - `/stackchan/<device_id>/events`: reliable, volatile, keep last 32.
 - `/stackchan/<device_id>/device/events`: reliable, volatile, keep last 32.
 - `/stackchan/<device_id>/device/imu/raw`: best effort, volatile, keep last 10.
+- `/stackchan/<device_id>/touch/state`: reliable, transient local, keep last 1.
+- `/stackchan/<device_id>/device/touch/state`: reliable, volatile, keep last 4.
+- `/stackchan/<device_id>/proximity/raw`: best effort, volatile, keep last 10.
+- `/stackchan/<device_id>/device/proximity/raw`: best effort, volatile, keep last 10.
+- `/stackchan/<device_id>/light/raw`: best effort, volatile, keep last 5.
+- `/stackchan/<device_id>/device/light/raw`: best effort, volatile, keep last 5.
+- `/stackchan/<device_id>/power/status`: reliable, transient local, keep last 1.
+- `/stackchan/<device_id>/device/power/status`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - Service and action request/response paths use reliable QoS.
 - Safety/fault signals use reliable QoS and must not be blocked by camera or audio work.

@@ -37,6 +37,8 @@ Required for CLI changes:
   event results, cursor-only clear behavior, and deterministic mock events.
 - Transcript command tests cover explicit lookup by `utterance_id` and
   structured expiry/not-found failures.
+- Power command tests cover strict JSON output, unsupported numeric values as
+  `null`, stale telemetry, unsupported hardware, and bridge/mock shape parity.
 
 Required for MCP stdio changes:
 
@@ -65,6 +67,9 @@ Required for message, service, or action changes:
 - Event contracts document `/stackchan/<device_id>/device/events`,
   `/stackchan/<device_id>/events`, event query services, ownership, fields,
   bounded payload rules, and event taxonomy.
+- Sensor and power telemetry contracts document bounded messages, public and
+  device-side topic names, low-rate baselines, QoS, stale/error semantics, and
+  that raw telemetry is not added to `/status`.
 
 ### stackchan_bridge
 
@@ -78,6 +83,13 @@ Required for bridge event changes:
   IDs in normal logs.
 - Transcript store tests cover memory-only behavior, lookup by `utterance_id`,
   and default 10 minute TTL expiry.
+- Speech processing tests cover 20 ms chunk to 10 ms frame splitting, VAD
+  state transitions, AEC unavailable fallback, playback hangover suppression,
+  ASR worker timeout/failure, transcript redaction, low-confidence suppression,
+  immediate safety command positive/negative cases, and queue overflow/drop
+  behavior.
+- Power telemetry tests cover latest snapshot storage, stale detection, public
+  topic naming, and `device_id` preservation while relaying telemetry.
 
 ### Firmware
 
@@ -98,6 +110,9 @@ safety > motion stop/neutral > audio capture/playback > command handling > camer
 - Event estimator changes include contract tests for bounded names and payloads,
   optional `command_id` only for sensor-origin events, device id preservation,
   and separation of raw IMU telemetry from high-level IMU events.
+- Touch, proximity, light, remote/IR, and power event additions include
+  hardware-free contract tests for event names, bounded payloads, non-blocking
+  queue behavior, and safe defaults when hardware is unavailable.
 
 ### Codex Skill
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
+import math
 from typing import Protocol
 
 from stackchanctl.backends.mock import validate_common_request
@@ -15,6 +16,7 @@ from stackchanctl.contract import (
     ErrorDetail,
     Event,
     EventListResult,
+    PowerStatusResult,
     ResultState,
     TranscriptResult,
 )
@@ -111,6 +113,9 @@ class BridgeClient(Protocol):
     ) -> TranscriptResult:
         raise NotImplementedError
 
+    def get_power_status(self, meta: CommandMeta, timeout: float) -> PowerStatusResult:
+        raise NotImplementedError
+
 
 class BridgeBackend:
     """Backend that talks to the stackchan_bridge facade resources."""
@@ -120,7 +125,7 @@ class BridgeBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult:
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -137,6 +142,7 @@ class BridgeBackend:
                 CommandType.EVENTS_NEXT,
                 CommandType.EVENTS_CLEAR,
                 CommandType.SPEECH_TRANSCRIPT,
+                CommandType.POWER_STATUS,
             }:
                 return self._execute_observation(request, client)
             response = self._execute_command(request, client)
@@ -212,7 +218,7 @@ class BridgeBackend:
 
     def _execute_observation(
         self, request: CommandRequest, client: BridgeClient
-    ) -> EventListResult | TranscriptResult:
+    ) -> EventListResult | TranscriptResult | PowerStatusResult:
         if request.command_type is CommandType.EVENTS_LIST:
             return client.list_events(
                 request.meta,
@@ -239,6 +245,8 @@ class BridgeBackend:
                 request.args.get("utterance_id"),
                 request.timeout,
             )
+        if request.command_type is CommandType.POWER_STATUS:
+            return client.get_power_status(request.meta, request.timeout)
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -258,7 +266,7 @@ class RclpyBridgeClient:
                 RunMotion,
                 Say,
             )
-            from stackchan_msgs.srv import GetStatus, SetFace, SetLed
+            from stackchan_msgs.srv import GetPowerStatus, GetStatus, SetFace, SetLed
             from stackchan_msgs.srv import (
                 ClearEventCursor,
                 GetTranscript,
@@ -274,6 +282,7 @@ class RclpyBridgeClient:
         self._rclpy = rclpy
         self._action_client_type = ActionClient
         self._get_status_type = GetStatus
+        self._get_power_status_type = GetPowerStatus
         self._list_events_type = ListEvents
         self._next_event_type = NextEvent
         self._clear_event_cursor_type = ClearEventCursor
@@ -470,6 +479,13 @@ class RclpyBridgeClient:
             meta=meta,
             error=_error_from_ros(response.result),
         )
+
+    def get_power_status(self, meta: CommandMeta, timeout: float) -> PowerStatusResult:
+        request = self._get_power_status_type.Request()
+        _copy_meta(request.meta, meta)
+        client = self._service_client(self._get_power_status_type, meta.device_id, "power/status", timeout)
+        response = self._call_service(client, request, timeout)
+        return _power_status_from_ros(meta, response.result, response.status, bool(response.stale))
 
     def _send_action_goal(
         self, action_type, action_name: str, goal, *, wait: bool, timeout: float
@@ -689,11 +705,15 @@ def _error_from_ros(result) -> ErrorDetail | None:
     )
 
 
-def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | EventListResult | TranscriptResult:
+def _rejected(
+    request: CommandRequest, error: ErrorDetail
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
     return _error_result(request, error)
 
 
-def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult | TranscriptResult:
+def _timeout_result(
+    request: CommandRequest,
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
     return _error_result(
         request,
         ErrorDetail(
@@ -710,7 +730,7 @@ def _error_result(
     error: ErrorDetail,
     *,
     result_state: ResultState = ResultState.REJECTED,
-) -> CommandResult | EventListResult | TranscriptResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
     if request.command_type in {
         CommandType.EVENTS_LIST,
         CommandType.EVENTS_NEXT,
@@ -718,12 +738,12 @@ def _error_result(
     }:
         return EventListResult(
             ok=False,
-        result_state=result_state,
-        device_id=request.meta.device_id,
-        events=[],
-        meta=request.meta,
-        error=error,
-    )
+            result_state=result_state,
+            device_id=request.meta.device_id,
+            events=[],
+            meta=request.meta,
+            error=error,
+        )
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
         return TranscriptResult(
             ok=False,
@@ -733,6 +753,23 @@ def _error_result(
             transcript=None,
             confidence=None,
             expires_at=None,
+            meta=request.meta,
+            error=error,
+        )
+    if request.command_type is CommandType.POWER_STATUS:
+        return PowerStatusResult(
+            ok=False,
+            result_state=result_state,
+            device_id=request.meta.device_id,
+            voltage_v=None,
+            current_ma=None,
+            power_mw=None,
+            percentage=None,
+            power_source="unknown",
+            charging=False,
+            powered=False,
+            low_battery=False,
+            brownout_risk=False,
             meta=request.meta,
             error=error,
         )
@@ -783,7 +820,47 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
             "type": "speech.transcript",
             "utterance_id": request.args.get("utterance_id"),
         }
+    if request.command_type is CommandType.POWER_STATUS:
+        return {"type": "power.status"}
     return {"type": request.command_type.value}
+
+
+def _power_status_from_ros(meta: CommandMeta, result, status, stale: bool) -> PowerStatusResult:
+    return PowerStatusResult(
+        ok=bool(result.ok),
+        result_state=_state_from_ros(int(result.state)),
+        device_id=getattr(status, "device_id", "") or meta.device_id,
+        voltage_v=_finite_float_or_none(getattr(status, "voltage_v", math.nan)),
+        current_ma=_finite_float_or_none(getattr(status, "current_ma", math.nan)),
+        power_mw=_finite_float_or_none(getattr(status, "power_mw", math.nan)),
+        percentage=_finite_float_or_none(getattr(status, "percentage", math.nan)),
+        power_source=_power_source_name(int(getattr(status, "power_source", 0))),
+        charging=bool(getattr(status, "charging", False)),
+        powered=bool(getattr(status, "powered", False)),
+        low_battery=bool(getattr(status, "low_battery", False)),
+        brownout_risk=bool(getattr(status, "brownout_risk", False)),
+        fault_code=getattr(status, "fault_code", "") or None,
+        stale=stale,
+        stamp=_stamp_to_iso(getattr(status, "stamp", None)),
+        meta=meta,
+        error=_error_from_ros(result),
+    )
+
+
+def _finite_float_or_none(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _power_source_name(value: int) -> str:
+    return {
+        1: "battery",
+        2: "usb",
+        3: "external",
+    }.get(value, "unknown")
 
 
 def _optional_string_arg(request: CommandRequest, key: str) -> str | None:

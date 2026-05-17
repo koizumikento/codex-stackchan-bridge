@@ -6,13 +6,18 @@ from types import SimpleNamespace
 
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    _coerce_telemetry_device_id,
+    _copy_power_status,
     _copy_event_record,
     _configured_device_records,
+    _snapshot_from_power_status,
     _records_after_event_id,
     _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
+    _relay_telemetry_message,
 )
+from stackchan_bridge.telemetry import PowerStatusSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,14 +97,22 @@ class RosNodeHelperTests(unittest.TestCase):
             "NextEvent",
             "ClearEventCursor",
             "GetTranscript",
+            "GetPowerStatus",
+            "TouchState",
+            "ProximityRaw",
+            "LightRaw",
+            "PowerStatus",
             "StackChanEvent",
             "EVENT_QOS_DEPTH = 32",
+            "reliable_depth_4 = QoSProfile(depth=4)",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",
             "/speech/transcript/get",
+            "/power/status",
             "/events",
             "/device/events",
+            "device/{tail}",
         ):
             self.assertIn(name, source)
 
@@ -107,6 +120,109 @@ class RosNodeHelperTests(unittest.TestCase):
             "record = self.event_aggregator.add(\n                device_id,",
             source,
         )
+
+    def test_power_status_helpers_copy_ros_like_shapes(self) -> None:
+        message = type(
+            "Power",
+            (),
+            {
+                "device_id": "",
+                "stamp": type("Stamp", (), {"sec": 1778889601, "nanosec": 0})(),
+                "voltage_v": 4.9,
+                "current_ma": 180.0,
+                "power_mw": 882.0,
+                "percentage": float("nan"),
+                "power_source": 2,
+                "charging": True,
+                "powered": True,
+                "low_battery": False,
+                "brownout_risk": False,
+                "fault_code": "",
+            },
+        )()
+
+        snapshot = _snapshot_from_power_status(message, fallback_device_id="default")
+
+        self.assertEqual(snapshot.device_id, "default")
+        self.assertEqual(snapshot.power_source, 2)
+
+        target = type("Target", (), {"stamp": type("Stamp", (), {"sec": 0, "nanosec": 0})()})()
+        _copy_power_status(target, PowerStatusSnapshot("desk", voltage_v=3.7, stamp=1.5))
+
+        self.assertEqual(target.device_id, "desk")
+        self.assertEqual(target.voltage_v, 3.7)
+        self.assertEqual(target.stamp.sec, 1)
+        self.assertEqual(target.stamp.nanosec, 500000000)
+
+    def test_telemetry_device_id_is_filled_but_mismatch_is_rejected(self) -> None:
+        missing = SimpleNamespace(device_id="")
+        self.assertTrue(_coerce_telemetry_device_id(missing, "default"))
+        self.assertEqual(missing.device_id, "default")
+
+        matching = SimpleNamespace(device_id="default")
+        self.assertTrue(_coerce_telemetry_device_id(matching, "default"))
+        self.assertEqual(matching.device_id, "default")
+
+        mismatched = SimpleNamespace(device_id="desk")
+        self.assertFalse(_coerce_telemetry_device_id(mismatched, "default"))
+        self.assertEqual(mismatched.device_id, "desk")
+
+    def test_power_telemetry_relay_fills_device_id_stores_and_publishes(self) -> None:
+        class Publisher:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def publish(self, message) -> None:
+                self.messages.append(message)
+
+        message = SimpleNamespace(
+            device_id="",
+            stamp=SimpleNamespace(sec=12, nanosec=0),
+            voltage_v=4.9,
+            current_ma=180.0,
+            power_mw=882.0,
+            percentage=float("nan"),
+            power_source=2,
+            charging=True,
+            powered=True,
+            low_battery=False,
+            brownout_risk=False,
+            fault_code="",
+        )
+        publisher = Publisher()
+        store = type("Store", (), {"snapshots": [], "update": lambda self, snapshot: self.snapshots.append(snapshot)})()
+
+        relayed = _relay_telemetry_message(
+            "default",
+            "power/status",
+            message,
+            publisher,
+            power_store=store,
+        )
+
+        self.assertTrue(relayed)
+        self.assertEqual(message.device_id, "default")
+        self.assertEqual(publisher.messages, [message])
+        self.assertEqual(store.snapshots[0].device_id, "default")
+
+    def test_telemetry_relay_drops_device_id_mismatch(self) -> None:
+        class Publisher:
+            def publish(self, message) -> None:
+                raise AssertionError(f"unexpected publish: {message}")
+
+        conflicts = []
+        message = SimpleNamespace(device_id="desk")
+
+        relayed = _relay_telemetry_message(
+            "default",
+            "touch/state",
+            message,
+            Publisher(),
+            conflict_handler=lambda device_id, tail, msg: conflicts.append((device_id, tail, msg.device_id)),
+        )
+
+        self.assertFalse(relayed)
+        self.assertEqual(conflicts, [("default", "touch/state", "desk")])
 
 
 if __name__ == "__main__":

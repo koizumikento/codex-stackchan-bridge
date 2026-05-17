@@ -170,6 +170,7 @@ class McpStdioTests(unittest.TestCase):
                 "events_next",
                 "events_clear",
                 "speech_get_transcript",
+                "power_status",
             },
         )
         for tool in responses[1]["result"]["tools"]:
@@ -395,6 +396,25 @@ class McpStdioTests(unittest.TestCase):
         self.assertFalse(structured["ok"])
         self.assertEqual(structured["result_state"], "REJECTED")
         self.assertEqual(structured["error"]["code"], "TRANSCRIPT_NOT_FOUND")
+
+    def test_power_status_tool_returns_power_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-power",
+                    "method": "tools/call",
+                    "params": {"name": "power_status", "arguments": {}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["power"]["power_source"], "usb")
+        self.assertIsNone(structured["power"]["percentage"])
 
     def test_safety_priority_is_tool_result_not_protocol_error(self) -> None:
         code, responses, stderr = run_mcp(

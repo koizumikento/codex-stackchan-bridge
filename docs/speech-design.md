@@ -1,0 +1,54 @@
+# Speech Processing Design
+
+The PC bridge owns speech processing. Firmware owns reliable microphone and
+speaker I/O; the bridge owns VAD, echo control, utterance assembly, local ASR,
+transcript TTL, and `voice_semantic_event` generation.
+
+## Pipeline
+
+```text
+/stackchan/<device_id>/device/audio/chunks
+  -> echo controller
+  -> VAD state machine
+  -> utterance assembly
+  -> local ASR worker
+  -> memory-only transcript store
+  -> speech_detected / transcript_ready / transcript_failed / voice_semantic_event
+```
+
+The bridge processes microphone audio as 10 ms internal frames. ROS
+`AudioChunk` remains 20 ms by default and 40 ms maximum; the speech processor
+splits capture chunks before echo control and VAD.
+
+## Echo Control
+
+The target AEC backend is a reference-aware WebRTC Audio Processing Module /
+AEC3-style worker. It stays behind a process boundary so worker crashes,
+timeouts, or invalid output do not bring down the command facade.
+
+`EchoGateFallback` is only a fallback. It suppresses normal ASR while playback
+or playback hangover may still be audible. This is not equivalent to AEC.
+PipeWire/GStreamer echo-cancel remains a comparison or diagnostic option, not
+the standard implementation.
+
+## ASR And Privacy
+
+ASR runs only after VAD has produced an utterance. The baseline keeps cloud ASR
+out of the default path and stores transcripts only in memory with TTL.
+
+`transcript_ready` contains only `utterance_id`. Full text is returned only from
+`GetTranscript`. Event payloads, normal logs, and MCP/CLI event results must not
+carry transcript text.
+
+Low-confidence ASR does not execute robot actions. It produces metadata through
+`voice_semantic_event` with `suppressed_reason=low_confidence`.
+
+## Safety Keywords
+
+Immediate direct safety commands such as `止まって`, `ストップ`, `停止`, and
+`やめて` can be classified locally before Codex is consulted. Quoted,
+explanatory, command-design, or negative contexts such as `止まらないで` are not
+treated as immediate safety stops.
+
+The bridge marks this classification in `voice_semantic_event.safety_action`;
+the firmware still owns the final hardware safety limits.

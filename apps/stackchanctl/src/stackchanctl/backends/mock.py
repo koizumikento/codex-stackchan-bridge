@@ -12,6 +12,7 @@ from stackchanctl.contract import (
     ErrorDetail,
     Event,
     EventListResult,
+    PowerStatusResult,
     Priority,
     ResultState,
     TranscriptResult,
@@ -38,7 +39,7 @@ class MockBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult:
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -60,6 +61,9 @@ class MockBackend:
 
         if request.command_type is CommandType.SPEECH_TRANSCRIPT:
             return self._get_transcript(request)
+
+        if request.command_type is CommandType.POWER_STATUS:
+            return _power_status(request)
 
         result_state = ResultState.COMPLETED if request.wait else ResultState.ACCEPTED
         return CommandResult(
@@ -324,7 +328,76 @@ def _observe(request: CommandRequest) -> DeviceStatus:
     )
 
 
-def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | EventListResult | TranscriptResult:
+def _power_status(request: CommandRequest) -> PowerStatusResult:
+    if request.meta.device_id == "unsupported_power":
+        return PowerStatusResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            voltage_v=None,
+            current_ma=None,
+            power_mw=None,
+            percentage=None,
+            power_source="unknown",
+            charging=False,
+            powered=False,
+            low_battery=False,
+            brownout_risk=False,
+            stale=False,
+            meta=request.meta,
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="power telemetry is not available on this mock device",
+                recoverable=False,
+            ),
+        )
+    if request.meta.device_id == "stale_power":
+        return PowerStatusResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            voltage_v=3.55,
+            current_ma=-90.0,
+            power_mw=-319.5,
+            percentage=None,
+            power_source="battery",
+            charging=False,
+            powered=True,
+            low_battery=True,
+            brownout_risk=False,
+            fault_code=None,
+            stale=True,
+            stamp="2026-05-16T00:00:00Z",
+            meta=request.meta,
+            error=ErrorDetail(
+                code="STALE_TELEMETRY",
+                message="power telemetry is stale",
+                recoverable=True,
+            ),
+        )
+    return PowerStatusResult(
+        ok=True,
+        result_state=ResultState.COMPLETED,
+        device_id=request.meta.device_id,
+        voltage_v=4.92,
+        current_ma=184.0,
+        power_mw=905.3,
+        percentage=None,
+        power_source="usb",
+        charging=True,
+        powered=True,
+        low_battery=False,
+        brownout_risk=False,
+        fault_code=None,
+        stale=False,
+        stamp="2026-05-16T00:00:03Z",
+        meta=request.meta,
+    )
+
+
+def _rejected(
+    request: CommandRequest, error: ErrorDetail
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
     if request.command_type in {
         CommandType.EVENTS_LIST,
         CommandType.EVENTS_NEXT,
@@ -350,6 +423,23 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
             meta=request.meta,
             error=error,
         )
+    if request.command_type is CommandType.POWER_STATUS:
+        return PowerStatusResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            voltage_v=None,
+            current_ma=None,
+            power_mw=None,
+            percentage=None,
+            power_source="unknown",
+            charging=False,
+            powered=False,
+            low_battery=False,
+            brownout_risk=False,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
         result_state=ResultState.REJECTED,
@@ -359,7 +449,9 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
     )
 
 
-def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult | TranscriptResult:
+def _timeout_result(
+    request: CommandRequest,
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
     error = ErrorDetail(
         code="TIMEOUT",
         message="command timed out before acceptance",
@@ -387,6 +479,23 @@ def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult 
             transcript=None,
             confidence=None,
             expires_at=None,
+            meta=request.meta,
+            error=error,
+        )
+    if request.command_type is CommandType.POWER_STATUS:
+        return PowerStatusResult(
+            ok=False,
+            result_state=ResultState.TIMEOUT,
+            device_id=request.meta.device_id,
+            voltage_v=None,
+            current_ma=None,
+            power_mw=None,
+            percentage=None,
+            power_source="unknown",
+            charging=False,
+            powered=False,
+            low_battery=False,
+            brownout_risk=False,
             meta=request.meta,
             error=error,
         )
@@ -463,6 +572,8 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "type": "speech.transcript",
             "utterance_id": request.args.get("utterance_id"),
         }
+    if request.command_type is CommandType.POWER_STATUS:
+        return {"type": "power.status"}
     return {"type": request.command_type.value}
 
 

@@ -77,10 +77,16 @@ class EventBuffer:
         with self._lock:
             sequence = self._next_sequence
             bounded_payload = _bounded_payload(payload or {})
+            bounded_device_id = _bounded_text(device_id, DEVICE_ID_MAX_LENGTH)
+            event_id = _unique_event_id(
+                self._events.get(device_id, ()),
+                _bounded_text(event_id or f"evt-{sequence:08d}", EVENT_ID_MAX_LENGTH),
+                sequence,
+            )
             record = EventRecord(
                 sequence=sequence,
-                event_id=_bounded_text(event_id or f"evt-{sequence:08d}", EVENT_ID_MAX_LENGTH),
-                device_id=_bounded_text(device_id, DEVICE_ID_MAX_LENGTH),
+                event_id=event_id,
+                device_id=bounded_device_id,
                 event_name=_bounded_text(event_name, EVENT_NAME_MAX_LENGTH),
                 stamp=self._clock() if stamp is None else stamp,
                 command_id=_bounded_text(command_id, COMMAND_ID_MAX_LENGTH),
@@ -195,6 +201,18 @@ def _head_limit(
 
 def _bounded_text(value: str, max_length: int) -> str:
     return str(value or "")[:max_length]
+
+
+def _unique_event_id(records: object, candidate: str, sequence: int) -> str:
+    existing = {record.event_id for record in records}
+    if candidate not in existing:
+        return candidate
+    fallback_sequence = sequence
+    while True:
+        fallback = _bounded_text(f"evt-{fallback_sequence:08d}", EVENT_ID_MAX_LENGTH)
+        if fallback not in existing:
+            return fallback
+        fallback_sequence += 1
 
 
 def _bounded_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:

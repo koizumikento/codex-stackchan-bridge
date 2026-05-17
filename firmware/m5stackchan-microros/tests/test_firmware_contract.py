@@ -107,6 +107,18 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("ButtonEventEstimator", sensors)
         self.assertIn("NfcPresenceEstimator", sensors)
         self.assertIn("ImuEventEstimator", sensors)
+        self.assertIn("TouchStateTelemetry", sensors)
+        self.assertIn("ProximityRawTelemetry", sensors)
+        self.assertIn("LightRawTelemetry", sensors)
+        self.assertIn("PowerStatusTelemetry", sensors)
+        self.assertIn("Battery = 1", sensors)
+        self.assertIn("TouchEventEstimator", sensors)
+        self.assertIn("ProximityEventEstimator", sensors)
+        self.assertIn("LightEventEstimator", sensors)
+        self.assertIn("PowerEventEstimator", sensors)
+        self.assertIn("kProximityNearSignal", sensors)
+        self.assertIn("kBatteryLowVoltageV", sensors)
+        self.assertIn("kBrownoutRiskVoltageV", sensors)
         self.assertIn("DeviceEventKind::PickedUp", sensors)
         self.assertIn("DeviceEventKind::PlacedDown", sensors)
         self.assertIn("DeviceEventKind::Shaken", sensors)
@@ -133,6 +145,17 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"device event publisher callback is not configured"', events)
         self.assertIn("EventPublishFn", events)
         self.assertIn("class EventPublisher", events)
+        self.assertIn("is_priority_device_event_name", events)
+        self.assertIn("nfc_read_failed", events)
+        self.assertIn("ir_transmit_failed", events)
+        self.assertIn("is_bounded_object_json", events)
+        self.assertIn("is_json_hex", events)
+        self.assertIn("parse_json_escape", events)
+        self.assertIn("parse_json_string", events)
+        self.assertIn("parse_json_value", events)
+        self.assertIn("payload_json_invalid", events)
+        self.assertIn("drop_oldest_low_priority_event", events)
+        self.assertIn("dropped_low_priority_count", events)
 
         for name in (
             "button_pressed",
@@ -154,14 +177,37 @@ class FirmwareContractTests(unittest.TestCase):
             "audio_capture_failed",
             "camera_capture_failed",
             "battery_low",
+            "battery_recovered",
+            "charging_started",
+            "charging_stopped",
+            "power_source_changed",
+            "brownout_risk",
+            "power_fault",
+            "touched",
+            "touch_released",
+            "touch_held",
+            "proximity_near",
+            "proximity_clear",
+            "light_changed",
+            "dark_detected",
+            "bright_detected",
+            "remote_button_pressed",
+            "remote_button_released",
+            "remote_button_held",
+            "remote_command_received",
+            "ir_transmit_started",
+            "ir_transmit_finished",
+            "ir_transmit_failed",
             "transport_unstable",
         ):
             self.assertIn(f'"{name}"', events)
 
         self.assertIn("is_firmware_device_event_name", events)
         self.assertIn("event_payload_json_fits", events)
-        self.assertIn('"event payload_json exceeds 256 bytes"', events)
+        self.assertIn("payload_json_exceeds_256_bytes", events)
         self.assertIn("make_string_payload", events)
+        self.assertIn("payload_json_key_too_long", events)
+        self.assertIn("max_value_length", events)
         self.assertIn("kFirmwareEventSource", events)
 
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 
+from stackchan_bridge.audio_session import AudioChunk
 from stackchan_bridge.event_aggregator import EventAggregator
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
 from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import CommandMeta, Result
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
+from stackchan_bridge.speech_node import SpeechEvent, SpeechSessionProcessor
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
+from stackchan_bridge.telemetry import PowerStatusSnapshot, PowerTelemetryStore
 
 EVENT_QOS_DEPTH = 32
 
@@ -129,8 +132,68 @@ def _copy_records(response: object, event_type: object, records: tuple[EventReco
 def _copy_transcript(response: object, transcript: SpeechTranscript) -> None:
     response.utterance_id = transcript.utterance_id
     response.transcript = transcript.text
-    response.confidence = 1.0
+    response.confidence = transcript.confidence
     _copy_seconds_to_stamp(response.expires_at, transcript.expires_at)
+
+
+def _snapshot_from_power_status(status: object, *, fallback_device_id: str) -> PowerStatusSnapshot:
+    stamp = _stamp_to_seconds(getattr(status, "stamp", None))
+    return PowerStatusSnapshot(
+        device_id=getattr(status, "device_id", "") or fallback_device_id,
+        voltage_v=float(getattr(status, "voltage_v", float("nan"))),
+        current_ma=float(getattr(status, "current_ma", float("nan"))),
+        power_mw=float(getattr(status, "power_mw", float("nan"))),
+        percentage=float(getattr(status, "percentage", float("nan"))),
+        power_source=int(getattr(status, "power_source", 0)),
+        charging=bool(getattr(status, "charging", False)),
+        powered=bool(getattr(status, "powered", False)),
+        low_battery=bool(getattr(status, "low_battery", False)),
+        brownout_risk=bool(getattr(status, "brownout_risk", False)),
+        fault_code=getattr(status, "fault_code", ""),
+        stamp=stamp if stamp is not None else 0.0,
+    )
+
+
+def _copy_power_status(target: object, snapshot: PowerStatusSnapshot) -> None:
+    target.device_id = snapshot.device_id
+    _copy_seconds_to_stamp(target.stamp, snapshot.stamp)
+    target.voltage_v = snapshot.voltage_v
+    target.current_ma = snapshot.current_ma
+    target.power_mw = snapshot.power_mw
+    target.percentage = snapshot.percentage
+    target.power_source = snapshot.power_source
+    target.charging = snapshot.charging
+    target.powered = snapshot.powered
+    target.low_battery = snapshot.low_battery
+    target.brownout_risk = snapshot.brownout_risk
+    target.fault_code = snapshot.fault_code
+
+
+def _coerce_telemetry_device_id(message: object, expected_device_id: str) -> bool:
+    incoming_device_id = getattr(message, "device_id", "")
+    if not incoming_device_id:
+        message.device_id = expected_device_id
+        return True
+    return incoming_device_id == expected_device_id
+
+
+def _relay_telemetry_message(
+    device_id: str,
+    tail: str,
+    message: object,
+    publisher: object,
+    *,
+    power_store: PowerTelemetryStore | None = None,
+    conflict_handler: object | None = None,
+) -> bool:
+    if not _coerce_telemetry_device_id(message, device_id):
+        if callable(conflict_handler):
+            conflict_handler(device_id, tail, message)
+        return False
+    if tail == "power/status" and power_store is not None:
+        power_store.update(_snapshot_from_power_status(message, fallback_device_id=device_id))
+    publisher.publish(message)
+    return True
 
 
 def main(args: list[str] | None = None) -> None:
@@ -138,10 +201,13 @@ def main(args: list[str] | None = None) -> None:
         import rclpy
         from rclpy.action import ActionServer
         from rclpy.node import Node
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from stackchan_msgs.action import CaptureAudio, CaptureCamera, PlayAudio, RunMotion, Say
-        from stackchan_msgs.msg import StackChanEvent
+        from stackchan_msgs.msg import AudioChunk as RosAudioChunk
+        from stackchan_msgs.msg import LightRaw, PowerStatus, ProximityRaw, StackChanEvent, TouchState
         from stackchan_msgs.srv import (
             ClearEventCursor,
+            GetPowerStatus,
             GetStatus,
             GetTranscript,
             ListEvents,
@@ -153,6 +219,17 @@ def main(args: list[str] | None = None) -> None:
         raise RuntimeError(
             "stackchan_bridge_node requires ROS 2 Python packages."
         ) from exc
+
+    reliable_depth_2 = QoSProfile(depth=2)
+    reliable_depth_4 = QoSProfile(depth=4)
+    best_effort_depth_5 = QoSProfile(depth=5)
+    best_effort_depth_5.reliability = ReliabilityPolicy.BEST_EFFORT
+    best_effort_depth_8 = QoSProfile(depth=8)
+    best_effort_depth_8.reliability = ReliabilityPolicy.BEST_EFFORT
+    best_effort_depth_10 = QoSProfile(depth=10)
+    best_effort_depth_10.reliability = ReliabilityPolicy.BEST_EFFORT
+    transient_depth_1 = QoSProfile(depth=1)
+    transient_depth_1.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
     class StackChanBridgeNode(Node):
         def __init__(self) -> None:
@@ -176,9 +253,18 @@ def main(args: list[str] | None = None) -> None:
             self.event_buffer = EventBuffer()
             self.event_aggregator = EventAggregator(self.event_buffer)
             self.transcript_store = SpeechTranscriptStore()
+            self.speech_processor = SpeechSessionProcessor(
+                transcript_store=self.transcript_store,
+                event_sink=self._handle_speech_event,
+            )
+            self.power_store = PowerTelemetryStore()
             self._stackchan_event_type = StackChanEvent
             self._public_event_publishers = {}
             self._device_event_subscriptions = []
+            self._speech_audio_subscriptions = []
+            self._telemetry_publishers = {}
+            self._telemetry_subscriptions = []
+            self._power_status_type = PowerStatus
             self._action_servers = []
             for device_id in configured_device_ids:
                 self._create_device_resources(device_id)
@@ -248,10 +334,58 @@ def main(args: list[str] | None = None) -> None:
                     response,
                 ),
             )
+            self.create_service(
+                GetPowerStatus,
+                f"{prefix}/power/status",
+                lambda request, response, device_id=device_id: self._handle_get_power_status(
+                    device_id,
+                    request,
+                    response,
+                ),
+            )
             self._public_event_publishers[device_id] = self.create_publisher(
                 StackChanEvent,
                 f"/stackchan/{device_id}/events",
-                EVENT_QOS_DEPTH,
+                QoSProfile(depth=EVENT_QOS_DEPTH),
+            )
+            self._create_telemetry_relay(
+                device_id,
+                "touch/state",
+                TouchState,
+                public_qos=transient_depth_1,
+                device_qos=reliable_depth_4,
+            )
+            self._create_telemetry_relay(
+                device_id,
+                "proximity/raw",
+                ProximityRaw,
+                public_qos=best_effort_depth_10,
+                device_qos=best_effort_depth_10,
+            )
+            self._create_telemetry_relay(
+                device_id,
+                "light/raw",
+                LightRaw,
+                public_qos=best_effort_depth_5,
+                device_qos=best_effort_depth_5,
+            )
+            self._create_telemetry_relay(
+                device_id,
+                "power/status",
+                PowerStatus,
+                public_qos=transient_depth_1,
+                device_qos=reliable_depth_2,
+            )
+            self._speech_audio_subscriptions.append(
+                self.create_subscription(
+                    RosAudioChunk,
+                    f"/stackchan/{device_id}/device/audio/chunks",
+                    lambda message, device_id=device_id: self._handle_speech_audio_chunk(
+                        device_id,
+                        message,
+                    ),
+                    best_effort_depth_8,
+                )
             )
             self._device_event_subscriptions.append(
                 self.create_subscription(
@@ -261,7 +395,7 @@ def main(args: list[str] | None = None) -> None:
                         device_id,
                         event,
                     ),
-                    EVENT_QOS_DEPTH,
+                    QoSProfile(depth=EVENT_QOS_DEPTH),
                 )
             )
             self._action_servers.append(
@@ -427,6 +561,141 @@ def main(args: list[str] | None = None) -> None:
             _copy_transcript(response, transcript)
             return response
 
+        def _handle_get_power_status(
+            self,
+            device_id: str,
+            request: object,
+            response: object,
+        ) -> object:
+            del request
+            snapshot, stale = self.power_store.get(device_id)
+            if snapshot is None:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "UNSUPPORTED_FEATURE",
+                        f"power telemetry for '{device_id}' has not been received",
+                    ),
+                )
+                response.stale = False
+                return response
+            if stale:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "STALE_TELEMETRY",
+                        f"power telemetry for '{device_id}' is stale",
+                        recoverable=True,
+                    ),
+                )
+            else:
+                _copy_result(response.result, Result.completed("power status found"))
+            _copy_power_status(response.status, snapshot)
+            response.stale = stale
+            return response
+
+        def _create_telemetry_relay(
+            self,
+            device_id: str,
+            tail: str,
+            message_type: object,
+            *,
+            public_qos: object,
+            device_qos: object,
+        ) -> None:
+            public_topic = f"/stackchan/{device_id}/{tail}"
+            device_topic = f"/stackchan/{device_id}/device/{tail}"
+            publisher = self.create_publisher(message_type, public_topic, public_qos)
+            self._telemetry_publishers[(device_id, tail)] = publisher
+            self._telemetry_subscriptions.append(
+                self.create_subscription(
+                    message_type,
+                    device_topic,
+                    lambda message, device_id=device_id, tail=tail, publisher=publisher: self._handle_telemetry(
+                        device_id,
+                        tail,
+                        message,
+                        publisher,
+                    ),
+                    device_qos,
+                )
+            )
+
+        def _handle_telemetry(
+            self,
+            device_id: str,
+            tail: str,
+            message: object,
+            publisher: object,
+        ) -> None:
+            if not _relay_telemetry_message(
+                device_id,
+                tail,
+                message,
+                publisher,
+                power_store=self.power_store,
+                conflict_handler=self._handle_telemetry_device_id_conflict,
+            ):
+                return
+
+        def _handle_telemetry_device_id_conflict(self, device_id: str, tail: str, message: object) -> None:
+            received_device_id = getattr(message, "device_id", "")
+            if received_device_id == device_id:
+                return
+            if received_device_id:
+                self.get_logger().warning(
+                    f"dropping {tail} telemetry for unexpected device_id={received_device_id!r}"
+                )
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="telemetry_device_id_conflict",
+                        source="bridge",
+                        payload={
+                            "topic": tail,
+                            "received_device_id": received_device_id,
+                        },
+                    )
+                )
+
+        def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:
+            if not _coerce_telemetry_device_id(message, device_id):
+                self.get_logger().warning(
+                    f"dropping audio chunk for unexpected device_id={getattr(message, 'device_id', '')!r}"
+                )
+                return
+            chunk = AudioChunk(
+                device_id=getattr(message, "device_id", "") or device_id,
+                command_id=getattr(message, "command_id", ""),
+                direction=int(getattr(message, "direction", 0)),
+                sequence=int(getattr(message, "sequence", 0)),
+                format=int(getattr(message, "format", 0)),
+                sample_rate=int(getattr(message, "sample_rate", 0)),
+                channels=int(getattr(message, "channels", 0)),
+                pcm=bytes(getattr(message, "pcm", b"")),
+            )
+            self.speech_processor.handle_audio_chunk(chunk)
+
+        def _handle_speech_event(self, event: SpeechEvent) -> None:
+            record = self.event_aggregator.add(
+                event.device_id,
+                event.event_name,
+                command_id=event.command_id,
+                source=event.source,
+                payload=event.payload,
+            )
+            if record is None:
+                return
+            self._publish_event_record(record)
+
+        def _publish_event_record(self, record: EventRecord) -> None:
+            publisher = self._public_event_publishers.get(record.device_id)
+            if publisher is None:
+                return
+            public_event = self._stackchan_event_type()
+            _copy_event_record(public_event, record)
+            publisher.publish(public_event)
+
         def _handle_device_event(self, device_id: str, event: object) -> None:
             payload_json = getattr(event, "payload_json", "")
             record = self.event_aggregator.add(
@@ -440,9 +709,7 @@ def main(args: list[str] | None = None) -> None:
             )
             if record is None:
                 return
-            public_event = self._stackchan_event_type()
-            _copy_event_record(public_event, record)
-            self._public_event_publishers[device_id].publish(public_event)
+            self._publish_event_record(record)
 
         def _handle_set_led(
             self,
