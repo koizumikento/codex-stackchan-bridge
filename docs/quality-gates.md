@@ -104,6 +104,8 @@ The expected CI shape is:
 - Containerized ROS 2 smoke for `stackchan_msgs`, `stackchan_bridge`, and the
   no-device `stackchanctl --backend bridge` path.
 - Firmware contract checks for `firmware/m5stackchan-microros`; run PlatformIO build-only checks in a PlatformIO/micro-ROS-capable environment.
+- Containerized PlatformIO build-only checks for firmware when the pinned
+  micro-ROS PlatformIO dependency resolves.
 
 Deferred until implementation stabilizes:
 

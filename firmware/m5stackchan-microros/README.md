@@ -52,6 +52,18 @@ The initial PlatformIO target is `stackchan-cores3`:
 pio run -d firmware/m5stackchan-microros -e stackchan-cores3
 ```
 
+The target keeps `-std=gnu++17` and `UART_SCLK_DEFAULT=UART_SCLK_XTAL` in
+`platformio.ini` for compatibility with the pinned StackChan-BSP and
+espressif32 toolchain.
+
+To keep PlatformIO and ESP32 toolchains out of the host environment, use the
+repository firmware container runner:
+
+```bash
+uv run --no-project python scripts/firmware_container.py build-image
+uv run --no-project python scripts/firmware_container.py build
+```
+
 The firmware package also includes hardware-free contract checks:
 
 ```bash
