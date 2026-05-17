@@ -897,7 +897,10 @@ def main(args: list[str] | None = None) -> None:
         def _handle_play_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
             command_response = self.facade.play_audio(
-                _meta_from_ros(request.meta, device_id)
+                _meta_from_ros(request.meta, device_id),
+                format=request.format,
+                sample_rate=int(request.sample_rate),
+                channels=int(request.channels),
             )
             result = PlayAudio.Result()
             _copy_result(result.result, command_response.result)
@@ -910,7 +913,11 @@ def main(args: list[str] | None = None) -> None:
         def _handle_capture_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
             command_response = self.facade.capture_audio(
-                _meta_from_ros(request.meta, device_id)
+                _meta_from_ros(request.meta, device_id),
+                format=request.format,
+                sample_rate=int(request.sample_rate),
+                channels=int(request.channels),
+                duration_ms=int(request.duration_ms),
             )
             result = CaptureAudio.Result()
             _copy_result(result.result, command_response.result)
@@ -923,7 +930,11 @@ def main(args: list[str] | None = None) -> None:
         def _handle_capture_camera(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
             command_response = self.facade.capture_camera(
-                _meta_from_ros(request.meta, device_id)
+                _meta_from_ros(request.meta, device_id),
+                format=request.format,
+                width=int(request.width),
+                height=int(request.height),
+                quality=int(request.quality),
             )
             result = CaptureCamera.Result()
             _copy_result(result.result, command_response.result)

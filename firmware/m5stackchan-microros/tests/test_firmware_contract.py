@@ -84,6 +84,26 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("bool fault_state = false", safety)
         self.assertNotIn("clamp_head_pose", safety)
 
+    def test_calibration_store_uses_schema_checksum_and_default_invalid_gate(self) -> None:
+        calibration = (ROOT / "include" / "stackchan" / "calibration.hpp").read_text()
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("kCalibrationSchemaVersion = 1", calibration)
+        self.assertIn("kCalibrationNvsNamespace", calibration)
+        self.assertIn("kCalibrationNvsKey", calibration)
+        self.assertIn("struct CalibrationRecord", calibration)
+        self.assertIn("checksum", calibration)
+        self.assertIn("calibration_checksum_without_checksum", calibration)
+        self.assertIn("validate_calibration_record", calibration)
+        self.assertIn('"CALIBRATION_INVALID"', calibration)
+        self.assertIn("servo_calibration_bounds_are_safe", calibration)
+        self.assertIn("load_from_nvs_record", calibration)
+        self.assertIn("void reset()", calibration)
+        self.assertIn("valid_ = false", calibration)
+        self.assertIn("stackchan::CalibrationStore calibration_store", main)
+        self.assertIn("return calibration_store.valid();", main)
+        self.assertNotIn("return true;", main[main.find("bool firmware_calibration_valid") : main.find("bool servo_position_read_available")])
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 

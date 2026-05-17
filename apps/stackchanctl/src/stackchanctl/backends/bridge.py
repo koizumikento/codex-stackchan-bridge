@@ -295,11 +295,28 @@ class BridgeBackend:
                 timeout=request.timeout,
             )
         if request.command_type is CommandType.AUDIO_PLAY:
-            return _unsupported_media("audio playback data transport")
+            return client.play_audio(
+                request.meta,
+                str(request.args["path"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.AUDIO_CAPTURE:
-            return _unsupported_media("audio capture data transport")
+            return client.capture_audio(
+                request.meta,
+                float(request.args["seconds"]),
+                str(request.args["output"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.CAMERA_CAPTURE:
-            return _unsupported_media("camera capture result transport")
+            return client.capture_camera(
+                request.meta,
+                str(request.args["output"]),
+                int(request.args["quality"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -535,8 +552,21 @@ class RclpyBridgeClient:
     def play_audio(
         self, meta: CommandMeta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del meta, path, wait, timeout
-        return _unsupported_media("audio playback data transport")
+        del path
+        goal = self._play_audio_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "pcm_s16le"
+        goal.sample_rate = 16000
+        goal.channels = 1
+        goal.face_hint = ""
+        goal.motion_hint = ""
+        return self._send_action_goal(
+            self._play_audio_type,
+            f"/stackchan/{meta.device_id}/cmd/audio/play",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def capture_audio(
         self,
@@ -547,14 +577,38 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        del meta, seconds, output, wait, timeout
-        return _unsupported_media("audio capture data transport")
+        del output
+        goal = self._capture_audio_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "pcm_s16le"
+        goal.sample_rate = 16000
+        goal.channels = 1
+        goal.duration_ms = max(1, int(seconds * 1000))
+        return self._send_action_goal(
+            self._capture_audio_type,
+            f"/stackchan/{meta.device_id}/cmd/audio/capture",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def capture_camera(
         self, meta: CommandMeta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del meta, output, quality, wait, timeout
-        return _unsupported_media("camera capture result transport")
+        del output
+        goal = self._capture_camera_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "jpeg"
+        goal.width = 320
+        goal.height = 240
+        goal.quality = quality
+        return self._send_action_goal(
+            self._capture_camera_type,
+            f"/stackchan/{meta.device_id}/cmd/camera/capture",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def list_events(
         self,
@@ -739,18 +793,6 @@ def _normalize_action_response(
     if wait or not response.ok:
         return response
     return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
-
-
-def _unsupported_media(feature: str) -> BridgeCommandResponse:
-    return BridgeCommandResponse(
-        ok=False,
-        result_state=ResultState.REJECTED,
-        error=ErrorDetail(
-            code="UNSUPPORTED_FEATURE",
-            message=f"bridge backend does not implement {feature} yet",
-            recoverable=False,
-        ),
-    )
 
 
 def _event_list_from_ros(meta: CommandMeta, result, events, cursor: str) -> EventListResult:

@@ -105,17 +105,27 @@ class FacadeTests(unittest.TestCase):
 
         self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_ACCEPTED)
 
-    def test_media_actions_are_unsupported_until_payload_transport_exists(self) -> None:
+    def test_media_actions_accept_baseline_bounded_contracts(self) -> None:
         bridge = facade()
 
-        self.assertEqual(bridge.play_audio(meta()).result.error_code, "UNSUPPORTED_FEATURE")
+        self.assertTrue(bridge.play_audio(meta()).result.ok)
+        self.assertTrue(bridge.capture_audio(meta(), duration_ms=1000).result.ok)
+        self.assertTrue(bridge.capture_camera(meta(), quality=80).result.ok)
+
+    def test_media_actions_reject_outside_baseline_without_payloads(self) -> None:
+        bridge = facade()
+
         self.assertEqual(
-            bridge.capture_audio(meta()).result.error_code,
-            "UNSUPPORTED_FEATURE",
+            bridge.play_audio(meta(), format="mp3").result.error_code,
+            "AUDIO_FORMAT_UNSUPPORTED",
         )
         self.assertEqual(
-            bridge.capture_camera(meta()).result.error_code,
-            "UNSUPPORTED_FEATURE",
+            bridge.capture_audio(meta(), duration_ms=0).result.error_code,
+            "AUDIO_CAPTURE_FAILED",
+        )
+        self.assertEqual(
+            bridge.capture_camera(meta(), width=640, height=480).result.error_code,
+            "CAMERA_CAPTURE_FAILED",
         )
 
     def test_unknown_device_returns_device_not_found(self) -> None:

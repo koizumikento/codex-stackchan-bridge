@@ -211,6 +211,8 @@ Hardware validation is still required for behavior that depends on the physical 
 
 Manual hardware checks should cover:
 
+- The detailed K151 checklist in [hardware-validation.md](hardware-validation.md)
+  has been followed or explicitly marked unavailable.
 - Face command rendering.
 - Motion command safety and neutral behavior.
 - Explicit head pose rejects out-of-range values instead of clamping, keeps

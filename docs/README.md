@@ -18,7 +18,9 @@ This directory is the map for the project. Start here when you want to understan
    - Dependency and reference policy for StackChan-related upstream code.
 7. [quality-gates.md](quality-gates.md)
    - Required validation gates for CLI, MCP stdio, ROS 2 interfaces, firmware, Codex skill, and Rust workers.
-8. [ros2-container.md](ros2-container.md)
+8. [hardware-validation.md](hardware-validation.md)
+   - Manual K151 bring-up checklist for calibration, motion, audio, camera, and event redaction.
+9. [ros2-container.md](ros2-container.md)
    - Docker/devcontainer setup for ROS 2 Jazzy readiness without installing ROS 2 on the host.
 
 ## Implementation areas

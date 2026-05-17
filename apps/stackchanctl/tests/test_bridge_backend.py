@@ -47,6 +47,9 @@ class FakeBridgeClient:
         self.power_status_args = None
         self.move_head_pose_args = None
         self.home_head_pose_args = None
+        self.play_audio_args = None
+        self.capture_audio_args = None
+        self.capture_camera_args = None
 
     def get_status(self, meta, timeout: float) -> DeviceStatus:
         if self.timeout:
@@ -132,7 +135,11 @@ class FakeBridgeClient:
     def play_audio(
         self, meta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        return self._unsupported_media()
+        self.play_audio_args = (meta.device_id, path, wait, timeout)
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
 
     def capture_audio(
         self,
@@ -143,12 +150,20 @@ class FakeBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        return self._unsupported_media()
+        self.capture_audio_args = (meta.device_id, seconds, output, wait, timeout)
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
 
     def capture_camera(
         self, meta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        return self._unsupported_media()
+        self.capture_camera_args = (meta.device_id, output, quality, wait, timeout)
+        return BridgeCommandResponse(
+            ok=True,
+            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
+        )
 
     def list_events(
         self, meta, limit: int, since_event_id: str | None, timeout: float
@@ -387,20 +402,21 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
 
-    def test_bridge_audio_play_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_audio_play_routes_to_action_client(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "audio", "play", "prompt.wav", "--json"],
-            FakeBridgeClient(),
+            client,
         )
 
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, "")
-        payload = json.loads(stderr)
-        self.assertEqual(payload["result_state"], "REJECTED")
-        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result_state"], "ACCEPTED")
         self.assertEqual(payload["command"], {"type": "audio.play", "path": "prompt.wav"})
+        self.assertEqual(client.play_audio_args, ("default", "prompt.wav", False, 5.0))
 
-    def test_bridge_audio_capture_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_audio_capture_routes_to_action_client(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -414,18 +430,18 @@ class BridgeBackendTests(unittest.TestCase):
                 "--wait",
                 "--json",
             ],
-            FakeBridgeClient(),
+            client,
         )
 
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, "")
-        payload = json.loads(stderr)
-        self.assertEqual(payload["result_state"], "REJECTED")
-        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result_state"], "COMPLETED")
         self.assertEqual(payload["command"]["type"], "audio.capture")
         self.assertEqual(payload["command"]["output"], "mic.wav")
+        self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
 
-    def test_bridge_camera_capture_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_camera_capture_routes_to_action_client(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -439,16 +455,15 @@ class BridgeBackendTests(unittest.TestCase):
                 "--wait",
                 "--json",
             ],
-            FakeBridgeClient(),
+            client,
         )
 
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, "")
-        payload = json.loads(stderr)
-        self.assertEqual(payload["result_state"], "REJECTED")
-        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result_state"], "COMPLETED")
         self.assertEqual(payload["command"]["type"], "camera.capture")
         self.assertEqual(payload["command"]["quality"], 80)
+        self.assertEqual(client.capture_camera_args, ("default", "frame.jpg", 80, True, 5.0))
 
     def test_bridge_events_list_passes_since_event_to_client(self) -> None:
         client = FakeBridgeClient()

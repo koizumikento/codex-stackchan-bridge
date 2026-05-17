@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from stackchanctl.backends.bridge import BridgeBackend, BridgeCommandResponse  # noqa: E402
 from stackchanctl.config import RuntimeConfig  # noqa: E402
-from stackchanctl.contract import DeviceStatus, ResultState  # noqa: E402
+from stackchanctl.contract import DeviceStatus, Event, EventListResult, ResultState  # noqa: E402
 from stackchanctl import mcp_stdio  # noqa: E402
 
 
@@ -72,6 +72,32 @@ class NonFiniteBackend:
             connected=True,
             device_state="idle",
             face=float("nan"),
+        )
+
+
+class SensitiveEventBackend:
+    def execute(self, request):
+        return EventListResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            events=[
+                Event(
+                    event_id="evt-sensitive",
+                    device_id=request.meta.device_id,
+                    event_name="nfc_detected",
+                    source="firmware",
+                    stamp="2026-05-16T00:00:00Z",
+                    command_id=request.meta.command_id,
+                    payload={
+                        "tag_id": "04AABB",
+                        "nested": {"raw_ir_code": "0xDEADBEEF"},
+                        "level": 3,
+                    },
+                )
+            ],
+            cursor="evt-sensitive",
+            meta=request.meta,
         )
 
 
@@ -290,6 +316,31 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(len(structured["events"]), 1)
         self.assertEqual(structured["events"][0]["device_id"], "default")
         self.assertEqual(structured["command_id"], "cmd-test-0001")
+
+    def test_events_tool_redacts_sensitive_payloads_in_structured_and_text_content(self) -> None:
+        code, responses, stderr = run_mcp_with_backend_factory(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-1",
+                    "method": "tools/call",
+                    "params": {"name": "events_list", "arguments": {}},
+                }
+            ],
+            lambda name: SensitiveEventBackend(),
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        result = responses[0]["result"]
+        structured = result["structuredContent"]
+        payload = structured["events"][0]["payload"]
+        self.assertEqual(payload["tag_id"], "<redacted>")
+        self.assertEqual(payload["nested"]["raw_ir_code"], "<redacted>")
+        self.assertEqual(payload["level"], 3)
+        self.assertEqual(json.loads(result["content"][0]["text"]), structured)
+        self.assertNotIn("04AABB", result["content"][0]["text"])
+        self.assertNotIn("0xDEADBEEF", result["content"][0]["text"])
 
     def test_events_next_tool_empty_after_cursor_exhaustion_is_ok(self) -> None:
         code, responses, stderr = run_mcp(

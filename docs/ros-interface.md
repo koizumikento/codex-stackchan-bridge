@@ -911,8 +911,10 @@ Purpose: play speech or prompt audio on the device speaker.
 
 Do not put large PCM payloads in a single service request. Coordinate playback with this action and send payload through `/stackchan/<device_id>/device/audio/chunks`.
 
-The current bridge scaffold returns `UNSUPPORTED_FEATURE` for playback until
-audio chunk transport is implemented.
+The bridge scaffold accepts playback goals that match the baseline audio
+metadata contract. Implementations must keep actual PCM chunks on the bounded
+audio chunk path and must not inline bytes in action results, MCP output, events,
+or normal logs.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -983,8 +985,9 @@ Baseline camera behavior:
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
   `recoverable=true` unless a later contract adds a narrower error code
 - timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
-- the current bridge scaffold returns `UNSUPPORTED_FEATURE` until image result
-  transport is implemented
+- the bridge scaffold accepts QVGA JPEG goals and keeps image bytes out of
+  CLI/MCP JSON; result transport must enforce the 96 KiB maximum before exposing
+  metadata to callers
 
 ### `/stackchan/<device_id>/cmd/perform`
 
@@ -1027,8 +1030,10 @@ Feedback fields:
 
 Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
 
-The current bridge scaffold returns `UNSUPPORTED_FEATURE` for microphone
-capture until audio chunk transport is implemented.
+The bridge scaffold accepts microphone capture goals that match the baseline
+audio metadata contract. Captured chunks remain on the bounded audio chunk path
+and must not be surfaced as raw bytes in action summaries, MCP output, events,
+or normal logs.
 
 Baseline chunk policy:
 
