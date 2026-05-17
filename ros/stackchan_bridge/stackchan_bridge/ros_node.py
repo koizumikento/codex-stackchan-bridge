@@ -421,11 +421,10 @@ def main(args: list[str] | None = None) -> None:
             return response
 
         def _handle_device_event(self, device_id: str, event: object) -> None:
-            source_device_id = getattr(event, "device_id", "") or device_id
             payload_json = getattr(event, "payload_json", "")
             transcript_payload = _transcript_from_event_payload(payload_json)
             record = self.event_aggregator.add(
-                source_device_id,
+                device_id,
                 getattr(event, "event_name", ""),
                 command_id=getattr(event, "command_id", ""),
                 source=getattr(event, "source", "") or "firmware",

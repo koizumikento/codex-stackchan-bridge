@@ -108,6 +108,11 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertIn(name, source)
 
+        self.assertIn(
+            "record = self.event_aggregator.add(\n                device_id,",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
