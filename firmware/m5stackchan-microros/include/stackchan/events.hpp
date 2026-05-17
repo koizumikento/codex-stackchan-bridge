@@ -239,15 +239,145 @@ inline bool is_priority_device_event_name(const char* name) {
          strcmp(name, "transport_unstable") == 0;
 }
 
+inline void skip_json_ws(const char* value, size_t length, size_t* index) {
+  while (*index < length &&
+         (value[*index] == ' ' ||
+          value[*index] == '\n' ||
+          value[*index] == '\r' ||
+          value[*index] == '\t')) {
+    ++(*index);
+  }
+}
+
+inline bool parse_json_string(const char* value, size_t length, size_t* index) {
+  if (*index >= length || value[*index] != '"') {
+    return false;
+  }
+  ++(*index);
+  while (*index < length) {
+    const char current = value[*index];
+    if (current == '"') {
+      ++(*index);
+      return true;
+    }
+    if (current == '\\') {
+      ++(*index);
+      if (*index >= length) {
+        return false;
+      }
+    } else if (static_cast<unsigned char>(current) < 0x20) {
+      return false;
+    }
+    ++(*index);
+  }
+  return false;
+}
+
+inline bool parse_json_literal(
+    const char* value,
+    size_t length,
+    size_t* index,
+    const char* literal) {
+  const size_t literal_length = strlen(literal);
+  if (*index + literal_length > length) {
+    return false;
+  }
+  if (strncmp(value + *index, literal, literal_length) != 0) {
+    return false;
+  }
+  *index += literal_length;
+  return true;
+}
+
+inline bool parse_json_number(const char* value, size_t length, size_t* index) {
+  const size_t start = *index;
+  if (*index < length && value[*index] == '-') {
+    ++(*index);
+  }
+  size_t digits = 0;
+  while (*index < length && value[*index] >= '0' && value[*index] <= '9') {
+    ++(*index);
+    ++digits;
+  }
+  if (digits == 0) {
+    *index = start;
+    return false;
+  }
+  if (*index < length && value[*index] == '.') {
+    ++(*index);
+    size_t fractional_digits = 0;
+    while (*index < length && value[*index] >= '0' && value[*index] <= '9') {
+      ++(*index);
+      ++fractional_digits;
+    }
+    if (fractional_digits == 0) {
+      *index = start;
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool parse_json_value(const char* value, size_t length, size_t* index) {
+  skip_json_ws(value, length, index);
+  if (*index >= length) {
+    return false;
+  }
+  if (value[*index] == '"') {
+    return parse_json_string(value, length, index);
+  }
+  return parse_json_literal(value, length, index, "true") ||
+         parse_json_literal(value, length, index, "false") ||
+         parse_json_literal(value, length, index, "null") ||
+         parse_json_number(value, length, index);
+}
+
 inline bool is_bounded_object_json(const char* payload_json) {
   if (payload_json == nullptr) {
     return true;
   }
   const size_t length = strlen(payload_json);
-  return length >= 2 &&
-         length <= kEventPayloadJsonMaxLength &&
-         payload_json[0] == '{' &&
-         payload_json[length - 1] == '}';
+  if (length < 2 || length > kEventPayloadJsonMaxLength) {
+    return false;
+  }
+  size_t index = 0;
+  skip_json_ws(payload_json, length, &index);
+  if (index >= length || payload_json[index] != '{') {
+    return false;
+  }
+  ++index;
+  skip_json_ws(payload_json, length, &index);
+  if (index < length && payload_json[index] == '}') {
+    ++index;
+    skip_json_ws(payload_json, length, &index);
+    return index == length;
+  }
+  while (index < length) {
+    if (!parse_json_string(payload_json, length, &index)) {
+      return false;
+    }
+    skip_json_ws(payload_json, length, &index);
+    if (index >= length || payload_json[index] != ':') {
+      return false;
+    }
+    ++index;
+    if (!parse_json_value(payload_json, length, &index)) {
+      return false;
+    }
+    skip_json_ws(payload_json, length, &index);
+    if (index < length && payload_json[index] == ',') {
+      ++index;
+      skip_json_ws(payload_json, length, &index);
+      continue;
+    }
+    if (index < length && payload_json[index] == '}') {
+      ++index;
+      skip_json_ws(payload_json, length, &index);
+      return index == length;
+    }
+    return false;
+  }
+  return false;
 }
 
 inline char safe_json_char(char value) {
