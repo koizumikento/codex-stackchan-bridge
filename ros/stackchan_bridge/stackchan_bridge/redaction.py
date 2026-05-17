@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 REDACTED = "<redacted>"
+INVALID_PAYLOAD_MARKER = {"truncated": True, "reason": "payload_json_invalid"}
 
 SPEECH_TEXT_FIELDS = frozenset({"speech_text", "text", "transcript", "utterance"})
 IMAGE_FIELDS = frozenset({"image", "image_payload", "image_data", "jpeg", "frame"})
@@ -83,7 +84,7 @@ def redact_payload_json(
     try:
         payload = json.loads(payload_json)
     except json.JSONDecodeError:
-        return payload_json
+        return json.dumps(INVALID_PAYLOAD_MARKER, sort_keys=True)
     return json.dumps(redact_payload(payload, policy=policy), sort_keys=True)
 
 

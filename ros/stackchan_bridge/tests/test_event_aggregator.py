@@ -40,6 +40,14 @@ class EventAggregatorTests(unittest.TestCase):
         self.assertEqual(payload["protocol_dump"], REDACTED)
         self.assertEqual(payload["nfc_tag_id"], REDACTED)
 
+    def test_invalid_payload_json_is_not_republished_raw(self) -> None:
+        payload = normalize_payload("raw_ir_code=0xDEADBEEF tag_id=04AABB")
+
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["reason"], "payload_json_invalid")
+        self.assertNotIn("0xDEADBEEF", str(payload))
+        self.assertNotIn("04AABB", str(payload))
+
     def test_debounces_duplicate_events_per_device(self) -> None:
         clock = MutableClock(100.0)
         buffer = EventBuffer(clock=clock)

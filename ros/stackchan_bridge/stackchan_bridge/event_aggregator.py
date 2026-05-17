@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
-from stackchan_bridge.redaction import redact_payload
+from stackchan_bridge.redaction import INVALID_PAYLOAD_MARKER, redact_payload
 
 _NON_EVENT_CHARACTERS = re.compile(r"[^a-z0-9_]+")
 _UNDERSCORES = re.compile(r"_+")
@@ -119,7 +119,7 @@ def normalize_payload(payload: Mapping[str, Any] | str | None) -> dict[str, Any]
         try:
             loaded = json.loads(payload)
         except json.JSONDecodeError:
-            return {"value": payload}
+            return dict(INVALID_PAYLOAD_MARKER)
         if isinstance(loaded, Mapping):
             return dict(redact_payload(loaded))
         return {"value": redact_payload(loaded)}
