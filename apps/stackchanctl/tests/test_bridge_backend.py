@@ -136,10 +136,7 @@ class FakeBridgeClient:
         self, meta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
         self.play_audio_args = (meta.device_id, path, wait, timeout)
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     def capture_audio(
         self,
@@ -151,19 +148,13 @@ class FakeBridgeClient:
         timeout: float,
     ) -> BridgeCommandResponse:
         self.capture_audio_args = (meta.device_id, seconds, output, wait, timeout)
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     def capture_camera(
         self, meta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
         self.capture_camera_args = (meta.device_id, output, quality, wait, timeout)
-        return BridgeCommandResponse(
-            ok=True,
-            result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
-        )
+        return self._unsupported_media()
 
     def list_events(
         self, meta, limit: int, since_event_id: str | None, timeout: float
@@ -426,7 +417,7 @@ class BridgeBackendTests(unittest.TestCase):
                 "max_chunk_ms": 40,
             },
         )
-        self.assertIsNone(client.play_audio_args)
+        self.assertEqual(client.play_audio_args, ("default", "prompt.wav", False, 5.0))
 
     def test_bridge_media_rejects_safety_priority_before_unsupported_feature(self) -> None:
         client = FakeBridgeClient()
@@ -477,7 +468,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["command"]["output"], "mic.wav")
         self.assertEqual(payload["command"]["format"], "pcm_s16le")
         self.assertEqual(payload["command"]["sample_rate"], 16000)
-        self.assertIsNone(client.capture_audio_args)
+        self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
 
     def test_bridge_camera_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
@@ -508,7 +499,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["command"]["height"], 240)
         self.assertEqual(payload["command"]["quality"], 80)
         self.assertEqual(payload["command"]["max_payload_bytes"], 98304)
-        self.assertIsNone(client.capture_camera_args)
+        self.assertEqual(client.capture_camera_args, ("default", "frame.jpg", 80, True, 5.0))
 
     def test_bridge_events_list_passes_since_event_to_client(self) -> None:
         client = FakeBridgeClient()

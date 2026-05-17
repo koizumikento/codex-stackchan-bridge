@@ -296,11 +296,28 @@ class BridgeBackend:
                 timeout=request.timeout,
             )
         if request.command_type is CommandType.AUDIO_PLAY:
-            return _unsupported_media("firmware-confirmed audio playback")
+            return client.play_audio(
+                request.meta,
+                str(request.args["path"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.AUDIO_CAPTURE:
-            return _unsupported_media("firmware-confirmed audio capture")
+            return client.capture_audio(
+                request.meta,
+                float(request.args["seconds"]),
+                str(request.args["output"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.CAMERA_CAPTURE:
-            return _unsupported_media("firmware-confirmed camera capture")
+            return client.capture_camera(
+                request.meta,
+                str(request.args["output"]),
+                int(request.args["quality"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -897,18 +914,6 @@ def _state_from_ros(state: int) -> ResultState:
         3: ResultState.REJECTED,
         4: ResultState.TIMEOUT,
     }.get(state, ResultState.REJECTED)
-
-
-def _unsupported_media(feature: str) -> BridgeCommandResponse:
-    return BridgeCommandResponse(
-        ok=False,
-        result_state=ResultState.REJECTED,
-        error=ErrorDetail(
-            code="UNSUPPORTED_FEATURE",
-            message=f"bridge backend does not implement {feature} yet",
-            recoverable=False,
-        ),
-    )
 
 
 def _error_from_ros(result) -> ErrorDetail | None:
