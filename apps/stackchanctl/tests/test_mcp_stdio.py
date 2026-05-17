@@ -164,6 +164,9 @@ class McpStdioTests(unittest.TestCase):
                 "say",
                 "face",
                 "motion",
+                "motion_pose",
+                "motion_home",
+                "motion_status",
                 "led",
                 "observe",
                 "events_list",
@@ -415,6 +418,87 @@ class McpStdioTests(unittest.TestCase):
         self.assertTrue(structured["ok"])
         self.assertEqual(structured["power"]["power_source"], "usb")
         self.assertIsNone(structured["power"]["percentage"])
+
+    def test_motion_pose_tool_returns_command_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-pose",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "motion_pose",
+                        "arguments": {"pan_deg": 30.0, "tilt_deg": 20.0, "speed": 500},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["command"]["type"], "motion.pose")
+        self.assertEqual(structured["command"]["frame"], "home")
+        self.assertEqual(structured["command"]["pan_deg"], 30.0)
+
+    def test_motion_home_tool_returns_dedicated_command_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-home",
+                    "method": "tools/call",
+                    "params": {"name": "motion_home", "arguments": {"speed": 500}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["command"]["type"], "motion.home")
+
+    def test_motion_status_tool_returns_pose_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-status",
+                    "method": "tools/call",
+                    "params": {"name": "motion_status", "arguments": {}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["pose"]["frame"], "home")
+
+    def test_motion_pose_rejection_is_tool_result_not_protocol_error(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-pose",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "motion_pose",
+                        "arguments": {"pan_deg": 129.0, "tilt_deg": 20.0},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertNotIn("error", responses[0])
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertFalse(structured["ok"])
+        self.assertEqual(structured["error"]["code"], "SERVO_LIMIT_EXCEEDED")
 
     def test_safety_priority_is_tool_result_not_protocol_error(self) -> None:
         code, responses, stderr = run_mcp(

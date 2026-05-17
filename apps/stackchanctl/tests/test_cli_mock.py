@@ -83,6 +83,90 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
 
+    def test_motion_pose_mock_json_uses_home_frame_absolute_angles(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "pose", "--pan-deg", "30", "--tilt-deg", "20", "--speed", "500", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "motion.pose")
+        self.assertEqual(payload["command"]["frame"], "home")
+        self.assertEqual(payload["command"]["pan_deg"], 30.0)
+        self.assertEqual(payload["command"]["tilt_deg"], 20.0)
+        self.assertEqual(payload["command"]["speed"], 500)
+
+    def test_motion_home_mock_json_is_dedicated_command(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "home", "--speed", "500", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "motion.home")
+        self.assertEqual(payload["command"]["frame"], "home")
+
+    def test_motion_status_mock_json_returns_pose(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["pose"]["frame"], "home")
+        self.assertEqual(payload["pose"]["pan_deg"], 0.0)
+        self.assertEqual(payload["pose"]["tilt_deg"], 0.0)
+        self.assertFalse(payload["pose"]["stale"])
+
+    def test_motion_pose_out_of_range_rejects_without_clamping(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "pose", "--pan-deg", "129", "--tilt-deg", "20", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "SERVO_LIMIT_EXCEEDED")
+        self.assertEqual(payload["command"]["pan_deg"], 129.0)
+
+    def test_motion_status_stale_is_non_success(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "stale_pose", "motion", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "STALE_TELEMETRY")
+        self.assertTrue(payload["pose"]["stale"])
+
+    def test_motion_status_calibration_invalid_is_non_success(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "uncalibrated_pose", "motion", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "CALIBRATION_INVALID")
+
+    def test_non_finite_motion_pose_is_rejected_by_parser(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "pose", "--pan-deg", "NaN", "--tilt-deg", "20", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("'NaN' must be finite", stderr)
+
     def test_audio_play_mock_json_has_chunk_contract(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["audio", "play", "prompt.wav", "--json"],

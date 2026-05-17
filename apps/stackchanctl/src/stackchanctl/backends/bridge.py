@@ -16,6 +16,7 @@ from stackchanctl.contract import (
     ErrorDetail,
     Event,
     EventListResult,
+    HeadPoseResult,
     PowerStatusResult,
     ResultState,
     TranscriptResult,
@@ -56,6 +57,30 @@ class BridgeClient(Protocol):
 
     def run_motion(
         self, meta: CommandMeta, name: str, *, wait: bool, timeout: float
+    ) -> BridgeCommandResponse:
+        raise NotImplementedError
+
+    def move_head_pose(
+        self,
+        meta: CommandMeta,
+        pan_deg: float,
+        tilt_deg: float,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        raise NotImplementedError
+
+    def home_head_pose(
+        self,
+        meta: CommandMeta,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
     ) -> BridgeCommandResponse:
         raise NotImplementedError
 
@@ -116,6 +141,9 @@ class BridgeClient(Protocol):
     def get_power_status(self, meta: CommandMeta, timeout: float) -> PowerStatusResult:
         raise NotImplementedError
 
+    def get_head_pose(self, meta: CommandMeta, timeout: float) -> HeadPoseResult:
+        raise NotImplementedError
+
 
 class BridgeBackend:
     """Backend that talks to the stackchan_bridge facade resources."""
@@ -125,7 +153,7 @@ class BridgeBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult:
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -143,6 +171,7 @@ class BridgeBackend:
                 CommandType.EVENTS_CLEAR,
                 CommandType.SPEECH_TRANSCRIPT,
                 CommandType.POWER_STATUS,
+                CommandType.MOTION_STATUS,
             }:
                 return self._execute_observation(request, client)
             response = self._execute_command(request, client)
@@ -197,6 +226,24 @@ class BridgeBackend:
                 wait=request.wait,
                 timeout=request.timeout,
             )
+        if request.command_type is CommandType.MOTION_POSE:
+            return client.move_head_pose(
+                request.meta,
+                float(request.args["pan_deg"]),
+                float(request.args["tilt_deg"]),
+                int(request.args["speed"]),
+                int(request.args["duration_ms"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
+        if request.command_type is CommandType.MOTION_HOME:
+            return client.home_head_pose(
+                request.meta,
+                int(request.args["speed"]),
+                int(request.args["duration_ms"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.SAY:
             return client.say(
                 request.meta,
@@ -218,7 +265,7 @@ class BridgeBackend:
 
     def _execute_observation(
         self, request: CommandRequest, client: BridgeClient
-    ) -> EventListResult | TranscriptResult | PowerStatusResult:
+    ) -> EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
         if request.command_type is CommandType.EVENTS_LIST:
             return client.list_events(
                 request.meta,
@@ -247,6 +294,8 @@ class BridgeBackend:
             )
         if request.command_type is CommandType.POWER_STATUS:
             return client.get_power_status(request.meta, request.timeout)
+        if request.command_type is CommandType.MOTION_STATUS:
+            return client.get_head_pose(request.meta, request.timeout)
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -262,11 +311,12 @@ class RclpyBridgeClient:
             from stackchan_msgs.action import (
                 CaptureAudio,
                 CaptureCamera,
+                MoveHeadPose,
                 PlayAudio,
                 RunMotion,
                 Say,
             )
-            from stackchan_msgs.srv import GetPowerStatus, GetStatus, SetFace, SetLed
+            from stackchan_msgs.srv import GetHeadPose, GetPowerStatus, GetStatus, SetFace, SetLed
             from stackchan_msgs.srv import (
                 ClearEventCursor,
                 GetTranscript,
@@ -282,6 +332,7 @@ class RclpyBridgeClient:
         self._rclpy = rclpy
         self._action_client_type = ActionClient
         self._get_status_type = GetStatus
+        self._get_head_pose_type = GetHeadPose
         self._get_power_status_type = GetPowerStatus
         self._list_events_type = ListEvents
         self._next_event_type = NextEvent
@@ -289,6 +340,7 @@ class RclpyBridgeClient:
         self._get_transcript_type = GetTranscript
         self._set_face_type = SetFace
         self._set_led_type = SetLed
+        self._move_head_pose_type = MoveHeadPose
         self._run_motion_type = RunMotion
         self._say_type = Say
         self._play_audio_type = PlayAudio
@@ -369,6 +421,50 @@ class RclpyBridgeClient:
         self._spin_future(result_future, timeout)
         response = _response_from_ros(result_future.result().result.result)
         return _normalize_action_response(response, wait=wait)
+
+    def move_head_pose(
+        self,
+        meta: CommandMeta,
+        pan_deg: float,
+        tilt_deg: float,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        goal = self._move_head_pose_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.pan_deg = pan_deg
+        goal.tilt_deg = tilt_deg
+        goal.speed = speed
+        goal.duration_ms = duration_ms
+        return self._send_action_goal(
+            self._move_head_pose_type,
+            f"/stackchan/{meta.device_id}/cmd/motion/pose",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
+
+    def home_head_pose(
+        self,
+        meta: CommandMeta,
+        speed: int,
+        duration_ms: int,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        return self.move_head_pose(
+            meta,
+            0.0,
+            0.0,
+            speed,
+            duration_ms,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def say(
         self, meta: CommandMeta, text: str, *, wait: bool, timeout: float
@@ -486,6 +582,13 @@ class RclpyBridgeClient:
         client = self._service_client(self._get_power_status_type, meta.device_id, "power/status", timeout)
         response = self._call_service(client, request, timeout)
         return _power_status_from_ros(meta, response.result, response.status, bool(response.stale))
+
+    def get_head_pose(self, meta: CommandMeta, timeout: float) -> HeadPoseResult:
+        request = self._get_head_pose_type.Request()
+        _copy_meta(request.meta, meta)
+        client = self._service_client(self._get_head_pose_type, meta.device_id, "motion/status", timeout)
+        response = self._call_service(client, request, timeout)
+        return _head_pose_from_ros(meta, response.result, response.pose, bool(response.stale))
 
     def _send_action_goal(
         self, action_type, action_name: str, goal, *, wait: bool, timeout: float
@@ -707,13 +810,13 @@ def _error_from_ros(result) -> ErrorDetail | None:
 
 def _rejected(
     request: CommandRequest, error: ErrorDetail
-) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
     return _error_result(request, error)
 
 
 def _timeout_result(
     request: CommandRequest,
-) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
     return _error_result(
         request,
         ErrorDetail(
@@ -730,7 +833,7 @@ def _error_result(
     error: ErrorDetail,
     *,
     result_state: ResultState = ResultState.REJECTED,
-) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
     if request.command_type in {
         CommandType.EVENTS_LIST,
         CommandType.EVENTS_NEXT,
@@ -773,6 +876,17 @@ def _error_result(
             meta=request.meta,
             error=error,
         )
+    if request.command_type is CommandType.MOTION_STATUS:
+        return HeadPoseResult(
+            ok=False,
+            result_state=result_state,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
         result_state=result_state,
@@ -787,6 +901,24 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
         return {"type": "face", "name": request.args["name"]}
     if request.command_type is CommandType.MOTION:
         return {"type": "motion", "name": request.args["name"]}
+    if request.command_type is CommandType.MOTION_POSE:
+        return {
+            "type": "motion.pose",
+            "frame": "home",
+            "pan_deg": request.args["pan_deg"],
+            "tilt_deg": request.args["tilt_deg"],
+            "speed": request.args["speed"],
+            "duration_ms": request.args["duration_ms"],
+        }
+    if request.command_type is CommandType.MOTION_HOME:
+        return {
+            "type": "motion.home",
+            "frame": "home",
+            "speed": request.args["speed"],
+            "duration_ms": request.args["duration_ms"],
+        }
+    if request.command_type is CommandType.MOTION_STATUS:
+        return {"type": "motion.status", "frame": "home"}
     if request.command_type is CommandType.LED:
         return {"type": "led", "pattern": request.args["pattern"]}
     if request.command_type is CommandType.SAY:
@@ -842,6 +974,22 @@ def _power_status_from_ros(meta: CommandMeta, result, status, stale: bool) -> Po
         fault_code=getattr(status, "fault_code", "") or None,
         stale=stale,
         stamp=_stamp_to_iso(getattr(status, "stamp", None)),
+        meta=meta,
+        error=_error_from_ros(result),
+    )
+
+
+def _head_pose_from_ros(meta: CommandMeta, result, pose, stale: bool) -> HeadPoseResult:
+    return HeadPoseResult(
+        ok=bool(result.ok),
+        result_state=_state_from_ros(int(result.state)),
+        device_id=getattr(pose, "device_id", "") or meta.device_id,
+        pan_deg=_finite_float_or_none(getattr(pose, "pan_deg", math.nan)),
+        tilt_deg=_finite_float_or_none(getattr(pose, "tilt_deg", math.nan)),
+        moving=bool(getattr(pose, "moving", False)),
+        frame=getattr(pose, "frame", "") or "home",
+        stale=stale,
+        stamp=_stamp_to_iso(getattr(pose, "stamp", None)),
         meta=meta,
         error=_error_from_ros(result),
     )

@@ -69,6 +69,27 @@ class FacadeTests(unittest.TestCase):
         self.assertTrue(idle.result.ok)
         self.assertEqual(bridge.get_status("default").status.motion, "idle")
 
+    def test_head_pose_accepts_home_frame_absolute_angles(self) -> None:
+        bridge = facade()
+
+        response = bridge.move_head_pose(meta(), 30.0, 20.0, 500, 0)
+
+        self.assertTrue(response.result.ok)
+        self.assertEqual(response.result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.get_status("default").status.motion, "pose")
+
+    def test_head_pose_rejects_out_of_range_without_clamping(self) -> None:
+        response = facade().move_head_pose(meta(), 129.0, 20.0, 500, 0)
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
+        self.assertTrue(response.result.recoverable)
+
+    def test_head_home_is_allowed_by_explicit_pose_limits(self) -> None:
+        response = facade().home_head_pose(meta(), 500, 0)
+
+        self.assertTrue(response.result.ok)
+
     def test_say_accepts_without_claiming_completion(self) -> None:
         bridge = facade()
 

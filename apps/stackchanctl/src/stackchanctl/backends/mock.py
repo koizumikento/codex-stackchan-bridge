@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 import re
 from typing import Any
 
@@ -12,6 +13,7 @@ from stackchanctl.contract import (
     ErrorDetail,
     Event,
     EventListResult,
+    HeadPoseResult,
     PowerStatusResult,
     Priority,
     ResultState,
@@ -27,6 +29,14 @@ BASELINE_AUDIO_FORMAT = "pcm_s16le"
 BASELINE_AUDIO_SAMPLE_RATE = 16000
 BASELINE_AUDIO_CHANNELS = 1
 MAX_EVENTS = 32
+PAN_MIN_DEG = -128.0
+PAN_MAX_DEG = 128.0
+TILT_MIN_DEG = 0.0
+TILT_MAX_DEG = 90.0
+SPEED_MIN = 0
+SPEED_MAX = 1000
+MIN_NONZERO_DURATION_MS = 100
+MAX_DURATION_MS = 2000
 
 
 class MockBackend:
@@ -39,7 +49,7 @@ class MockBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult:
+    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -64,6 +74,9 @@ class MockBackend:
 
         if request.command_type is CommandType.POWER_STATUS:
             return _power_status(request)
+
+        if request.command_type is CommandType.MOTION_STATUS:
+            return _head_pose_status(request)
 
         result_state = ResultState.COMPLETED if request.wait else ResultState.ACCEPTED
         return CommandResult(
@@ -232,6 +245,16 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
             recoverable=False,
         )
 
+    if request.command_type is CommandType.MOTION_POSE:
+        pose_error = _validate_pose_args(request)
+        if pose_error is not None:
+            return pose_error
+
+    if request.command_type is CommandType.MOTION_HOME:
+        timing_error = _validate_motion_timing(request)
+        if timing_error is not None:
+            return timing_error
+
     if request.command_type is CommandType.LED and request.args["pattern"] not in ALLOWED_LEDS:
         return ErrorDetail(
             code="UNKNOWN_COMMAND",
@@ -301,6 +324,55 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
                 recoverable=False,
             )
 
+    return None
+
+
+def _validate_pose_args(request: CommandRequest) -> ErrorDetail | None:
+    try:
+        pan_deg = float(request.args["pan_deg"])
+        tilt_deg = float(request.args["tilt_deg"])
+    except (KeyError, TypeError, ValueError):
+        return ErrorDetail(
+            code="SERVO_LIMIT_EXCEEDED",
+            message="motion pose requires numeric pan_deg and tilt_deg",
+            recoverable=True,
+        )
+    if not math.isfinite(pan_deg) or not math.isfinite(tilt_deg):
+        return ErrorDetail(
+            code="SERVO_LIMIT_EXCEEDED",
+            message="motion pose angles must be finite",
+            recoverable=True,
+        )
+    if pan_deg < PAN_MIN_DEG or pan_deg > PAN_MAX_DEG:
+        return ErrorDetail(
+            code="SERVO_LIMIT_EXCEEDED",
+            message="motion pose pan_deg is outside -128..128",
+            recoverable=True,
+        )
+    if tilt_deg < TILT_MIN_DEG or tilt_deg > TILT_MAX_DEG:
+        return ErrorDetail(
+            code="SERVO_LIMIT_EXCEEDED",
+            message="motion pose tilt_deg is outside 0..90",
+            recoverable=True,
+        )
+    return _validate_motion_timing(request)
+
+
+def _validate_motion_timing(request: CommandRequest) -> ErrorDetail | None:
+    speed = int(request.args.get("speed", 0))
+    duration_ms = int(request.args.get("duration_ms", 0))
+    if speed < SPEED_MIN or speed > SPEED_MAX:
+        return ErrorDetail(
+            code="SERVO_LIMIT_EXCEEDED",
+            message="motion speed must be between 0 and 1000",
+            recoverable=True,
+        )
+    if duration_ms != 0 and (duration_ms < MIN_NONZERO_DURATION_MS or duration_ms > MAX_DURATION_MS):
+        return ErrorDetail(
+            code="MOTION_INTERRUPTED",
+            message="motion duration must be 0 or between 100 and 2000 ms",
+            recoverable=True,
+        )
     return None
 
 
@@ -395,9 +467,85 @@ def _power_status(request: CommandRequest) -> PowerStatusResult:
     )
 
 
+def _head_pose_status(request: CommandRequest) -> HeadPoseResult:
+    if request.meta.device_id == "unsupported_pose":
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="head pose telemetry is not available on this mock device",
+                recoverable=False,
+            ),
+        )
+    if request.meta.device_id == "stale_pose":
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            pan_deg=15.0,
+            tilt_deg=20.0,
+            moving=False,
+            stale=True,
+            stamp="2026-05-16T00:00:00Z",
+            meta=request.meta,
+            error=ErrorDetail(
+                code="STALE_TELEMETRY",
+                message="head pose telemetry is stale",
+                recoverable=True,
+            ),
+        )
+    if request.meta.device_id == "uncalibrated_pose":
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=ErrorDetail(
+                code="CALIBRATION_INVALID",
+                message="head pose calibration is invalid",
+                recoverable=True,
+            ),
+        )
+    if request.meta.device_id == "servo_read_failed":
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=ErrorDetail(
+                code="SERVO_READ_FAILED",
+                message="servo current position could not be read",
+                recoverable=True,
+            ),
+        )
+    return HeadPoseResult(
+        ok=True,
+        result_state=ResultState.COMPLETED,
+        device_id=request.meta.device_id,
+        pan_deg=0.0,
+        tilt_deg=0.0,
+        moving=False,
+        stale=False,
+        stamp="2026-05-16T00:00:03Z",
+        meta=request.meta,
+    )
+
+
 def _rejected(
     request: CommandRequest, error: ErrorDetail
-) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
     if request.command_type in {
         CommandType.EVENTS_LIST,
         CommandType.EVENTS_NEXT,
@@ -440,6 +588,17 @@ def _rejected(
             meta=request.meta,
             error=error,
         )
+    if request.command_type is CommandType.MOTION_STATUS:
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
         result_state=ResultState.REJECTED,
@@ -451,7 +610,7 @@ def _rejected(
 
 def _timeout_result(
     request: CommandRequest,
-) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult:
+) -> CommandResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
     error = ErrorDetail(
         code="TIMEOUT",
         message="command timed out before acceptance",
@@ -499,6 +658,17 @@ def _timeout_result(
             meta=request.meta,
             error=error,
         )
+    if request.command_type is CommandType.MOTION_STATUS:
+        return HeadPoseResult(
+            ok=False,
+            result_state=ResultState.TIMEOUT,
+            device_id=request.meta.device_id,
+            pan_deg=None,
+            tilt_deg=None,
+            moving=False,
+            meta=request.meta,
+            error=error,
+        )
     return CommandResult(
         ok=False,
         result_state=ResultState.TIMEOUT,
@@ -515,6 +685,24 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
         return {"type": "face", "name": request.args["name"]}
     if request.command_type is CommandType.MOTION:
         return {"type": "motion", "name": request.args["name"]}
+    if request.command_type is CommandType.MOTION_POSE:
+        return {
+            "type": "motion.pose",
+            "frame": "home",
+            "pan_deg": request.args["pan_deg"],
+            "tilt_deg": request.args["tilt_deg"],
+            "speed": request.args["speed"],
+            "duration_ms": request.args["duration_ms"],
+        }
+    if request.command_type is CommandType.MOTION_HOME:
+        return {
+            "type": "motion.home",
+            "frame": "home",
+            "speed": request.args["speed"],
+            "duration_ms": request.args["duration_ms"],
+        }
+    if request.command_type is CommandType.MOTION_STATUS:
+        return {"type": "motion.status", "frame": "home"}
     if request.command_type is CommandType.LED:
         return {"type": "led", "pattern": request.args["pattern"]}
     if request.command_type is CommandType.AUDIO_PLAY:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from stackchan_bridge.telemetry import (
+    HeadPoseSnapshot,
+    HeadPoseTelemetryStore,
     PowerStatusSnapshot,
     PowerTelemetryStore,
     device_topic_for,
@@ -47,6 +49,17 @@ class TelemetryTests(unittest.TestCase):
         store.update(snapshot)
 
         self.assertEqual(store.get("default"), (snapshot, False))
+
+    def test_head_pose_store_reports_stale_state(self) -> None:
+        clock = MutableClock(100.0)
+        store = HeadPoseTelemetryStore(stale_after_seconds=1.0, clock=clock)
+        snapshot = HeadPoseSnapshot("default", pan_deg=30.0, tilt_deg=20.0, stamp=12.0)
+
+        store.update(snapshot)
+        self.assertEqual(store.get("default"), (snapshot, False))
+
+        clock.now = 102.0
+        self.assertEqual(store.get("default"), (snapshot, True))
 
     def test_power_source_names_are_stable(self) -> None:
         self.assertEqual(PowerStatusSnapshot("default", power_source=1).power_source_name, "battery")

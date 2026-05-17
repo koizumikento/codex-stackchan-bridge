@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AudioChunk.msg"
   "msg/CommandMeta.msg"
   "msg/CompressedImagePayload.msg"
+  "msg/HeadPose.msg"
   "msg/ImuRaw.msg"
   "msg/LightRaw.msg"
   "msg/PowerStatus.msg"
@@ -20,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TouchState.msg"
   "srv/ClearEventCursor.srv"
   "srv/GetPowerStatus.srv"
+  "srv/GetHeadPose.srv"
   "srv/GetTranscript.srv"
   "srv/GetStatus.srv"
   "srv/ListEvents.srv"
@@ -29,6 +31,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/CaptureAudio.action"
   "action/CaptureCamera.action"
   "action/PlayAudio.action"
+  "action/MoveHeadPose.action"
   "action/RunMotion.action"
   "action/Say.action"
   DEPENDENCIES builtin_interfaces geometry_msgs

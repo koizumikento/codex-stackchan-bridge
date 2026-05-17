@@ -19,6 +19,7 @@ from stackchanctl.contract import (
     CommandType,
     DeviceStatus,
     EventListResult,
+    HeadPoseResult,
     PowerStatusResult,
     Priority,
     TranscriptResult,
@@ -86,15 +87,19 @@ def run_cli(
         return 2
 
     priority = Priority(args.priority or Priority.NORMAL.value)
-    request = build_request(
-        args=args,
-        device_id=runtime.device,
-        priority=priority,
-        timeout=runtime.timeout,
-        command_id=command_id_factory(),
-        now=clock(),
-        source=runtime.source,
-    )
+    try:
+        request = build_request(
+            args=args,
+            device_id=runtime.device,
+            priority=priority,
+            timeout=runtime.timeout,
+            command_id=command_id_factory(),
+            now=clock(),
+            source=runtime.source,
+        )
+    except ValueError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
 
     backend = create_backend(runtime.backend)
     try:
@@ -139,7 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
     face.add_argument("name")
 
     motion = subparsers.add_parser("motion")
-    motion.add_argument("name")
+    motion.add_argument("motion_args", nargs="+")
+    motion.add_argument("--pan-deg", type=finite_float)
+    motion.add_argument("--tilt-deg", type=finite_float)
+    motion.add_argument("--speed", type=speed_value, default=0)
+    motion.add_argument("--duration-ms", type=motion_duration_ms, default=0)
 
     led = subparsers.add_parser("led")
     led.add_argument("pattern")
@@ -226,6 +235,16 @@ def build_request(
         command_type = CommandType(f"speech-{args.speech_command}")
     elif args.command == "power":
         command_type = CommandType(f"power-{args.power_command}")
+    elif args.command == "motion":
+        motion_kind = args.motion_args[0]
+        if motion_kind == "pose":
+            command_type = CommandType.MOTION_POSE
+        elif motion_kind == "home":
+            command_type = CommandType.MOTION_HOME
+        elif motion_kind == "status":
+            command_type = CommandType.MOTION_STATUS
+        else:
+            command_type = CommandType.MOTION
     else:
         command_type = CommandType(args.command)
     meta = CommandMeta(
@@ -239,8 +258,35 @@ def build_request(
     command_args: dict[str, object]
     if command_type is CommandType.SAY:
         command_args = {"text": " ".join(args.text).strip()}
-    elif command_type in {CommandType.FACE, CommandType.MOTION}:
+    elif command_type is CommandType.FACE:
         command_args = {"name": args.name.strip()}
+    elif command_type is CommandType.MOTION:
+        if args.pan_deg is not None or args.tilt_deg is not None or args.speed != 0 or args.duration_ms != 0:
+            raise ValueError("named motion does not accept pose, speed, or duration options")
+        command_args = {"name": args.motion_args[0].strip()}
+    elif command_type is CommandType.MOTION_POSE:
+        if len(args.motion_args) != 1:
+            raise ValueError("motion pose does not accept positional arguments")
+        if args.pan_deg is None or args.tilt_deg is None:
+            raise ValueError("motion pose requires --pan-deg and --tilt-deg")
+        command_args = {
+            "pan_deg": args.pan_deg,
+            "tilt_deg": args.tilt_deg,
+            "speed": args.speed,
+            "duration_ms": args.duration_ms,
+        }
+    elif command_type is CommandType.MOTION_HOME:
+        if len(args.motion_args) != 1:
+            raise ValueError("motion home does not accept positional arguments")
+        if args.pan_deg is not None or args.tilt_deg is not None:
+            raise ValueError("motion home does not accept --pan-deg or --tilt-deg")
+        command_args = {"speed": args.speed, "duration_ms": args.duration_ms}
+    elif command_type is CommandType.MOTION_STATUS:
+        if len(args.motion_args) != 1:
+            raise ValueError("motion status does not accept positional arguments")
+        if args.pan_deg is not None or args.tilt_deg is not None or args.speed != 0 or args.duration_ms != 0:
+            raise ValueError("motion status does not accept pose, speed, or duration options")
+        command_args = {}
     elif command_type is CommandType.LED:
         command_args = {"pattern": args.pattern.strip()}
     elif command_type is CommandType.AUDIO_PLAY:
@@ -285,7 +331,7 @@ def build_request(
 
 
 def render(
-    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult,
+    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
     *,
     json_output: bool,
     stdout: TextIO,
@@ -349,6 +395,18 @@ def render(
         )
         return
 
+    if isinstance(result, HeadPoseResult):
+        if not result.ok:
+            _render_error_result(result.device_id, result.error, stderr)
+            return
+        pan = "unknown" if result.pan_deg is None else f"{result.pan_deg:.1f}deg"
+        tilt = "unknown" if result.tilt_deg is None else f"{result.tilt_deg:.1f}deg"
+        stdout.write(
+            f"motion pose device={result.device_id} frame={result.frame} pan={pan} "
+            f"tilt={tilt} moving={str(result.moving).lower()} stale={str(result.stale).lower()}\n"
+        )
+        return
+
     command = result.command.get("type", "command")
     if result.ok:
         stdout.write(
@@ -366,9 +424,9 @@ def render(
 
 
 def _is_failed_result(
-    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult,
+    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
 ) -> bool:
-    return isinstance(result, (CommandResult, EventListResult, TranscriptResult, PowerStatusResult)) and not result.ok
+    return isinstance(result, (CommandResult, EventListResult, TranscriptResult, PowerStatusResult, HeadPoseResult)) and not result.ok
 
 
 def _render_error_result(device_id: str, error, stderr: TextIO) -> None:
@@ -459,4 +517,24 @@ def events_limit(value: str) -> int:
     parsed = positive_int(value)
     if parsed > 32:
         raise argparse.ArgumentTypeError(f"{value!r} must be 32 or less")
+    return parsed
+
+
+def speed_value(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed < 0 or parsed > 1000:
+        raise argparse.ArgumentTypeError(f"{value!r} must be between 0 and 1000")
+    return parsed
+
+
+def motion_duration_ms(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
+    if parsed != 0 and (parsed < 100 or parsed > 2000):
+        raise argparse.ArgumentTypeError(f"{value!r} must be 0 or between 100 and 2000")
     return parsed

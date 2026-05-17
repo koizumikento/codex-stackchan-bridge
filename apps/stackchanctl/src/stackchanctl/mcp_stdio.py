@@ -32,6 +32,9 @@ SUPPORTED_TOOLS = (
     "say",
     "face",
     "motion",
+    "motion_pose",
+    "motion_home",
+    "motion_status",
     "led",
     "observe",
     "events_list",
@@ -235,6 +238,23 @@ def _build_tool_request(
     elif name == "motion":
         command_type = CommandType.MOTION
         command_args = {"name": _required_string(arguments, "name").strip()}
+    elif name == "motion_pose":
+        command_type = CommandType.MOTION_POSE
+        command_args = {
+            "pan_deg": _required_number(arguments, "pan_deg"),
+            "tilt_deg": _required_number(arguments, "tilt_deg"),
+            "speed": _optional_int_range(arguments, "speed", 0, minimum=0, maximum=1000),
+            "duration_ms": _optional_duration_ms(arguments, "duration_ms", 0),
+        }
+    elif name == "motion_home":
+        command_type = CommandType.MOTION_HOME
+        command_args = {
+            "speed": _optional_int_range(arguments, "speed", 0, minimum=0, maximum=1000),
+            "duration_ms": _optional_duration_ms(arguments, "duration_ms", 0),
+        }
+    elif name == "motion_status":
+        command_type = CommandType.MOTION_STATUS
+        command_args = {}
     elif name == "led":
         command_type = CommandType.LED
         command_args = {"pattern": _required_string(arguments, "pattern").strip()}
@@ -313,6 +333,15 @@ def _optional_number(arguments: Mapping[str, Any], key: str, default: float) -> 
     return _finite_number(value, key)
 
 
+def _required_number(arguments: Mapping[str, Any], key: str) -> float:
+    if key not in arguments:
+        raise ValueError(f"{key} is required")
+    value = arguments[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number")
+    return _finite_number(value, key)
+
+
 def _optional_int(arguments: Mapping[str, Any], key: str, default: int) -> int:
     if key not in arguments:
         value = default
@@ -325,6 +354,36 @@ def _optional_int(arguments: Mapping[str, Any], key: str, default: int) -> int:
         raise ValueError(f"{key} must be positive")
     if key == "limit" and value > 32:
         raise ValueError("limit must be 32 or less")
+    return value
+
+
+def _optional_int_range(
+    arguments: Mapping[str, Any],
+    key: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = _optional_raw_int(arguments, key, default)
+    if value < minimum or value > maximum:
+        raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    return value
+
+
+def _optional_duration_ms(arguments: Mapping[str, Any], key: str, default: int) -> int:
+    value = _optional_raw_int(arguments, key, default)
+    if value != 0 and (value < 100 or value > 2000):
+        raise ValueError(f"{key} must be 0 or between 100 and 2000")
+    return value
+
+
+def _optional_raw_int(arguments: Mapping[str, Any], key: str, default: int) -> int:
+    if key not in arguments:
+        return default
+    value = arguments[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
     return value
 
 
@@ -352,6 +411,10 @@ def _allowed_argument_keys(name: str) -> set[str]:
         keys.add("name")
         if name == "motion":
             keys.add("wait")
+    elif name == "motion_pose":
+        keys.update({"pan_deg", "tilt_deg", "speed", "duration_ms", "wait"})
+    elif name == "motion_home":
+        keys.update({"speed", "duration_ms", "wait"})
     elif name == "led":
         keys.add("pattern")
     elif name == "events_list":
@@ -388,6 +451,17 @@ def _tool_schema(name: str) -> dict[str, Any]:
     elif name in {"face", "motion"}:
         properties["name"] = {"type": "string"}
         required.append("name")
+    elif name == "motion_pose":
+        properties["pan_deg"] = {"type": "number", "minimum": -128.0, "maximum": 128.0}
+        properties["tilt_deg"] = {"type": "number", "minimum": 0.0, "maximum": 90.0}
+        properties["speed"] = {"type": "integer", "minimum": 0, "maximum": 1000}
+        properties["duration_ms"] = {"type": "integer", "minimum": 0, "maximum": 2000}
+        properties["wait"] = {"type": "boolean"}
+        required.extend(["pan_deg", "tilt_deg"])
+    elif name == "motion_home":
+        properties["speed"] = {"type": "integer", "minimum": 0, "maximum": 1000}
+        properties["duration_ms"] = {"type": "integer", "minimum": 0, "maximum": 2000}
+        properties["wait"] = {"type": "boolean"}
     elif name == "led":
         properties["pattern"] = {"type": "string"}
         required.append("pattern")

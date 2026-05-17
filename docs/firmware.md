@@ -194,6 +194,29 @@ Suggested internal motion model:
 - Execute with timing limits.
 - Publish completion or error state.
 
+Explicit head pose control is a separate safety path from named motion. It uses
+home-frame absolute `pan_deg` and `tilt_deg` values, not StackChan-BSP `X/Y` as
+a planar coordinate system. Firmware converts degrees to BSP units with
+`deg * 10` and calls `M5StackChan.Motion.move(...)` or `goHome(...)`.
+
+Explicit pose safety rules:
+
+- Keep explicit pose limits separate from named motion trajectory limits.
+- Baseline external limits are `pan_deg=-128..128`, `tilt_deg=0..90`,
+  `speed=0..1000`, and `duration_ms=0` or `100..2000`.
+- External explicit pose values outside those limits are rejected with a
+  structured error; they are not clamped.
+- Named motion trajectories may clamp internally because they are firmware-owned
+  safe trajectories.
+- `motion home` is firmware-owned home/neutral behavior and requires valid
+  calibration.
+- Reject pose, home, and successful pose status when calibration is invalid,
+  neutral offsets are missing, the home basis is corrupted, servo read fails, or
+  firmware is in fault state.
+- At most one pose action may be active per device. Repeated pose commands must
+  be rate-limited or coalesced; safety, neutral, and fault handling preempt all
+  pose commands.
+
 ### LED
 
 The firmware should map named LED patterns to local LED behavior.

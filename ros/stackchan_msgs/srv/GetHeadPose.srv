@@ -1,0 +1,5 @@
+stackchan_msgs/CommandMeta meta
+---
+stackchan_msgs/Result result
+stackchan_msgs/HeadPose pose
+bool stale

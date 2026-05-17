@@ -12,7 +12,7 @@ from stackchan_bridge.models import CommandMeta, Result
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
 from stackchan_bridge.speech_node import SpeechEvent, SpeechSessionProcessor
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
-from stackchan_bridge.telemetry import PowerStatusSnapshot, PowerTelemetryStore
+from stackchan_bridge.telemetry import HeadPoseSnapshot, HeadPoseTelemetryStore, PowerStatusSnapshot, PowerTelemetryStore
 
 EVENT_QOS_DEPTH = 32
 
@@ -154,6 +154,18 @@ def _snapshot_from_power_status(status: object, *, fallback_device_id: str) -> P
     )
 
 
+def _snapshot_from_head_pose(pose: object, *, fallback_device_id: str) -> HeadPoseSnapshot:
+    stamp = _stamp_to_seconds(getattr(pose, "stamp", None))
+    return HeadPoseSnapshot(
+        device_id=getattr(pose, "device_id", "") or fallback_device_id,
+        pan_deg=float(getattr(pose, "pan_deg", float("nan"))),
+        tilt_deg=float(getattr(pose, "tilt_deg", float("nan"))),
+        moving=bool(getattr(pose, "moving", False)),
+        frame=getattr(pose, "frame", "") or "home",
+        stamp=stamp if stamp is not None else 0.0,
+    )
+
+
 def _copy_power_status(target: object, snapshot: PowerStatusSnapshot) -> None:
     target.device_id = snapshot.device_id
     _copy_seconds_to_stamp(target.stamp, snapshot.stamp)
@@ -167,6 +179,15 @@ def _copy_power_status(target: object, snapshot: PowerStatusSnapshot) -> None:
     target.low_battery = snapshot.low_battery
     target.brownout_risk = snapshot.brownout_risk
     target.fault_code = snapshot.fault_code
+
+
+def _copy_head_pose(target: object, snapshot: HeadPoseSnapshot) -> None:
+    target.device_id = snapshot.device_id
+    _copy_seconds_to_stamp(target.stamp, snapshot.stamp)
+    target.pan_deg = snapshot.pan_deg
+    target.tilt_deg = snapshot.tilt_deg
+    target.moving = snapshot.moving
+    target.frame = snapshot.frame
 
 
 def _coerce_telemetry_device_id(message: object, expected_device_id: str) -> bool:
@@ -184,6 +205,7 @@ def _relay_telemetry_message(
     publisher: object,
     *,
     power_store: PowerTelemetryStore | None = None,
+    head_pose_store: HeadPoseTelemetryStore | None = None,
     conflict_handler: object | None = None,
 ) -> bool:
     if not _coerce_telemetry_device_id(message, device_id):
@@ -192,6 +214,8 @@ def _relay_telemetry_message(
         return False
     if tail == "power/status" and power_store is not None:
         power_store.update(_snapshot_from_power_status(message, fallback_device_id=device_id))
+    if tail == "motion/pose" and head_pose_store is not None:
+        head_pose_store.update(_snapshot_from_head_pose(message, fallback_device_id=device_id))
     publisher.publish(message)
     return True
 
@@ -202,11 +226,12 @@ def main(args: list[str] | None = None) -> None:
         from rclpy.action import ActionServer
         from rclpy.node import Node
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-        from stackchan_msgs.action import CaptureAudio, CaptureCamera, PlayAudio, RunMotion, Say
+        from stackchan_msgs.action import CaptureAudio, CaptureCamera, MoveHeadPose, PlayAudio, RunMotion, Say
         from stackchan_msgs.msg import AudioChunk as RosAudioChunk
-        from stackchan_msgs.msg import LightRaw, PowerStatus, ProximityRaw, StackChanEvent, TouchState
+        from stackchan_msgs.msg import HeadPose, LightRaw, PowerStatus, ProximityRaw, StackChanEvent, TouchState
         from stackchan_msgs.srv import (
             ClearEventCursor,
+            GetHeadPose,
             GetPowerStatus,
             GetStatus,
             GetTranscript,
@@ -258,6 +283,7 @@ def main(args: list[str] | None = None) -> None:
                 event_sink=self._handle_speech_event,
             )
             self.power_store = PowerTelemetryStore()
+            self.head_pose_store = HeadPoseTelemetryStore()
             self._stackchan_event_type = StackChanEvent
             self._public_event_publishers = {}
             self._device_event_subscriptions = []
@@ -265,6 +291,7 @@ def main(args: list[str] | None = None) -> None:
             self._telemetry_publishers = {}
             self._telemetry_subscriptions = []
             self._power_status_type = PowerStatus
+            self._head_pose_type = HeadPose
             self._action_servers = []
             for device_id in configured_device_ids:
                 self._create_device_resources(device_id)
@@ -343,6 +370,15 @@ def main(args: list[str] | None = None) -> None:
                     response,
                 ),
             )
+            self.create_service(
+                GetHeadPose,
+                f"{prefix}/motion/status",
+                lambda request, response, device_id=device_id: self._handle_get_head_pose(
+                    device_id,
+                    request,
+                    response,
+                ),
+            )
             self._public_event_publishers[device_id] = self.create_publisher(
                 StackChanEvent,
                 f"/stackchan/{device_id}/events",
@@ -376,6 +412,13 @@ def main(args: list[str] | None = None) -> None:
                 public_qos=transient_depth_1,
                 device_qos=reliable_depth_2,
             )
+            self._create_telemetry_relay(
+                device_id,
+                "motion/pose",
+                HeadPose,
+                public_qos=transient_depth_1,
+                device_qos=reliable_depth_2,
+            )
             self._speech_audio_subscriptions.append(
                 self.create_subscription(
                     RosAudioChunk,
@@ -404,6 +447,17 @@ def main(args: list[str] | None = None) -> None:
                     RunMotion,
                     f"{prefix}/motion/run",
                     lambda goal_handle, device_id=device_id: self._handle_run_motion(
+                        device_id,
+                        goal_handle,
+                    ),
+                )
+            )
+            self._action_servers.append(
+                ActionServer(
+                    self,
+                    MoveHeadPose,
+                    f"{prefix}/motion/pose",
+                    lambda goal_handle, device_id=device_id: self._handle_move_head_pose(
                         device_id,
                         goal_handle,
                     ),
@@ -594,6 +648,48 @@ def main(args: list[str] | None = None) -> None:
             response.stale = stale
             return response
 
+        def _handle_get_head_pose(
+            self,
+            device_id: str,
+            request: object,
+            response: object,
+        ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            status_response = self.facade.get_status(
+                meta.device_id,
+                command_id=meta.command_id,
+            )
+            if not status_response.status.connected:
+                _copy_result(response.result, status_response.status.last_error)
+                response.stale = False
+                return response
+
+            snapshot, stale = self.head_pose_store.get(device_id)
+            if snapshot is None:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "UNSUPPORTED_FEATURE",
+                        f"head pose telemetry for '{device_id}' has not been received",
+                    ),
+                )
+                response.stale = False
+                return response
+            if stale:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "STALE_TELEMETRY",
+                        f"head pose telemetry for '{device_id}' is stale",
+                        recoverable=True,
+                    ),
+                )
+            else:
+                _copy_result(response.result, Result.completed("head pose found"))
+            _copy_head_pose(response.pose, snapshot)
+            response.stale = stale
+            return response
+
         def _create_telemetry_relay(
             self,
             device_id: str,
@@ -634,6 +730,7 @@ def main(args: list[str] | None = None) -> None:
                 message,
                 publisher,
                 power_store=self.power_store,
+                head_pose_store=self.head_pose_store,
                 conflict_handler=self._handle_telemetry_device_id_conflict,
             ):
                 return
@@ -737,6 +834,39 @@ def main(args: list[str] | None = None) -> None:
             result = RunMotion.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
+                goal_handle.succeed()
+            else:
+                goal_handle.abort()
+            return result
+
+        def _handle_move_head_pose(self, device_id: str, goal_handle: object) -> object:
+            request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
+            command_response = self.facade.move_head_pose(
+                meta,
+                float(request.pan_deg),
+                float(request.tilt_deg),
+                int(request.speed),
+                int(request.duration_ms),
+            )
+            result = MoveHeadPose.Result()
+            _copy_result(result.result, command_response.result)
+            if command_response.result.ok:
+                snapshot = HeadPoseSnapshot(
+                    device_id=meta.device_id,
+                    pan_deg=float(request.pan_deg),
+                    tilt_deg=float(request.tilt_deg),
+                    moving=False,
+                    frame="home",
+                    stamp=self.get_clock().now().nanoseconds / 1_000_000_000,
+                )
+                self.head_pose_store.update(snapshot)
+                _copy_head_pose(result.pose, snapshot)
+                publisher = self._telemetry_publishers.get((device_id, "motion/pose"))
+                if publisher is not None:
+                    message = self._head_pose_type()
+                    _copy_head_pose(message, snapshot)
+                    publisher.publish(message)
                 goal_handle.succeed()
             else:
                 goal_handle.abort()

@@ -16,6 +16,12 @@ Use this skill to make StackChan reflect Codex's work state with short local cue
 - Respect existing `STACKCHANCTL_BACKEND`, `STACKCHANCTL_DEVICE`, `STACKCHANCTL_OUTPUT`, and `STACKCHANCTL_TIMEOUT` values.
 - Prefer the mock backend for validation, tests, dry runs, and examples.
 - Do not send repeated cues for every small internal step. Cue meaningful state changes only.
+- Use `motion pose`, `motion home`, and `motion status` only when the user
+  explicitly asks for head-position control, calibration-oriented checks, or
+  pose inspection. Routine state cues should keep using named motion such as
+  `motion nod`.
+- Never use raw servo ticks, PWM, torque controls, relative motion, or
+  continuous rotation as normal Codex cues.
 
 ## Command Pattern
 

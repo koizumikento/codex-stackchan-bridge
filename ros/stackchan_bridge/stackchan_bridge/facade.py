@@ -22,6 +22,14 @@ AVAILABILITY_ERROR_CODES = {
     "TRANSPORT_DISCONNECTED",
     "DEVICE_ID_CONFLICT",
 }
+PAN_MIN_DEG = -128.0
+PAN_MAX_DEG = 128.0
+TILT_MIN_DEG = 0.0
+TILT_MAX_DEG = 90.0
+SPEED_MIN = 0
+SPEED_MAX = 1000
+MIN_NONZERO_DURATION_MS = 100
+MAX_DURATION_MS = 2000
 
 
 class StackChanBridgeFacade:
@@ -126,6 +134,45 @@ class StackChanBridgeFacade:
         )
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
+    def move_head_pose(
+        self,
+        meta: CommandMeta,
+        pan_deg: float,
+        tilt_deg: float,
+        speed: int = 0,
+        duration_ms: int = 0,
+    ) -> CommandResponse:
+        checked = self._validate(meta)
+        if checked is not None:
+            return checked
+        validation = self._validate_head_pose(pan_deg, tilt_deg, speed, duration_ms)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
+
+        status = self._mark_completed(meta, motion="pose")
+        log_structured(
+            self.logger,
+            logging.INFO,
+            "motion_pose_accepted",
+            device_id=meta.device_id,
+            command_id=meta.command_id,
+            source=meta.source,
+            pan_deg=pan_deg,
+            tilt_deg=tilt_deg,
+            speed=speed,
+            duration_ms=duration_ms,
+        )
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
+
+    def home_head_pose(
+        self,
+        meta: CommandMeta,
+        speed: int = 0,
+        duration_ms: int = 0,
+    ) -> CommandResponse:
+        return self.move_head_pose(meta, 0.0, 0.0, speed, duration_ms)
+
     def say(self, meta: CommandMeta, text: str) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
@@ -179,6 +226,41 @@ class StackChanBridgeFacade:
         result = self._availability_error(availability, meta.device_id)
         self._record_error(meta, result, connected=False)
         return CommandResponse(meta.device_id, meta.command_id, result)
+
+    @staticmethod
+    def _validate_head_pose(
+        pan_deg: float,
+        tilt_deg: float,
+        speed: int,
+        duration_ms: int,
+    ) -> Result | None:
+        if pan_deg < PAN_MIN_DEG or pan_deg > PAN_MAX_DEG:
+            return Result.rejected(
+                "SERVO_LIMIT_EXCEEDED",
+                "motion pose pan_deg is outside -128..128",
+                recoverable=True,
+            )
+        if tilt_deg < TILT_MIN_DEG or tilt_deg > TILT_MAX_DEG:
+            return Result.rejected(
+                "SERVO_LIMIT_EXCEEDED",
+                "motion pose tilt_deg is outside 0..90",
+                recoverable=True,
+            )
+        if speed < SPEED_MIN or speed > SPEED_MAX:
+            return Result.rejected(
+                "SERVO_LIMIT_EXCEEDED",
+                "motion speed must be between 0 and 1000",
+                recoverable=True,
+            )
+        if duration_ms != 0 and (
+            duration_ms < MIN_NONZERO_DURATION_MS or duration_ms > MAX_DURATION_MS
+        ):
+            return Result.rejected(
+                "MOTION_INTERRUPTED",
+                "motion duration must be 0 or between 100 and 2000 ms",
+                recoverable=True,
+            )
+        return None
 
     def _mark_accepted(
         self,
