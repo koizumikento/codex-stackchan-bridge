@@ -8,16 +8,18 @@ from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
     _coerce_telemetry_device_id,
     _copy_power_status,
+    _copy_head_pose,
     _copy_event_record,
     _configured_device_records,
     _snapshot_from_power_status,
+    _snapshot_from_head_pose,
     _records_after_event_id,
     _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
     _relay_telemetry_message,
 )
-from stackchan_bridge.telemetry import PowerStatusSnapshot
+from stackchan_bridge.telemetry import HeadPoseSnapshot, PowerStatusSnapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,7 +100,9 @@ class RosNodeHelperTests(unittest.TestCase):
             "ClearEventCursor",
             "GetTranscript",
             "GetPowerStatus",
+            "GetHeadPose",
             "TouchState",
+            "HeadPose",
             "ProximityRaw",
             "LightRaw",
             "PowerStatus",
@@ -110,6 +114,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "/events/clear_cursor",
             "/speech/transcript/get",
             "/power/status",
+            "/motion/status",
+            "/motion/pose",
             "/events",
             "/device/events",
             "device/{tail}",
@@ -153,6 +159,34 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(target.voltage_v, 3.7)
         self.assertEqual(target.stamp.sec, 1)
         self.assertEqual(target.stamp.nanosec, 500000000)
+
+    def test_head_pose_helpers_copy_ros_like_shapes(self) -> None:
+        message = type(
+            "Pose",
+            (),
+            {
+                "device_id": "",
+                "stamp": type("Stamp", (), {"sec": 1778889601, "nanosec": 0})(),
+                "pan_deg": 30.0,
+                "tilt_deg": 20.0,
+                "moving": True,
+                "frame": "home",
+            },
+        )()
+
+        snapshot = _snapshot_from_head_pose(message, fallback_device_id="default")
+
+        self.assertEqual(snapshot.device_id, "default")
+        self.assertEqual(snapshot.pan_deg, 30.0)
+        self.assertTrue(snapshot.moving)
+
+        target = type("Target", (), {"stamp": type("Stamp", (), {"sec": 0, "nanosec": 0})()})()
+        _copy_head_pose(target, HeadPoseSnapshot("desk", pan_deg=5.0, tilt_deg=6.0, stamp=1.5))
+
+        self.assertEqual(target.device_id, "desk")
+        self.assertEqual(target.pan_deg, 5.0)
+        self.assertEqual(target.tilt_deg, 6.0)
+        self.assertEqual(target.frame, "home")
 
     def test_telemetry_device_id_is_filled_but_mismatch_is_rejected(self) -> None:
         missing = SimpleNamespace(device_id="")
@@ -204,6 +238,38 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(message.device_id, "default")
         self.assertEqual(publisher.messages, [message])
         self.assertEqual(store.snapshots[0].device_id, "default")
+
+    def test_head_pose_relay_fills_device_id_stores_and_publishes(self) -> None:
+        class Publisher:
+            def __init__(self) -> None:
+                self.messages = []
+
+            def publish(self, message) -> None:
+                self.messages.append(message)
+
+        message = SimpleNamespace(
+            device_id="",
+            stamp=SimpleNamespace(sec=12, nanosec=0),
+            pan_deg=30.0,
+            tilt_deg=20.0,
+            moving=False,
+            frame="home",
+        )
+        publisher = Publisher()
+        store = type("Store", (), {"snapshots": [], "update": lambda self, snapshot: self.snapshots.append(snapshot)})()
+
+        relayed = _relay_telemetry_message(
+            "default",
+            "motion/pose",
+            message,
+            publisher,
+            head_pose_store=store,
+        )
+
+        self.assertTrue(relayed)
+        self.assertEqual(message.device_id, "default")
+        self.assertEqual(publisher.messages, [message])
+        self.assertEqual(store.snapshots[0].pan_deg, 30.0)
 
     def test_telemetry_relay_drops_device_id_mismatch(self) -> None:
         class Publisher:

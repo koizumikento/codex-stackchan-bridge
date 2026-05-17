@@ -165,6 +165,9 @@ Manual hardware checks should cover:
 
 - Face command rendering.
 - Motion command safety and neutral behavior.
+- Explicit head pose rejects out-of-range values instead of clamping, keeps
+  named-motion trajectory limits separate, and covers calibration invalid,
+  servo read failure, stale telemetry, and `motion home`.
 - LED command behavior.
 - Audio playback and capture.
 - Camera snapshot.

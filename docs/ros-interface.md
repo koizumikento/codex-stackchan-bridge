@@ -171,7 +171,9 @@ Baseline error codes:
 - `UNKNOWN_COMMAND`
 - `UNSUPPORTED_FEATURE`
 - `SERVO_LIMIT_EXCEEDED`
+- `SERVO_READ_FAILED`
 - `MOTION_INTERRUPTED`
+- `CALIBRATION_INVALID`
 - `AUDIO_UNDERRUN`
 - `MIC_OVERRUN`
 - `AUDIO_FORMAT_UNSUPPORTED`
@@ -386,6 +388,36 @@ Rules:
 Purpose: firmware-origin power telemetry for bridge republishing and `stackchanctl power status`.
 
 Fields mirror `/stackchan/<device_id>/power/status`.
+
+### `/stackchan/<device_id>/motion/pose`
+
+Purpose: public bridge-facing current head pose for explicit absolute head control and `stackchanctl motion status`.
+
+Fields mirror `/stackchan/<device_id>/device/motion/pose`.
+
+Message: `stackchan_msgs/HeadPose`.
+
+Fields:
+
+- `device_id`
+- `stamp`
+- `pan_deg`
+- `tilt_deg`
+- `moving`
+- `frame`
+
+Rules:
+
+- `frame` is `home` in the baseline contract.
+- `pan_deg` and `tilt_deg` are degrees in the home frame.
+- BSP `X/Y` naming maps to yaw/pan and pitch/tilt angle axes, not a planar XY coordinate system.
+- The bridge republishes only telemetry with the expected `device_id`.
+
+### `/stackchan/<device_id>/device/motion/pose`
+
+Purpose: firmware-origin current head pose.
+
+Fields mirror `/stackchan/<device_id>/motion/pose`.
 
 ### `/stackchan/<device_id>/events`
 
@@ -712,6 +744,29 @@ Rules:
 - Stale telemetry returns `STALE_TELEMETRY` with `recoverable=true`.
 - CLI JSON converts unsupported NaN numeric values to JSON `null`.
 
+### `/stackchan/<device_id>/cmd/motion/status`
+
+Purpose: return the latest bridge-observed current head pose for `stackchanctl motion status`.
+
+Service type: `stackchan_msgs/srv/GetHeadPose`.
+
+Request fields:
+
+- `meta`
+
+Response fields:
+
+- `result`
+- `pose`
+- `stale`
+
+Rules:
+
+- Unsupported firmware or missing pose capability returns `UNSUPPORTED_FEATURE`.
+- Previously observed pose older than the stale threshold returns `STALE_TELEMETRY` with `recoverable=true` and is not a successful result.
+- Servo read failure returns `SERVO_READ_FAILED` with `recoverable=true`.
+- Invalid calibration or corrupted home basis returns `CALIBRATION_INVALID` with `recoverable=true`.
+
 ## Baseline actions
 
 Baseline action feedback fields:
@@ -766,6 +821,46 @@ Feedback fields:
 
 - `progress`
 - `message`
+
+### `/stackchan/<device_id>/cmd/motion/pose`
+
+Purpose: request an explicit home-frame absolute head pose with progress and cancellation.
+
+This is separate from named motion. `motion/run` remains intent-like, while `motion/pose` accepts only constrained absolute `pan_deg` and `tilt_deg` values in degrees.
+
+Goal fields:
+
+- `meta`
+- `home`
+- `pan_deg`
+- `tilt_deg`
+- `speed`
+- `duration_ms`
+
+Result fields:
+
+- `result`
+- `pose`
+
+Feedback fields:
+
+- `progress`
+- `message`
+- `pose`
+
+Rules:
+
+- `pan_deg` range is `-128.0..128.0` inclusive.
+- `tilt_deg` range is `0.0..90.0` inclusive.
+- `speed` range is `0..1000`; `0` means firmware default speed.
+- `duration_ms` is `0` or `100..2000`; `0` means firmware default duration/planning bound.
+- `home=false` means `pan_deg` and `tilt_deg` are explicit external absolute pose targets.
+- `home=true` means firmware-owned home/neutral behavior; `pan_deg` and `tilt_deg` are ignored by the device-side planner and should be published as the resulting home pose when accepted.
+- External explicit pose values outside limits are rejected with `SERVO_LIMIT_EXCEEDED` or `MOTION_INTERRUPTED`; they are not clamped.
+- Non-finite explicit pose values are rejected before they can be published as state.
+- Firmware owns the final safety validation even if the CLI or bridge rejected obvious invalid input earlier.
+- `motion home` is a CLI/MCP command that sends `home=true`; it uses firmware-owned home behavior and is not a raw calibration command or a `pose(0,0)` alias.
+- Firmware may reject pose/home with `FIRMWARE_BUSY` when a pose action is already active or the command rate exceeds the configured minimum interval.
 
 ### `/stackchan/<device_id>/cmd/audio/play`
 
@@ -874,6 +969,7 @@ Baseline chunk policy:
 Device-side action mirrors:
 
 - `/stackchan/<device_id>/device/motion/run`
+- `/stackchan/<device_id>/device/motion/pose`
 - `/stackchan/<device_id>/device/audio/play`
 - `/stackchan/<device_id>/device/audio/capture`
 - `/stackchan/<device_id>/device/camera/capture`
@@ -898,6 +994,8 @@ Baseline QoS:
 - `/stackchan/<device_id>/device/light/raw`: best effort, volatile, keep last 5.
 - `/stackchan/<device_id>/power/status`: reliable, transient local, keep last 1.
 - `/stackchan/<device_id>/device/power/status`: reliable, volatile, keep last 2.
+- `/stackchan/<device_id>/motion/pose`: reliable, transient local, keep last 1.
+- `/stackchan/<device_id>/device/motion/pose`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - Service and action request/response paths use reliable QoS.
 - Safety/fault signals use reliable QoS and must not be blocked by camera or audio work.

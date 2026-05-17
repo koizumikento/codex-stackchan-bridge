@@ -24,6 +24,9 @@ class CommandType(StrEnum):
     SAY = "say"
     FACE = "face"
     MOTION = "motion"
+    MOTION_POSE = "motion-pose"
+    MOTION_HOME = "motion-home"
+    MOTION_STATUS = "motion-status"
     LED = "led"
     OBSERVE = "observe"
     EVENTS_LIST = "events-list"
@@ -236,6 +239,41 @@ class PowerStatusResult:
                 "low_battery": self.low_battery,
                 "brownout_risk": self.brownout_risk,
                 "fault_code": self.fault_code,
+                "stale": self.stale,
+                "stamp": self.stamp,
+            },
+        }
+        if self.error is not None:
+            payload["error"] = self.error.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class HeadPoseResult:
+    ok: bool
+    result_state: ResultState
+    device_id: str
+    pan_deg: float | None
+    tilt_deg: float | None
+    moving: bool
+    frame: str = "home"
+    stale: bool = False
+    stamp: str | None = None
+    meta: CommandMeta | None = None
+    error: ErrorDetail | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "result_state": self.result_state.value,
+            "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
+            "pose": {
+                "frame": self.frame,
+                "pan_deg": self.pan_deg,
+                "tilt_deg": self.tilt_deg,
+                "moving": self.moving,
                 "stale": self.stale,
                 "stamp": self.stamp,
             },

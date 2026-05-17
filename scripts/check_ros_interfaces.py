@@ -10,6 +10,7 @@ EXPECTED_INTERFACES = [
     "msg/AudioChunk.msg",
     "msg/CommandMeta.msg",
     "msg/CompressedImagePayload.msg",
+    "msg/HeadPose.msg",
     "msg/ImuRaw.msg",
     "msg/LightRaw.msg",
     "msg/PowerStatus.msg",
@@ -19,6 +20,7 @@ EXPECTED_INTERFACES = [
     "msg/StackChanStatus.msg",
     "msg/TouchState.msg",
     "srv/ClearEventCursor.srv",
+    "srv/GetHeadPose.srv",
     "srv/GetPowerStatus.srv",
     "srv/GetTranscript.srv",
     "srv/GetStatus.srv",
@@ -28,6 +30,7 @@ EXPECTED_INTERFACES = [
     "srv/SetLed.srv",
     "action/CaptureAudio.action",
     "action/CaptureCamera.action",
+    "action/MoveHeadPose.action",
     "action/PlayAudio.action",
     "action/RunMotion.action",
     "action/Say.action",
@@ -103,6 +106,12 @@ SERVICE_FIELDS = {
         "stackchan_msgs/PowerStatus status",
         "bool stale",
     ],
+    "GetHeadPose.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/HeadPose pose",
+        "bool stale",
+    ],
     "GetStatus.srv": [
         "stackchan_msgs/CommandMeta meta",
         "string<=32 device_id",
@@ -146,6 +155,8 @@ def main() -> int:
         require("stackchan_msgs/Result result" in text, f"{action.name} missing result")
         require("float32 progress" in text, f"{action.name} missing progress feedback")
         require("string<=160 message" in text, f"{action.name} missing message feedback")
+        if action.name == "MoveHeadPose.action":
+            require("bool home" in text, "MoveHeadPose missing home mode flag")
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")
@@ -177,6 +188,14 @@ def main() -> int:
             "float32 power_mw",
             "float32 percentage",
             "string<=32 fault_code",
+        ],
+        "HeadPose.msg": [
+            "string<=32 device_id",
+            "builtin_interfaces/Time stamp",
+            "float32 pan_deg",
+            "float32 tilt_deg",
+            "bool moving",
+            "string<=16 frame",
         ],
     }.items():
         text = (MSGS / "msg" / message_name).read_text()

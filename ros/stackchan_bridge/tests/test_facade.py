@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import math
 
 from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import (
@@ -68,6 +69,36 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(nod.result.state, STATE_COMPLETED)
         self.assertTrue(idle.result.ok)
         self.assertEqual(bridge.get_status("default").status.motion, "idle")
+
+    def test_head_pose_accepts_home_frame_absolute_angles(self) -> None:
+        bridge = facade()
+
+        response = bridge.move_head_pose(meta(), 30.0, 20.0, 500, 0)
+
+        self.assertTrue(response.result.ok)
+        self.assertEqual(response.result.state, STATE_COMPLETED)
+        self.assertEqual(bridge.get_status("default").status.motion, "pose")
+
+    def test_head_pose_rejects_out_of_range_without_clamping(self) -> None:
+        response = facade().move_head_pose(meta(), 129.0, 20.0, 500, 0)
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
+        self.assertTrue(response.result.recoverable)
+
+    def test_head_pose_rejects_non_finite_angles(self) -> None:
+        response = facade().move_head_pose(meta(), math.nan, 20.0, 500, 0)
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
+
+    def test_head_home_keeps_firmware_owned_semantics(self) -> None:
+        bridge = facade()
+
+        response = bridge.home_head_pose(meta(), 500, 0)
+
+        self.assertTrue(response.result.ok)
+        self.assertEqual(bridge.get_status("default").status.motion, "home")
 
     def test_say_accepts_without_claiming_completion(self) -> None:
         bridge = facade()

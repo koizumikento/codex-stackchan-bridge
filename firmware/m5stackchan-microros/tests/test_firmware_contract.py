@@ -56,6 +56,26 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("intensity < 0.0f || intensity > 1.0f", safety)
         self.assertRegex(safety, re.compile(r"constexpr ServoLimits kDefaultServoLimits"))
 
+    def test_head_pose_safety_rejects_external_pose_without_clamping(self) -> None:
+        safety = (ROOT / "include" / "stackchan" / "motion_safety.hpp").read_text()
+
+        self.assertIn("struct HeadPoseLimits", safety)
+        self.assertIn("constexpr HeadPoseLimits kDefaultHeadPoseLimits", safety)
+        self.assertIn("-128.0f", safety)
+        self.assertIn("128.0f", safety)
+        self.assertIn("90.0f", safety)
+        self.assertIn("validate_head_pose_target", safety)
+        self.assertIn('"SERVO_READ_FAILED"', safety)
+        self.assertIn('"CALIBRATION_INVALID"', safety)
+        self.assertIn("plan_head_home", safety)
+        self.assertIn('"FIRMWARE_BUSY"', safety)
+        self.assertIn("pose_slot_available", safety)
+        self.assertIn("elapsed_since_last_command_ms", safety)
+        self.assertNotIn("bool calibration_valid = true", safety)
+        self.assertNotIn("bool servo_read_ok = true", safety)
+        self.assertNotIn("bool fault_state = false", safety)
+        self.assertNotIn("clamp_head_pose", safety)
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 

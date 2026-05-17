@@ -186,6 +186,9 @@ Initial tools:
 - `events_clear`
 - `speech_get_transcript`
 - `power_status`
+- `motion_pose`
+- `motion_home`
+- `motion_status`
 
 MCP mode defaults `source` to `mcp_agent`. `command_id` is generated per tool
 call and must not be copied from the MCP JSON-RPC request id.
@@ -196,6 +199,9 @@ call and must not be copied from the MCP JSON-RPC request id.
 stackchanctl say "テスト終わったよ"
 stackchanctl face happy
 stackchanctl motion nod
+stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500
+stackchanctl motion home --speed 500
+stackchanctl motion status --json
 stackchanctl led progress
 stackchanctl observe
 stackchanctl events next --json
@@ -265,6 +271,60 @@ Expected examples:
 - `idle`
 
 The CLI should send intent, not raw servo angles. Low-level angle limits belong in firmware.
+
+Named motion remains the normal Codex-facing behavior surface. Explicit pose
+control is available only through constrained home-frame absolute-angle
+subcommands:
+
+```bash
+stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500 --json
+stackchanctl motion home --speed 500 --json
+stackchanctl motion status --json
+```
+
+Rules:
+
+- `pan_deg` and `tilt_deg` are degrees in `frame=home`.
+- `pan_deg` is yaw/head horizontal and accepts `-128.0..128.0`.
+- `tilt_deg` is pitch/head vertical and accepts `0.0..90.0`.
+- `speed` accepts `0..1000`; `0` means firmware default speed.
+- `duration_ms` accepts `0` or `100..2000`; `0` means firmware default.
+- Out-of-range explicit pose values are rejected, not clamped.
+- `motion home` uses firmware-owned home behavior. It is not sent to firmware
+  as an external `pose(0,0)` target.
+- Raw servo ticks, PWM, torque, relative movement, continuous rotation, and
+  home calibration are not normal CLI/MCP control surfaces.
+
+Example JSON:
+
+```json
+{
+  "ok": true,
+  "result_state": "ACCEPTED",
+  "device_id": "default",
+  "command_id": "018f...",
+  "metadata": {
+    "device_id": "default",
+    "command_id": "018f...",
+    "source": "human_cli",
+    "created_at": "2026-05-17T00:00:00Z",
+    "priority": "NORMAL"
+  },
+  "command": {
+    "type": "motion.pose",
+    "frame": "home",
+    "pan_deg": 30.0,
+    "tilt_deg": 20.0,
+    "speed": 500,
+    "duration_ms": 0
+  }
+}
+```
+
+`motion home` uses `command.type = "motion.home"`. `motion status --json`
+returns a `pose` object with `frame`, `pan_deg`, `tilt_deg`, `moving`, `stale`,
+and `stamp`. Stale pose telemetry, unsupported firmware, invalid calibration,
+and servo read failures are non-success structured results.
 
 ### `led`
 

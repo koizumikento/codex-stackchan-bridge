@@ -36,6 +36,16 @@ class PowerStatusSnapshot:
         return POWER_SOURCE_NAMES.get(self.power_source, "unknown")
 
 
+@dataclass(frozen=True)
+class HeadPoseSnapshot:
+    device_id: str
+    pan_deg: float = math.nan
+    tilt_deg: float = math.nan
+    moving: bool = False
+    frame: str = "home"
+    stamp: float = 0.0
+
+
 class PowerTelemetryStore:
     def __init__(self, *, stale_after_seconds: float = 15.0, clock: Callable[[], float] = time.time) -> None:
         self.stale_after_seconds = stale_after_seconds
@@ -46,6 +56,23 @@ class PowerTelemetryStore:
         self._latest[snapshot.device_id] = (snapshot, self._clock())
 
     def get(self, device_id: str) -> tuple[PowerStatusSnapshot | None, bool]:
+        record = self._latest.get(device_id)
+        if record is None:
+            return None, False
+        snapshot, received_at = record
+        return snapshot, self._clock() - received_at > self.stale_after_seconds
+
+
+class HeadPoseTelemetryStore:
+    def __init__(self, *, stale_after_seconds: float = 2.0, clock: Callable[[], float] = time.time) -> None:
+        self.stale_after_seconds = stale_after_seconds
+        self._clock = clock
+        self._latest: dict[str, tuple[HeadPoseSnapshot, float]] = {}
+
+    def update(self, snapshot: HeadPoseSnapshot) -> None:
+        self._latest[snapshot.device_id] = (snapshot, self._clock())
+
+    def get(self, device_id: str) -> tuple[HeadPoseSnapshot | None, bool]:
         record = self._latest.get(device_id)
         if record is None:
             return None, False
