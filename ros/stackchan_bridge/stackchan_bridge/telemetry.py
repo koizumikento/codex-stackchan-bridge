@@ -40,16 +40,17 @@ class PowerTelemetryStore:
     def __init__(self, *, stale_after_seconds: float = 5.0, clock: Callable[[], float] = time.time) -> None:
         self.stale_after_seconds = stale_after_seconds
         self._clock = clock
-        self._latest: dict[str, PowerStatusSnapshot] = {}
+        self._latest: dict[str, tuple[PowerStatusSnapshot, float]] = {}
 
     def update(self, snapshot: PowerStatusSnapshot) -> None:
-        self._latest[snapshot.device_id] = snapshot
+        self._latest[snapshot.device_id] = (snapshot, self._clock())
 
     def get(self, device_id: str) -> tuple[PowerStatusSnapshot | None, bool]:
-        snapshot = self._latest.get(device_id)
-        if snapshot is None:
+        record = self._latest.get(device_id)
+        if record is None:
             return None, False
-        return snapshot, self._clock() - snapshot.stamp > self.stale_after_seconds
+        snapshot, received_at = record
+        return snapshot, self._clock() - received_at > self.stale_after_seconds
 
 
 def public_topic_for(device_id: str, tail: str) -> str:

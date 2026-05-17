@@ -331,7 +331,13 @@ class LightEventEstimator {
       light_state_ = 1;
       return events.publish(DeviceEventKind::BrightDetected, telemetry.stamp_ms, "", "{}");
     }
-    return events.publish(DeviceEventKind::LightChanged, telemetry.stamp_ms, "", "{}");
+    if (telemetry.illuminance_lux > kLightDarkLux &&
+        telemetry.illuminance_lux < kLightBrightLux &&
+        light_state_ != 0) {
+      light_state_ = 0;
+      return events.publish(DeviceEventKind::LightChanged, telemetry.stamp_ms, "", "{}");
+    }
+    return Result::accepted("no light event");
   }
 
  private:

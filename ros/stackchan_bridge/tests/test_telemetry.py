@@ -39,6 +39,15 @@ class TelemetryTests(unittest.TestCase):
         clock.now = 106.0
         self.assertEqual(store.get("default"), (snapshot, True))
 
+    def test_power_status_store_uses_host_receipt_time_not_device_stamp(self) -> None:
+        clock = MutableClock(100.0)
+        store = PowerTelemetryStore(stale_after_seconds=5.0, clock=clock)
+        snapshot = PowerStatusSnapshot(device_id="default", voltage_v=4.9, stamp=12.0)
+
+        store.update(snapshot)
+
+        self.assertEqual(store.get("default"), (snapshot, False))
+
     def test_power_source_names_are_stable(self) -> None:
         self.assertEqual(PowerStatusSnapshot("default", power_source=1).power_source_name, "battery")
         self.assertEqual(PowerStatusSnapshot("default", power_source=2).power_source_name, "usb")

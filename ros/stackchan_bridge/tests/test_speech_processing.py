@@ -13,7 +13,12 @@ from stackchan_bridge.audio_session import (
     VadConfig,
 )
 from stackchan_bridge.echo_control import EchoGateFallback, NullEchoController, WorkerEchoController
-from stackchan_bridge.speech_node import SpeechSessionProcessor, detect_immediate_safety_action
+from stackchan_bridge.speech_node import (
+    SpeechEvent,
+    SpeechSessionProcessor,
+    detect_immediate_safety_action,
+    speech_event_payload_json,
+)
 
 
 def chunk(direction: int, pcm: bytes | None = None) -> AudioChunk:
@@ -40,6 +45,12 @@ class SlowEngine:
         del utterance
         time.sleep(0.2)
         return AsrResult("late", 1.0)
+
+
+class FailingEngine:
+    def transcribe(self, utterance):
+        del utterance
+        raise RuntimeError("backend crashed")
 
 
 class SpeechProcessingTests(unittest.TestCase):
@@ -117,6 +128,23 @@ class SpeechProcessingTests(unittest.TestCase):
         self.assertEqual(failures[-1].payload["error_code"], "ASR_TIMEOUT")
         worker.close()
 
+    def test_asr_worker_failure_is_structured(self) -> None:
+        worker = LocalAsrWorker(FailingEngine(), timeout_ms=1000)
+        processor = SpeechSessionProcessor(
+            asr_worker=worker,
+            speech_detector=lambda frame: frame.pcm[0] != 0x80,
+            vad_config=self.short_vad(),
+        )
+
+        for _ in range(4):
+            processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
+        for _ in range(2):
+            processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
+
+        failures = [event for event in processor.events if event.event_name == "transcript_failed"]
+        self.assertEqual(failures[-1].payload["error_code"], "ASR_WORKER_FAILED")
+        worker.close()
+
     def test_echo_worker_timeout_falls_back_to_gate(self) -> None:
         controller = WorkerEchoController(CrashingEchoWorker())
         result = controller.process_capture(AudioFrame("default", "cmd-1", 1, 0, b"\x80" * 320))
@@ -130,6 +158,15 @@ class SpeechProcessingTests(unittest.TestCase):
         self.assertEqual(detect_immediate_safety_action("「止まって」と言ったらどうなる？"), "none")
         self.assertEqual(detect_immediate_safety_action("止まらないで"), "none")
         self.assertEqual(detect_immediate_safety_action("ストップというコマンドを追加して"), "none")
+
+    def test_speech_event_payload_bounding_keeps_valid_json(self) -> None:
+        payload = speech_event_payload_json(
+            SpeechEvent("default", "voice_semantic_event", payload={"value": "x" * 400})
+        )
+
+        self.assertLessEqual(len(payload.encode("utf-8")), 256)
+        self.assertTrue(payload.startswith("{"))
+        self.assertIn("truncated", payload)
 
 
 if __name__ == "__main__":

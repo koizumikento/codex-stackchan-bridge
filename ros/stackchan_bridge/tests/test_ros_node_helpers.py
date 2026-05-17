@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    _coerce_telemetry_device_id,
     _copy_power_status,
     _copy_event_record,
     _configured_device_records,
@@ -150,6 +151,19 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(target.voltage_v, 3.7)
         self.assertEqual(target.stamp.sec, 1)
         self.assertEqual(target.stamp.nanosec, 500000000)
+
+    def test_telemetry_device_id_is_filled_but_mismatch_is_rejected(self) -> None:
+        missing = SimpleNamespace(device_id="")
+        self.assertTrue(_coerce_telemetry_device_id(missing, "default"))
+        self.assertEqual(missing.device_id, "default")
+
+        matching = SimpleNamespace(device_id="default")
+        self.assertTrue(_coerce_telemetry_device_id(matching, "default"))
+        self.assertEqual(matching.device_id, "default")
+
+        mismatched = SimpleNamespace(device_id="desk")
+        self.assertFalse(_coerce_telemetry_device_id(mismatched, "default"))
+        self.assertEqual(mismatched.device_id, "desk")
 
 
 if __name__ == "__main__":

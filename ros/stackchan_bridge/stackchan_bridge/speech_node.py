@@ -238,84 +238,15 @@ def _playback_frames(chunk: AudioChunk) -> tuple[AudioFrame, ...]:
 def speech_event_payload_json(event: SpeechEvent) -> str:
     """Serialize bounded event metadata without ever adding transcript text."""
 
-    return json.dumps(event.payload or {}, ensure_ascii=False, separators=(",", ":"))[:256]
+    payload_json = json.dumps(event.payload or {}, ensure_ascii=False, separators=(",", ":"))
+    if len(payload_json.encode("utf-8")) <= 256:
+        return payload_json
+    return '{"truncated":true,"reason":"payload_json_exceeds_256_bytes"}'
 
 
 def main(args: list[str] | None = None) -> None:
-    try:
-        import rclpy
-        from rclpy.node import Node
-        from stackchan_msgs.msg import AudioChunk as RosAudioChunk
-        from stackchan_msgs.msg import StackChanEvent
-    except ImportError as exc:  # pragma: no cover - exercised only without ROS.
-        raise RuntimeError("stackchan_speech_node requires ROS 2 Python packages.") from exc
-
-    def normalize_device_ids(value: object) -> list[str]:
-        raw = [value] if isinstance(value, str) else list(value or [])
-        device_ids: list[str] = []
-        for item in raw:
-            device_id = str(item).strip()
-            if device_id and device_id not in device_ids:
-                device_ids.append(device_id)
-        return device_ids or ["default"]
-
-    class StackChanSpeechNode(Node):
-        def __init__(self) -> None:
-            super().__init__("stackchan_speech")
-            self.declare_parameter("device_ids", ["default"])
-            self.device_ids = normalize_device_ids(self.get_parameter("device_ids").value)
-            self._publishers = {
-                device_id: self.create_publisher(
-                    StackChanEvent,
-                    f"/stackchan/{device_id}/events",
-                    32,
-                )
-                for device_id in self.device_ids
-            }
-            self.processor = SpeechSessionProcessor(event_sink=self._publish_event)
-            self._subscriptions = [
-                self.create_subscription(
-                    RosAudioChunk,
-                    f"/stackchan/{device_id}/device/audio/chunks",
-                    self._handle_audio_chunk,
-                    8,
-                )
-                for device_id in self.device_ids
-            ]
-
-        def _handle_audio_chunk(self, message: object) -> None:
-            chunk = AudioChunk(
-                device_id=getattr(message, "device_id", "") or "default",
-                command_id=getattr(message, "command_id", ""),
-                direction=int(getattr(message, "direction", 0)),
-                sequence=int(getattr(message, "sequence", 0)),
-                format=int(getattr(message, "format", 0)),
-                sample_rate=int(getattr(message, "sample_rate", 0)),
-                channels=int(getattr(message, "channels", 0)),
-                pcm=bytes(getattr(message, "pcm", b"")),
-            )
-            self.processor.handle_audio_chunk(chunk)
-
-        def _publish_event(self, event: SpeechEvent) -> None:
-            publisher = self._publishers.get(event.device_id)
-            if publisher is None:
-                return
-            message = StackChanEvent()
-            message.event_id = ""
-            message.device_id = event.device_id
-            message.event_name = event.event_name
-            message.source = event.source
-            now = self.get_clock().now().to_msg()
-            message.stamp.sec = now.sec
-            message.stamp.nanosec = now.nanosec
-            message.command_id = event.command_id
-            message.payload_json = speech_event_payload_json(event)
-            publisher.publish(message)
-
-    rclpy.init(args=args)
-    node = StackChanSpeechNode()
-    try:
-        rclpy.spin(node)
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    del args
+    raise RuntimeError(
+        "speech processing is owned by stackchan_bridge_node so transcripts and "
+        "events share the bridge facade stores"
+    )

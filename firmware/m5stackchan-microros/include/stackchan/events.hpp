@@ -258,12 +258,23 @@ inline void make_string_payload(
   }
 
   char safe_value[kEventPayloadJsonMaxLength + 1];
-  sanitize_json_value(safe_value, sizeof(safe_value), value);
+  const char* safe_key = key == nullptr ? "value" : key;
+  const size_t key_length = strlen(safe_key);
+  const size_t max_payload_length = size - 1;
+  if (key_length + 7 >= max_payload_length) {
+    copy_event_string(
+        destination,
+        size,
+        "{\"truncated\":true,\"reason\":\"payload_json_key_too_long\"}");
+    return;
+  }
+  const size_t max_value_length = max_payload_length - key_length - 7;
+  sanitize_json_value(safe_value, max_value_length + 1, value);
   snprintf(
       destination,
       size,
       "{\"%s\":\"%s\"}",
-      key == nullptr ? "value" : key,
+      safe_key,
       safe_value);
   destination[size - 1] = '\0';
 }

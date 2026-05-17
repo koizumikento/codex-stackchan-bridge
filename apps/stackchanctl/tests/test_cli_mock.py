@@ -266,6 +266,18 @@ class MockCliTests(unittest.TestCase):
         self.assertTrue(payload["error"]["recoverable"])
         self.assertTrue(payload["power"]["stale"])
 
+    def test_power_status_unsupported_mock_json_is_structured_error(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "unsupported_power", "power", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertFalse(payload["error"]["recoverable"])
+
     def test_camera_quality_failure_is_recoverable(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["camera", "capture", "--output", "frame.jpg", "--quality", "99", "--json"],

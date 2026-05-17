@@ -195,6 +195,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("event_payload_json_fits", events)
         self.assertIn('"event payload_json exceeds 256 bytes"', events)
         self.assertIn("make_string_payload", events)
+        self.assertIn("payload_json_key_too_long", events)
+        self.assertIn("max_value_length", events)
         self.assertIn("kFirmwareEventSource", events)
 
 

@@ -20,9 +20,10 @@ Use [../../docs/ros2-container.md](../../docs/ros2-container.md) when you want
 that environment isolated in Docker/devcontainer instead of installed on the
 host.
 
-The `stackchan_speech_node` entrypoint is scaffolded separately from the command
-facade so AEC/VAD/ASR worker failures do not take down face, motion, LED, say,
-or status commands. Speech design details live in
+Speech processing runs inside `stackchan_bridge_node` so `transcript_ready`
+events and `GetTranscript` share the same memory-only transcript store. AEC,
+VAD, and ASR worker boundaries are still isolated inside the speech processing
+core. Speech design details live in
 [../../docs/speech-design.md](../../docs/speech-design.md).
 
 By default, `stackchan_bridge_node` configures the `default` device as present

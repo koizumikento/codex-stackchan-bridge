@@ -19,7 +19,6 @@ setup(
     entry_points={
         "console_scripts": [
             "stackchan_bridge_node = stackchan_bridge.ros_node:main",
-            "stackchan_speech_node = stackchan_bridge.speech_node:main",
         ],
     },
 )
