@@ -112,9 +112,17 @@ The firmware must not rely on CLI-side validation as the only protection for har
 Calibration NVS rules:
 
 - Store a calibration schema version.
+- Store a checksum/CRC or equivalent corruption marker.
+- Use atomic write or rollback behavior so power loss cannot leave accepted
+  partial calibration.
 - Store servo neutral offsets and safe per-device corrections.
 - Provide a reset-to-default calibration path.
 - Export/import may be added through explicit maintenance tooling, not normal command paths.
+- Missing, corrupted, or schema-mismatched calibration is `CALIBRATION_INVALID`.
+  All servo-actuating motion, pose, home, and status operations must reject it
+  and must not fall back to CLI config for safety values. A neutral-only
+  fallback is allowed only if firmware owns and tests that fallback as
+  non-actuating or hard-limit-safe behavior.
 
 Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 
@@ -163,6 +171,9 @@ Baseline expressions:
 The PC side can request an expression, but the firmware decides the exact rendering.
 
 Face commands should be idempotent. Repeating `happy` should not create a queue of animations unless the command explicitly asks for an animation.
+For face commands, `duration_ms=0` means persistent until replaced by another
+command, safety/fault handling, or device reset. Face animations must be
+non-blocking and must not delay safety, fault, or motion-neutral handling.
 
 ### Motion
 
@@ -237,6 +248,10 @@ Baseline patterns:
 - `listening`
 
 LED behavior should be non-blocking. A long `progress` pattern should not prevent the firmware from accepting a `motion` or `face` command.
+For LED commands, `duration_ms=0` means persistent until replaced by another
+command, safety/fault handling, or device reset. Repeating the same
+pattern/color/duration is idempotent and must not grow an animation queue. LED
+brightness/current limits belong in firmware constants.
 
 ### Audio
 
@@ -251,6 +266,12 @@ Baseline audio path:
 - Audio transport starts with PCM 16 kHz mono 16-bit.
 - Playback and capture use actions coordinated with bounded audio chunks.
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
+- Chunk streams are keyed by `device_id`, `command_id`, `direction`, and a
+  sequence that is monotonic per command and direction.
+- At most one playback and one capture session may be active per device.
+  Same-direction concurrency is rejected with `FIRMWARE_BUSY`.
+- Audio queues and callbacks must be bounded so audio work cannot block safety,
+  fault handling, or motion-neutral work.
 
 Output-oriented responsibilities:
 
@@ -273,6 +294,8 @@ Non-responsibilities:
 - do not require an external account to use local audio paths
 
 The PC side may own speech-to-text, text-to-speech, voice activity detection, or LLM integration. The firmware should own reliable device I/O, state, and local feedback.
+Firmware normal diagnostics must not print PCM payloads, speech text, or
+transcript text.
 
 ### Camera
 
@@ -284,10 +307,14 @@ Baseline responsibilities:
 - provide QVGA JPEG snapshots to the PC side
 - report capture status and errors
 - avoid blocking motion and safety handling while camera capture is active
+- enforce `quality=1..95`, QVGA JPEG, and 96 KiB max payload constants
+- discard oversized frames rather than publishing partial or over-limit images
 
 The firmware should not own high-level vision inference. Object detection, face detection, or visual reasoning should run on the PC side unless a very small local heuristic is explicitly needed.
 
-Continuous camera streaming is out of the baseline contract. It requires a documented resource, transport, and QoS decision before implementation.
+Continuous camera streaming, follow mode, and video-like frame sequences are out
+of the baseline contract. They require a documented resource, transport, and QoS
+decision before implementation.
 
 ### NFC
 
@@ -296,15 +323,19 @@ NFC support should expose high-level events first.
 Baseline responsibilities:
 
 - report tag detected / removed events
-- expose tag id or safe metadata when available
+- expose bounded redacted/hash/reference metadata when available
 - avoid embedding application-specific meaning in firmware
 
 The PC side or Codex skill should decide what a tag means.
 
 Baseline events:
 
-- `nfc_detected(tag_id)`
-- `nfc_removed(tag_id)`
+- `nfc_detected`
+- `nfc_removed`
+
+Raw tag IDs are debug-only and require an explicit local diagnostic path. Normal
+firmware diagnostics must omit or redact raw event payloads so they cannot
+bypass bridge redaction.
 
 ### Sensors
 
@@ -319,16 +350,16 @@ The firmware can expose local state through ROS 2:
 - camera capture status
 - microphone capture/playback status
 
-The baseline implementation should publish status needed by `stackchanctl observe`, while leaving room for raw telemetry channels.
+The baseline implementation should publish status needed by `stackchanctl observe`, while leaving room for explicitly contracted raw telemetry channels.
 
 Sensor data should be separated into two levels:
 
 - high-level events, such as `touched`, `picked_up`, or `nfc_detected`
 - raw telemetry, such as IMU samples, proximity values, or light values
 
-High-level events are more useful to Codex skills. Raw telemetry is useful for debugging, calibration, and later robot behavior.
+High-level events are more useful to Codex skills. Raw telemetry is useful for debugging, calibration, and later robot behavior when an explicit stream contract exists. Raw telemetry must not be folded into `/status` or `stackchanctl observe`.
 
-Raw IMU should be supported as a separate stream from high-level events. The initial raw IMU stream should start around 10-30 Hz, with higher rates treated as a later tuning decision. The firmware can publish lower-rate high-level posture/activity events for Codex while still making raw IMU telemetry available for ROS tooling, logging, and future behavior work.
+Raw IMU should be supported only as a separate stream from high-level events. If that contract is introduced, the initial raw IMU stream should start around 10-30 Hz, with higher rates treated as a later tuning decision. The firmware can publish lower-rate high-level posture/activity events for Codex while making raw IMU telemetry available to ROS tooling only through the separate stream path.
 
 Baseline high-level IMU events:
 
@@ -351,8 +382,13 @@ Official StackChan K151 observability also includes:
 
 Firmware should publish the numeric telemetry at low rates and queue the
 corresponding high-level events without blocking safety, motion-neutral, or
-fault handling. Raw IR code/protocol dumps are debug-only and not part of the
+fault handling. Sensor publishers must be bounded and best-effort where
+appropriate. Raw IR code/protocol dumps are debug-only and not part of the
 normal ROS/Codex contract.
+
+The `ir_transmit_*` event names are observations for explicitly contracted or
+diagnostic transmit adapters. They do not define a normal public IR transmit
+command surface.
 
 ### Device-side event publishing
 
@@ -369,6 +405,8 @@ Firmware event publishers should:
 - leave application meaning to the PC/Codex side
 - avoid putting speech transcripts, image payloads, PCM audio, or large data in
   `payload_json`
+- avoid putting raw NFC tag IDs, raw IR codes, or protocol dumps in normal
+  `payload_json`; use bounded references when correlation is needed
 
 Baseline firmware event sources:
 
@@ -468,6 +506,8 @@ Default behavior:
 - If microphone capture overruns, drop the current chunk, publish an overrun error, and keep capture recoverable.
 - If camera capture fails, publish the error and keep motion/audio/safety handling alive.
 - If NFC read fails, publish an event error without assigning meaning to the tag.
+- If camera capture exceeds the payload bound, discard the image and publish a
+  recoverable capture failure instead of a partial success.
 - If servo or motion safety fails, stop current motion, move toward neutral if safe, enter `fault`, and publish the rejection reason.
 
 The firmware should prefer stopping a behavior and publishing a clear reason over trying to infer a risky fallback.
@@ -520,7 +560,7 @@ The first firmware slice should prove the device loop and safety boundary, but i
 7. Publish `ACCEPTED` or `REJECTED` command state through the shared result model.
 8. Add LED command support.
 9. Add audio playback/capture status.
-10. Add raw IMU stream.
+10. Add explicitly contracted raw IMU stream.
 11. Add NFC event stream.
 12. Add constrained camera snapshot support.
 

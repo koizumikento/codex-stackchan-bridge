@@ -72,7 +72,7 @@ Firmware capability set includes:
 - microphone capture
 - camera snapshot
 - NFC events
-- raw IMU stream
+- raw IMU/sensor channels when explicitly contracted
 - high-level IMU events
 - other local sensors
 
@@ -86,7 +86,9 @@ NFC reports tag presence and bounded metadata when the contract allows it. Tag
 meaning belongs on the PC/Codex side, and raw identifiers should be minimized or
 redacted outside explicit local diagnostic paths.
 
-IMU exposes raw telemetry plus high-level events such as picked up, shaken, and tilted.
+IMU exposes high-level events such as picked up, shaken, and tilted. Raw IMU or
+sensor telemetry streams require an explicit contract and must stay bounded and
+best-effort.
 
 ## Resource Arbitration
 

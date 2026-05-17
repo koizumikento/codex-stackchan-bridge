@@ -191,6 +191,8 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(command["channels"], 1)
         self.assertEqual(command["chunk_ms"], 20)
         self.assertEqual(command["max_chunk_ms"], 40)
+        self.assertNotIn("pcm", json.dumps(payload := json.loads(stdout)).lower().replace("pcm_s16le", ""))
+        self.assertNotIn("transcript", payload)
 
     def test_audio_capture_mock_json_has_output_contract(self) -> None:
         code, stdout, stderr = run_stackchanctl(
@@ -203,6 +205,64 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(command["type"], "audio.capture")
         self.assertEqual(command["seconds"], 2.5)
         self.assertEqual(command["output"], "mic.wav")
+
+    def test_audio_mock_failure_matrix_is_structured(self) -> None:
+        cases = [
+            (
+                ["--device", "audio_timeout", "audio", "play", "prompt.wav", "--json"],
+                "TIMEOUT",
+                "TIMEOUT",
+                True,
+            ),
+            (
+                ["--device", "audio_underrun", "audio", "play", "prompt.wav", "--json"],
+                "REJECTED",
+                "AUDIO_UNDERRUN",
+                True,
+            ),
+            (
+                ["--device", "mic_overrun", "audio", "capture", "--seconds", "1", "--output", "mic.wav", "--json"],
+                "REJECTED",
+                "MIC_OVERRUN",
+                True,
+            ),
+            (
+                ["--device", "audio_capture_failed", "audio", "capture", "--seconds", "1", "--output", "mic.wav", "--json"],
+                "REJECTED",
+                "AUDIO_CAPTURE_FAILED",
+                True,
+            ),
+            (
+                ["--device", "audio_malformed", "audio", "capture", "--seconds", "1", "--output", "mic.wav", "--json"],
+                "REJECTED",
+                "MALFORMED_AUDIO_CHUNK",
+                True,
+            ),
+            (
+                ["--device", "audio_disconnected", "audio", "play", "prompt.wav", "--json"],
+                "REJECTED",
+                "TRANSPORT_DISCONNECTED",
+                True,
+            ),
+            (
+                ["--device", "unsupported_audio", "audio", "play", "prompt.wav", "--json"],
+                "REJECTED",
+                "UNSUPPORTED_FEATURE",
+                False,
+            ),
+        ]
+
+        for args, state, error_code, recoverable in cases:
+            with self.subTest(args=args):
+                code, stdout, stderr = run_stackchanctl(args, {"STACKCHANCTL_BACKEND": "mock"})
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                payload = json.loads(stderr)
+                self.assertEqual(payload["result_state"], state)
+                self.assertEqual(payload["error"]["code"], error_code)
+                self.assertEqual(payload["error"]["recoverable"], recoverable)
+                self.assertNotIn("transcript", stderr)
+                self.assertNotIn("raw_audio", stderr)
 
     def test_camera_capture_mock_json_has_payload_contract(self) -> None:
         code, stdout, stderr = run_stackchanctl(
@@ -217,6 +277,42 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(command["width"], 320)
         self.assertEqual(command["height"], 240)
         self.assertEqual(command["max_payload_bytes"], 98304)
+        self.assertNotIn("base64", stdout)
+        self.assertNotIn("data", command)
+
+    def test_camera_mock_failure_matrix_is_structured(self) -> None:
+        cases = [
+            (
+                ["--device", "camera_timeout", "camera", "capture", "--output", "frame.jpg", "--json"],
+                "TIMEOUT",
+                "TIMEOUT",
+                True,
+            ),
+            (
+                ["--device", "camera_oversize", "camera", "capture", "--output", "frame.jpg", "--json"],
+                "REJECTED",
+                "CAMERA_CAPTURE_FAILED",
+                True,
+            ),
+            (
+                ["--device", "unsupported_camera", "camera", "capture", "--output", "frame.jpg", "--json"],
+                "REJECTED",
+                "UNSUPPORTED_FEATURE",
+                False,
+            ),
+        ]
+
+        for args, state, error_code, recoverable in cases:
+            with self.subTest(args=args):
+                code, stdout, stderr = run_stackchanctl(args, {"STACKCHANCTL_BACKEND": "mock"})
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                payload = json.loads(stderr)
+                self.assertEqual(payload["result_state"], state)
+                self.assertEqual(payload["error"]["code"], error_code)
+                self.assertEqual(payload["error"]["recoverable"], recoverable)
+                self.assertNotIn("base64", stderr)
+                self.assertNotIn("jpeg_bytes", stderr)
 
     def test_nfc_wait_mock_json_redacts_tag_logging(self) -> None:
         code, stdout, stderr = run_stackchanctl(
@@ -228,6 +324,7 @@ class MockCliTests(unittest.TestCase):
         command = json.loads(stdout)["command"]
         self.assertEqual(command["type"], "nfc.wait")
         self.assertEqual(command["tag_id_logging"], "redacted")
+        self.assertEqual(command["identifier_policy"], "reference")
 
     def test_imu_stream_mock_json_is_separate_from_status(self) -> None:
         code, stdout, stderr = run_stackchanctl(

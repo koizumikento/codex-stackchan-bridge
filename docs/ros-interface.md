@@ -176,6 +176,7 @@ Baseline error codes:
 - `CALIBRATION_INVALID`
 - `AUDIO_UNDERRUN`
 - `MIC_OVERRUN`
+- `AUDIO_CAPTURE_FAILED`
 - `AUDIO_FORMAT_UNSUPPORTED`
 - `MALFORMED_AUDIO_CHUNK`
 - `ASR_UNAVAILABLE`
@@ -215,7 +216,9 @@ Command priority affects queueing and preemption:
 - `LOW`: queued behind `NORMAL` and `HIGH`; never preempts active behavior.
 - `NORMAL`: default; FIFO within the same device and resource class.
 - `HIGH`: may preempt `LOW` and `NORMAL` face, LED, and motion behaviors; should not preempt safety handling.
-- `SAFETY`: bridge/firmware internal only; CLI-originated `SAFETY` requests are rejected with `INVALID_PRIORITY`.
+- `SAFETY`: bridge/firmware internal only. Externally supplied `/cmd/...`
+  requests with `SAFETY` priority are rejected with `INVALID_PRIORITY`; do not
+  treat caller-provided `source` as authentication.
 - Same-priority commands are FIFO unless a resource-specific safety rule overrides them.
 
 ## Baseline topics
@@ -459,7 +462,8 @@ Field semantics:
 - `command_id`: command correlation id for command-origin events. Sensor-origin
   events may leave this empty.
 - `payload_json`: bounded metadata only. It must not carry speech transcripts,
-  image payloads, PCM audio, or large data.
+  image payloads, PCM audio, raw NFC tag IDs, raw IR/protocol dumps, or large
+  data.
 
 Baseline firmware/device event names:
 
@@ -505,6 +509,11 @@ Baseline firmware/device event names:
 - `ir_transmit_failed`
 - `transport_unstable`
 
+The `ir_transmit_*` event names are observations for explicitly contracted or
+diagnostic transmit adapters. They do not define a normal `/cmd/ir` command
+surface; IR transmit behavior needs a separate command contract before Codex or
+MCP can request it.
+
 Baseline bridge/PC event names:
 
 - `speech_detected`
@@ -539,6 +548,12 @@ Rules:
 - Firmware must not assign application meaning to tags, gestures, or speech.
 - Bridge owns public normalization, redaction, and consumer buffering.
 - Firmware may leave `event_id` empty; bridge fills it before republishing.
+- Public events should use bounded correlation references such as `tag_ref` or
+  `remote_ref` when identifier correlation is needed. Raw NFC tag IDs, raw IR
+  codes, and protocol dumps are debug-only and require an explicit local
+  diagnostic path.
+- Firmware normal diagnostics must not print raw `payload_json` values that can
+  bypass bridge redaction.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -565,7 +580,15 @@ IDL constraints:
 - 20 ms chunks are 640 bytes.
 - 40 ms chunks are 1280 bytes and are the maximum baseline chunk size.
 
-Playback and capture share the same chunk topic because `direction` and `command_id` disambiguate flows. Backpressure is not acknowledged per chunk; if a receiver overruns, it drops the current chunk, publishes a structured event/error, and keeps the flow recoverable.
+Playback and capture share the same chunk topic because `direction` and
+`command_id` disambiguate flows. `sequence` is monotonic per `command_id` plus
+`direction`. The baseline permits at most one playback session and one capture
+session per device; same-direction concurrent sessions are rejected with
+`FIRMWARE_BUSY`. Backpressure is not acknowledged per chunk; if a receiver
+overruns, it drops the current chunk, publishes a structured event/error, and
+keeps the flow recoverable. Malformed chunk size, wrong `direction`, wrong
+`command_id`, sequence gaps, and disconnects mid-stream are structured
+result/event conditions.
 
 ## Baseline services
 
@@ -583,6 +606,16 @@ Response fields:
 
 - `result`
 
+Rules:
+
+- `duration_ms=0` means persistent until replaced by another command,
+  safety/fault handling, or device reset.
+- Face commands are idempotent by expression and duration; repeating the same
+  request updates current state and does not enqueue another animation.
+- Unknown expressions return `UNKNOWN_COMMAND`.
+- Face work must be non-blocking and must not delay safety, fault, or motion
+  neutral handling.
+
 ### `/stackchan/<device_id>/cmd/led/set`
 
 Purpose: request a named LED pattern and receive acceptance/rejection.
@@ -597,6 +630,16 @@ Request fields:
 Response fields:
 
 - `result`
+
+Rules:
+
+- `duration_ms=0` means persistent until replaced by another command,
+  safety/fault handling, or device reset.
+- LED commands are idempotent by pattern, color, and duration; repeating the
+  same request updates current state and does not enqueue another animation.
+- Unknown patterns return `UNKNOWN_COMMAND`.
+- LED firmware policy owns brightness/current limits. LED work must be
+  non-blocking and must not delay safety, fault, or motion neutral handling.
 
 ### `/stackchan/<device_id>/cmd/get_status`
 
@@ -873,6 +916,19 @@ audio chunk transport is implemented.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
+Privacy and result rules:
+
+- CLI JSON, MCP tool results, public events, normal logs, and diagnostics must
+  not include PCM bytes, speech text, or transcript text.
+- Results may expose metadata such as `command_id`, input/output path,
+  duration, byte count, sample rate, channels, and structured errors.
+- Playback underrun returns `AUDIO_UNDERRUN` and stops playback.
+- Mic overrun drops the current chunk and publishes `MIC_OVERRUN`; capture may
+  continue unless the failure is terminal.
+- Terminal capture failure returns `AUDIO_CAPTURE_FAILED`.
+- Audio work must use bounded queues/callback budgets and must not block safety
+  or fault handling.
+
 Goal fields:
 
 - `meta`
@@ -917,10 +973,15 @@ Baseline camera behavior:
 
 - snapshot only
 - no continuous stream
+- no follow mode or video-like frame sequences
 - QVGA JPEG target
 - `quality` range is 1-95
 - `image` uses `CompressedImagePayload`
 - maximum image payload is 96 KiB
+- CLI JSON, MCP tool results, public events, and normal logs report metadata
+  only; they must not inline base64, JPEG bytes, or image payloads
+- oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
+  `recoverable=true` unless a later contract adds a narrower error code
 - timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
 - the current bridge scaffold returns `UNSUPPORTED_FEATURE` until image result
   transport is implemented
@@ -929,7 +990,17 @@ Baseline camera behavior:
 
 Purpose: run a longer behavior such as a combined speech, face, LED, and motion sequence.
 
-This is reserved until the simpler service and action interfaces are useful. It should not block the baseline command set.
+This is reserved until the simpler service and action interfaces are useful. It
+is out of the MVP baseline and should not block the baseline command set.
+
+If implemented later, this must be bridge-side orchestration over existing
+`say`, `face`, `led`, `motion`, `audio`, and explicitly approved camera
+contracts. It is not a generic command bus, not a firmware sequence language,
+and must not include maintenance or calibration operations. Result aggregation
+must keep bounded per-step summaries with parent and child `command_id` values,
+per-step result state/error summary, cancellation/preemption state, partial
+failure semantics, and recoverability. It must not include raw speech text, PCM
+payloads, image bytes, NFC/IR raw identifiers, or maintenance data.
 
 ### `/stackchan/<device_id>/cmd/audio/capture`
 
@@ -965,6 +1036,10 @@ Baseline chunk policy:
 - 40 ms chunks are allowed when transport overhead matters.
 - Mic overrun drops the current chunk, publishes an overrun event/error, and keeps capture recoverable.
 - Playback underrun stops playback, publishes an error, and returns to a neutral speaking state.
+- Same-direction concurrent playback/capture sessions are rejected with
+  `FIRMWARE_BUSY`.
+- Playback and capture may run concurrently only if the documented echo/VAD
+  policy preserves safety and transcript privacy.
 
 Device-side action mirrors:
 

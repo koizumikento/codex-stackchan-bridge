@@ -467,6 +467,33 @@ inline void make_string_payload(
   destination[size - 1] = '\0';
 }
 
+inline uint32_t fnv1a_32(const char* value) {
+  const char* source = value == nullptr ? "" : value;
+  uint32_t hash = 2166136261u;
+  while (*source != '\0') {
+    hash ^= static_cast<uint8_t>(*source);
+    hash *= 16777619u;
+    ++source;
+  }
+  return hash;
+}
+
+inline void make_reference_payload(
+    char* destination,
+    size_t size,
+    const char* key,
+    const char* prefix,
+    const char* raw_value) {
+  char reference[24];
+  snprintf(
+      reference,
+      sizeof(reference),
+      "%s:%08lx",
+      prefix == nullptr ? "ref" : prefix,
+      static_cast<unsigned long>(fnv1a_32(raw_value)));
+  make_string_payload(destination, size, key, reference);
+}
+
 class EventPublisher {
  public:
   explicit EventPublisher(const char* device_id) { set_device_id(device_id); }
@@ -583,13 +610,13 @@ class EventPublisher {
 
   Result nfc_detected(uint32_t stamp_ms, const char* tag_id) {
     char payload[kEventPayloadJsonMaxLength + 1];
-    make_string_payload(payload, sizeof(payload), "tag_id", tag_id);
+    make_reference_payload(payload, sizeof(payload), "tag_ref", "nfc", tag_id);
     return publish(DeviceEventKind::NfcDetected, stamp_ms, "", payload);
   }
 
   Result nfc_removed(uint32_t stamp_ms, const char* tag_id) {
     char payload[kEventPayloadJsonMaxLength + 1];
-    make_string_payload(payload, sizeof(payload), "tag_id", tag_id);
+    make_reference_payload(payload, sizeof(payload), "tag_ref", "nfc", tag_id);
     return publish(DeviceEventKind::NfcRemoved, stamp_ms, "", payload);
   }
 
@@ -633,7 +660,7 @@ class EventPublisher {
 
   Result remote_command_received(uint32_t stamp_ms, const char* command) {
     char payload[kEventPayloadJsonMaxLength + 1];
-    make_string_payload(payload, sizeof(payload), "command", command);
+    make_reference_payload(payload, sizeof(payload), "remote_ref", "remote", command);
     return publish(DeviceEventKind::RemoteCommandReceived, stamp_ms, "", payload);
   }
 

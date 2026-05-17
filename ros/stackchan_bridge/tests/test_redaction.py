@@ -50,6 +50,19 @@ class RedactionTests(unittest.TestCase):
 
         self.assertEqual(redacted["nfc_tag_id"], REDACTED)
 
+    def test_redacts_raw_ir_remote_and_protocol_dumps_by_default(self) -> None:
+        redacted = redact_fields(
+            {
+                "raw_ir_code": "0xDEADBEEF",
+                "remote_code": "volume_up",
+                "protocol_dump": "NEC raw timing data",
+            }
+        )
+
+        self.assertEqual(redacted["raw_ir_code"], REDACTED)
+        self.assertEqual(redacted["remote_code"], REDACTED)
+        self.assertEqual(redacted["protocol_dump"], REDACTED)
+
     def test_can_hash_nfc_tag_ids_without_leaking_raw_value(self) -> None:
         redacted = redact_fields(
             {"nfc_tag_id": "04AABBCCDD"},
@@ -75,6 +88,29 @@ class RedactionTests(unittest.TestCase):
 
         self.assertEqual(redacted["payload"]["speech_text"], REDACTED)
         self.assertEqual(redacted["payload"]["nested"][0]["api_key"], REDACTED)
+
+    def test_invalid_payload_json_returns_safe_marker(self) -> None:
+        redacted_json = redact_payload_json("raw_ir_code=0xDEADBEEF tag_id=04AABB")
+        redacted = json.loads(redacted_json)
+
+        self.assertTrue(redacted["truncated"])
+        self.assertEqual(redacted["reason"], "payload_json_invalid")
+        self.assertNotIn("0xDEADBEEF", redacted_json)
+        self.assertNotIn("04AABB", redacted_json)
+
+    def test_non_object_payload_json_returns_safe_marker(self) -> None:
+        for raw_payload in (
+            '"raw_ir_code=0xDEADBEEF tag_id=04AABB"',
+            '["raw_ir_code=0xDEADBEEF", "tag_id=04AABB"]',
+        ):
+            with self.subTest(raw_payload=raw_payload):
+                redacted_json = redact_payload_json(raw_payload)
+                redacted = json.loads(redacted_json)
+
+                self.assertTrue(redacted["truncated"])
+                self.assertEqual(redacted["reason"], "payload_json_invalid")
+                self.assertNotIn("0xDEADBEEF", redacted_json)
+                self.assertNotIn("04AABB", redacted_json)
 
 
 if __name__ == "__main__":

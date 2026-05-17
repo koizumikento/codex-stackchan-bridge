@@ -78,6 +78,10 @@ class MockBackend:
         if request.command_type is CommandType.MOTION_STATUS:
             return _head_pose_status(request)
 
+        command_failure = _mock_command_failure(request)
+        if command_failure is not None:
+            return command_failure
+
         result_state = ResultState.COMPLETED if request.wait else ResultState.ACCEPTED
         return CommandResult(
             ok=True,
@@ -678,6 +682,141 @@ def _timeout_result(
     )
 
 
+def _command_timeout_result(request: CommandRequest, message: str) -> CommandResult:
+    return CommandResult(
+        ok=False,
+        result_state=ResultState.TIMEOUT,
+        meta=request.meta,
+        command=_command_payload(request),
+        error=ErrorDetail(code="TIMEOUT", message=message, recoverable=True),
+    )
+
+
+def _command_error_result(request: CommandRequest, error: ErrorDetail) -> CommandResult:
+    return CommandResult(
+        ok=False,
+        result_state=ResultState.REJECTED,
+        meta=request.meta,
+        command=_command_payload(request),
+        error=error,
+    )
+
+
+def _mock_command_failure(request: CommandRequest) -> CommandResult | None:
+    device_id = request.meta.device_id
+    if request.command_type is CommandType.AUDIO_PLAY:
+        if device_id == "audio_timeout":
+            return _command_timeout_result(request, "mock audio playback timed out")
+        if device_id == "audio_underrun":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="AUDIO_UNDERRUN",
+                    message="mock audio playback underrun",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "audio_malformed":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="MALFORMED_AUDIO_CHUNK",
+                    message="mock audio playback chunk was malformed",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "audio_disconnected":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="TRANSPORT_DISCONNECTED",
+                    message="mock audio playback disconnected mid-stream",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "unsupported_audio":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="audio playback is not available on this mock device",
+                    recoverable=False,
+                ),
+            )
+
+    if request.command_type is CommandType.AUDIO_CAPTURE:
+        if device_id == "audio_timeout":
+            return _command_timeout_result(request, "mock audio capture timed out")
+        if device_id == "mic_overrun":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="MIC_OVERRUN",
+                    message="mock microphone overrun dropped the current chunk",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "audio_capture_failed":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="AUDIO_CAPTURE_FAILED",
+                    message="mock audio capture failed",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "audio_malformed":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="MALFORMED_AUDIO_CHUNK",
+                    message="mock audio capture chunk was malformed",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "audio_disconnected":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="TRANSPORT_DISCONNECTED",
+                    message="mock audio capture disconnected mid-stream",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "unsupported_audio":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="audio capture is not available on this mock device",
+                    recoverable=False,
+                ),
+            )
+
+    if request.command_type is CommandType.CAMERA_CAPTURE:
+        if device_id == "camera_timeout":
+            return _command_timeout_result(request, "mock camera capture timed out")
+        if device_id == "camera_oversize":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="CAMERA_CAPTURE_FAILED",
+                    message="mock camera frame exceeded 96 KiB and was discarded",
+                    recoverable=True,
+                ),
+            )
+        if device_id == "unsupported_camera":
+            return _command_error_result(
+                request,
+                ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="camera capture is not available on this mock device",
+                    recoverable=False,
+                ),
+            )
+    return None
+
+
 def _command_payload(request: CommandRequest) -> dict[str, Any]:
     if request.command_type is CommandType.SAY:
         return {"type": "say", "text_length": len(request.args["text"])}
@@ -741,6 +880,7 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "type": "nfc.wait",
             "events": ["nfc_detected", "nfc_removed"],
             "tag_id_logging": "redacted",
+            "identifier_policy": "reference",
         }
     if request.command_type is CommandType.IMU_STREAM:
         return {

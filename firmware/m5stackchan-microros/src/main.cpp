@@ -49,7 +49,18 @@ bool is_known_face(const char* name) {
 
 bool is_servo_safety_fault(const stackchan::Result& result) {
   return strcmp(result.error_code, "SERVO_LIMIT_EXCEEDED") == 0 ||
+         strcmp(result.error_code, "SERVO_READ_FAILED") == 0 ||
          strcmp(result.error_code, "MOTION_INTERRUPTED") == 0;
+}
+
+bool firmware_calibration_valid() {
+  // TODO: replace with firmware-owned NVS schema/checksum validation.
+  return false;
+}
+
+bool servo_position_read_available() {
+  // TODO: replace with a StackChan-BSP servo adapter current-position read.
+  return false;
 }
 
 bool try_connect_microros_agent() {
@@ -80,8 +91,8 @@ bool publish_device_event_ros(const stackchan::DeviceEvent& event, void*) {
   Serial.print(event.event_name);
   Serial.print(" source=");
   Serial.print(event.source);
-  Serial.print(" payload=");
-  Serial.println(event.payload_json);
+  Serial.print(" payload_bytes=");
+  Serial.println(strlen(event.payload_json));
   return true;
 }
 
@@ -159,7 +170,13 @@ stackchan::Result handle_motion_command(
   }
 
   const stackchan::MotionPlan plan =
-      stackchan::plan_motion(name, intensity, duration_ms);
+      stackchan::plan_motion(
+          name,
+          intensity,
+          duration_ms,
+          firmware_calibration_valid(),
+          servo_position_read_available(),
+          state_machine.state() == stackchan::RuntimeState::Fault);
   copy_bounded(last_command_id, sizeof(last_command_id), meta.command_id);
   last_error = plan.result;
   if (!plan.result.ok) {

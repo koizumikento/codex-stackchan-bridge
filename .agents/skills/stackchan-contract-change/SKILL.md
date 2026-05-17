@@ -27,8 +27,10 @@ Use this skill whenever a change affects more than one layer's understanding of 
 - Topics are for state, telemetry, events, and bounded chunks.
 - Audio baseline is PCM 16 kHz mono 16-bit, 20 ms chunks by default, 40 ms max when transport overhead matters.
 - Camera baseline is QVGA JPEG snapshot only, max 96 KiB.
-- NFC reports tag events and IDs; PC/Codex decides meaning.
-- IMU exposes raw telemetry plus high-level events.
+- NFC reports tag events with bounded references by default; raw tag IDs are
+  debug-only and require an explicit local diagnostic path.
+- IMU exposes high-level events and bounded status by default. Raw telemetry
+  streams require an explicit streaming contract and must not become commands.
 
 ## Change Checklist
 

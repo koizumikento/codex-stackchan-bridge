@@ -95,7 +95,10 @@ Development decisions:
   installing ROS 2 directly; Windows developers should use a WSL2-backed Docker
   environment.
 - Logs must include `device_id`, `command_id` when available, `source` when available, and structured error fields.
-- Logs must redact secrets, speech text, image payloads, and NFC tag IDs by default. Debug opt-in may expose them only in local developer logs, never in normal CLI output.
+- Logs must redact secrets, speech text, PCM audio, image payloads, NFC tag IDs,
+  IR/raw remote codes, and protocol dumps by default. Debug opt-in may expose
+  sensitive values only in explicit local developer diagnostics, never in
+  normal CLI output or public events.
 - The repository license is MIT.
 - Work can continue on `main` until release discipline is needed.
 

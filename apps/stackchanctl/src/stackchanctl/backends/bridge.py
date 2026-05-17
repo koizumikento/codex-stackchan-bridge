@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
 import math
-from typing import Protocol
+from typing import Any, Protocol
 
 from stackchanctl.backends.mock import validate_common_request
 from stackchanctl.contract import (
@@ -20,6 +21,48 @@ from stackchanctl.contract import (
     PowerStatusResult,
     ResultState,
     TranscriptResult,
+)
+
+REDACTED = "<redacted>"
+SENSITIVE_EVENT_FIELDS = frozenset(
+    {
+        "audio",
+        "audio_data",
+        "audio_payload",
+        "api_key",
+        "authorization",
+        "frame",
+        "image",
+        "image_data",
+        "image_payload",
+        "ir_code",
+        "jpeg",
+        "nfc_tag_id",
+        "pcm",
+        "pcm_data",
+        "protocol",
+        "protocol_dump",
+        "raw_ir",
+        "raw_ir_code",
+        "raw_remote_code",
+        "remote_code",
+        "speech_text",
+        "tag_id",
+        "text",
+        "transcript",
+        "uid",
+        "utterance",
+    }
+)
+SENSITIVE_EVENT_MARKERS = (
+    "ir_code",
+    "password",
+    "protocol_dump",
+    "raw_ir",
+    "raw_remote",
+    "remote_code",
+    "secret",
+    "token",
 )
 
 
@@ -735,6 +778,10 @@ def _event_from_ros(event) -> Event:
 
 
 def _payload_from_json(payload_json: str) -> dict[str, object]:
+    invalid_marker: dict[str, object] = {
+        "truncated": True,
+        "reason": "payload_json_invalid",
+    }
     if not payload_json:
         return {}
     try:
@@ -742,10 +789,29 @@ def _payload_from_json(payload_json: str) -> dict[str, object]:
 
         loaded = json.loads(payload_json)
     except ValueError:
-        return {"value": payload_json}
+        return invalid_marker
     if isinstance(loaded, dict):
-        return loaded
-    return {"value": loaded}
+        return dict(_redact_event_payload(loaded))
+    return invalid_marker
+
+
+def _redact_event_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, value in payload.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in SENSITIVE_EVENT_FIELDS or any(
+                marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS
+            ):
+                redacted[str(key)] = REDACTED
+            else:
+                redacted[str(key)] = _redact_event_payload(value)
+        return redacted
+    if isinstance(payload, bytes | bytearray):
+        return REDACTED
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        return [_redact_event_payload(item) for item in payload]
+    return payload
 
 
 def _stamp_to_iso(stamp) -> str | None:

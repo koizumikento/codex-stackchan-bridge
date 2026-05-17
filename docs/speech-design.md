@@ -20,6 +20,14 @@ The bridge processes microphone audio as 10 ms internal frames. ROS
 `AudioChunk` remains 20 ms by default and 40 ms maximum; the speech processor
 splits capture chunks before echo control and VAD.
 
+Playback and capture chunks share the audio chunk topic only when every chunk
+carries `device_id`, `command_id`, `direction`, and monotonic `sequence`.
+The baseline permits at most one playback and one capture session per device;
+same-direction concurrent sessions are rejected with `FIRMWARE_BUSY`. Sequence
+gaps, wrong direction, wrong command id, malformed chunk size, disconnects,
+overrun, and underrun are structured result/event conditions rather than
+unbounded retries.
+
 ## Echo Control
 
 The target AEC backend is a reference-aware WebRTC Audio Processing Module /
@@ -39,6 +47,11 @@ out of the default path and stores transcripts only in memory with TTL.
 `transcript_ready` contains only `utterance_id`. Full text is returned only from
 `GetTranscript`. Event payloads, normal logs, and MCP/CLI event results must not
 carry transcript text.
+
+PCM payloads, speech text, transcript text, and raw audio bytes must not appear
+in normal events, logs, CLI JSON, or MCP tool results. CLI/MCP may expose
+bounded metadata such as command id, path, utterance id, duration, byte count,
+sample rate, channels, and structured errors.
 
 Low-confidence ASR does not execute robot actions. It produces metadata through
 `voice_semantic_event` with `suppressed_reason=low_confidence`.
