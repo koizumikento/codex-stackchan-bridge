@@ -18,6 +18,10 @@ class RedactionTests(unittest.TestCase):
             {
                 "device_id": "default",
                 "text": "hello",
+                "full_transcript": "turn the light on",
+                "asr_transcript": "open the window",
+                "utterance_text": "hello again",
+                "utterance_id": "utt-1",
                 "image_payload": b"jpeg-bytes",
                 "token": "secret-token",
             }
@@ -25,6 +29,10 @@ class RedactionTests(unittest.TestCase):
 
         self.assertEqual(redacted["device_id"], "default")
         self.assertEqual(redacted["text"], REDACTED)
+        self.assertEqual(redacted["full_transcript"], REDACTED)
+        self.assertEqual(redacted["asr_transcript"], REDACTED)
+        self.assertEqual(redacted["utterance_text"], REDACTED)
+        self.assertEqual(redacted["utterance_id"], "utt-1")
         self.assertEqual(redacted["image_payload"], REDACTED)
         self.assertEqual(redacted["token"], REDACTED)
 

@@ -26,9 +26,17 @@ class EventAggregatorTests(unittest.TestCase):
         self.assertEqual(normalize_event_name(""), "unknown")
 
     def test_normalizes_and_redacts_payload(self) -> None:
-        payload = normalize_payload('{"speech_text": "hello", "level": 3}')
+        payload = normalize_payload(
+            '{"speech_text": "hello", "full_transcript": "turn the light on",'
+            '"asr_transcript": "open the window", "utterance_text": "hello again",'
+            '"utterance_id": "utt-1", "level": 3}'
+        )
 
         self.assertEqual(payload["speech_text"], REDACTED)
+        self.assertEqual(payload["full_transcript"], REDACTED)
+        self.assertEqual(payload["asr_transcript"], REDACTED)
+        self.assertEqual(payload["utterance_text"], REDACTED)
+        self.assertEqual(payload["utterance_id"], "utt-1")
         self.assertEqual(payload["level"], 3)
 
     def test_normalizes_and_redacts_ir_remote_payload(self) -> None:
