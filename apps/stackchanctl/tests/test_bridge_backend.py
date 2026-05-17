@@ -530,6 +530,21 @@ class BridgeBackendTests(unittest.TestCase):
                 self.assertNotIn("0xDEADBEEF", str(payload))
                 self.assertNotIn("04AABB", str(payload))
 
+    def test_bridge_payload_json_redacts_sensitive_object_fields(self) -> None:
+        payload = _payload_from_json(
+            '{"raw_ir_code":"0xDEADBEEF","tag_id":"04AABB","protocol_dump":"NEC raw",'
+            '"speech_text":"hello","nested":{"remote_code":"volume_up"},"level":3}'
+        )
+
+        self.assertEqual(payload["raw_ir_code"], "<redacted>")
+        self.assertEqual(payload["tag_id"], "<redacted>")
+        self.assertEqual(payload["protocol_dump"], "<redacted>")
+        self.assertEqual(payload["speech_text"], "<redacted>")
+        self.assertEqual(payload["nested"]["remote_code"], "<redacted>")
+        self.assertEqual(payload["level"], 3)
+        self.assertNotIn("0xDEADBEEF", str(payload))
+        self.assertNotIn("04AABB", str(payload))
+
     def test_bridge_speech_transcript_is_unsupported_until_service_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             [
