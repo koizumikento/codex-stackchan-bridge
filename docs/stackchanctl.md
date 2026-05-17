@@ -257,6 +257,16 @@ Expected examples:
 - `sleepy`
 - `error`
 
+Rules:
+
+- `duration_ms=0` means persistent until replaced by another command,
+  safety/fault handling, or device reset.
+- Repeating the same expression/duration is idempotent and must not enqueue
+  another animation.
+- Unknown expressions return `UNKNOWN_COMMAND`.
+- `HIGH` may preempt lower-priority face state. External `SAFETY` priority is
+  rejected with `INVALID_PRIORITY`.
+
 ### `motion`
 
 Requests a named motion primitive.
@@ -338,6 +348,16 @@ Expected examples:
 - `warning`
 - `error`
 - `listening`
+
+Rules:
+
+- `duration_ms=0` means persistent until replaced by another command,
+  safety/fault handling, or device reset.
+- Repeating the same pattern/color/duration is idempotent and must not enqueue
+  another animation.
+- Unknown patterns return `UNKNOWN_COMMAND`.
+- `HIGH` may preempt lower-priority LED state. External `SAFETY` priority is
+  rejected with `INVALID_PRIORITY`.
 
 ### `observe`
 
@@ -467,6 +487,17 @@ stackchanctl audio capture --seconds 3 --output mic.wav
 
 Device exchange should use PCM 16 kHz mono 16-bit, even if the CLI accepts or writes WAV files for human convenience.
 
+Audio CLI and MCP results expose metadata only: `device_id`, `command_id`,
+`result_state`, input/output path, duration, byte count, format, sample rate,
+channels, and structured `error` fields. They must not include PCM payloads,
+speech text, transcript text, or raw audio bytes.
+
+Playback and capture share `/stackchan/<device_id>/device/audio/chunks` only
+through `device_id`, `command_id`, `direction`, and monotonic `sequence`.
+Backpressure is not acknowledged per chunk. Malformed chunks, wrong direction,
+wrong command id, sequence gaps, overrun, underrun, and disconnects are
+structured command results or events.
+
 The current bridge backend rejects audio play/capture with
 `UNSUPPORTED_FEATURE` until chunk transport is implemented. The mock backend
 keeps deterministic responses for CLI development.
@@ -476,10 +507,19 @@ keeps deterministic responses for CLI development.
 Camera support should start with snapshots rather than continuous streaming.
 
 ```bash
-stackchanctl camera capture --output frame.jpg
+stackchanctl camera capture --output frame.jpg --quality 80 --json
 ```
 
 The CLI should keep this as an explicit command instead of hiding image capture inside `observe`.
+
+Camera JSON returns metadata only: output path, `format=jpeg`, `width=320`,
+`height=240`, `quality`, byte size, command metadata, result state, and
+structured errors. It must not inline base64, JPEG bytes, or image payloads in
+JSON, MCP results, events, or normal logs.
+
+Baseline camera capture is snapshot-only QVGA JPEG with `quality=1..95` and max
+payload 96 KiB. Continuous streaming, follow mode, and video-like frame
+sequences require a separate contract.
 
 The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
 until image result transport is implemented. The mock backend keeps
@@ -487,23 +527,48 @@ deterministic camera validation behavior for CLI development.
 
 ### NFC commands
 
-NFC should expose events and tag IDs, not application meaning.
+NFC should expose bridge-normalized events and bounded correlation references,
+not application meaning or raw tag IDs.
 
 ```bash
 stackchanctl nfc wait
 ```
 
-The PC side or Codex skill decides what the tag means.
+The PC side or Codex skill decides what the tag means. Normal output, MCP event
+results, and logs must not include raw NFC tag IDs, raw IR codes, or protocol
+dumps. Use bounded references such as `tag_ref` or `remote_ref` when correlation
+is needed. Raw IDs/codes are debug-only and require an explicit local diagnostic
+path.
 
 ### IMU commands
 
-IMU should expose both high-level events and raw telemetry.
+IMU should expose high-level events and explicitly contracted raw telemetry.
 
 ```bash
 stackchanctl imu stream --hz 10
 ```
 
-The raw stream target is 10-30 Hz.
+If a raw stream command is introduced, the target is 10-30 Hz and the stream
+contract must stay separate from finite JSON request/response commands.
+`observe` remains low-frequency device/bridge status; raw telemetry must not be
+folded into `observe` or `/status`. MCP tools should use bounded status/event
+results unless a separate streaming MCP contract exists.
+
+Strict JSON output converts unsupported numeric ROS values such as NaN to
+`null`; fields such as `stale`, `saturated`, and
+`calibration_available`/`calibration_unavailable` carry meaning explicitly.
+
+### Maintenance commands
+
+Normal CLI/MCP/Codex surfaces must not expose raw servo ticks, PWM, torque,
+relative movement, continuous rotation, calibration writes, NVS import/export,
+reset-to-default calibration, or maintenance unlocks.
+
+If a maintenance surface is introduced, it must live under an explicit command
+group such as `stackchanctl maintenance ...`, require a documented local
+unlock/confirmation flow, have mock coverage, and still be unable to bypass
+firmware hard limits. Firmware NVS is the only calibration safety store; CLI
+config must not store hardware safety values.
 
 ## Backend model
 
@@ -678,8 +743,11 @@ Recommended behavior:
 - PC-side tools should use structured JSON logs.
 - Firmware errors should surface through status/error ROS interfaces.
 - Logs include `device_id`, `command_id` when available, `source` when available, and structured error fields.
-- Do not log speech text, image payloads, NFC tag IDs, or secrets by default.
-- NFC tag IDs may appear in ROS events and command results when needed for behavior, but logs should hash or redact them unless local debug opt-in is enabled.
+- Do not log speech text, image payloads, NFC tag IDs, IR/raw remote codes, or
+  secrets by default.
+- Normal ROS events, command results, MCP tool results, and CLI JSON should use
+  bounded references such as `tag_ref` or `remote_ref` instead of raw NFC tag
+  IDs, raw IR codes, or protocol dumps.
 - Debug opt-in output must stay local and should not be mixed with normal `--json` command output.
 
 ## Relationship to ROS 2

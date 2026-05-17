@@ -39,6 +39,20 @@ Required for CLI changes:
   structured expiry/not-found failures.
 - Power command tests cover strict JSON output, unsupported numeric values as
   `null`, stale telemetry, unsupported hardware, and bridge/mock shape parity.
+- Audio command tests cover accepted playback/capture, timeout, underrun,
+  overrun, unsupported firmware, malformed chunk, disconnect mid-stream, and
+  absence of PCM, speech text, and transcript text in CLI JSON or diagnostics.
+- Camera command tests cover QVGA JPEG metadata, `quality=1..95`, max 96 KiB,
+  timeout, oversized payload handling, unsupported firmware, and absence of
+  image bytes/base64 in CLI JSON or diagnostics.
+- Maintenance-separation tests prove normal CLI/MCP/Codex command groups cannot
+  reach calibration writes, raw hardware controls, NVS import/export, or
+  maintenance unlocks.
+- Raw sensor command tests cover stale telemetry, saturated sensors, missing
+  calibration, NaN-to-null conversion, and per-device separation.
+- Face/LED tests cover unknown expression/pattern, timeout, idempotency,
+  no unbounded queue growth, `HIGH` preempt behavior, and external `SAFETY`
+  rejection.
 
 Required for MCP stdio changes:
 
@@ -51,6 +65,12 @@ Required for MCP stdio changes:
 - Bridge fake-client tests that preserve the same command/result shape as the mock backend.
 - Event observation tools preserve the same `events`/`cursor` shape as CLI JSON
   and return empty event lists as tool results, not MCP errors.
+- MCP tools must not return PCM payloads, speech text, transcript text, image
+  bytes/base64, raw NFC tag IDs, raw IR codes, or protocol dumps unless a
+  separate explicit local diagnostic contract exists.
+- MCP must not expose unbounded raw telemetry streams unless a separate
+  streaming MCP contract exists; prefer bounded request/response tools and
+  existing event/status tools.
 
 ### ROS 2 Interfaces
 
@@ -67,9 +87,15 @@ Required for message, service, or action changes:
 - Event contracts document `/stackchan/<device_id>/device/events`,
   `/stackchan/<device_id>/events`, event query services, ownership, fields,
   bounded payload rules, and event taxonomy.
+- Event contracts document redacted/reference handling for NFC/IR identifiers
+  and keep IR transmit command behavior out of receive/event-only contracts
+  unless a separate `/cmd/ir/...` design exists.
 - Sensor and power telemetry contracts document bounded messages, public and
   device-side topic names, low-rate baselines, QoS, stale/error semantics, and
   that raw telemetry is not added to `/status`.
+- Audio/camera contracts document resource names, action result/feedback,
+  payload/chunk bounds, privacy/redaction rules, and how oversize/malformed
+  payloads map to structured errors.
 
 ### stackchan_bridge
 
@@ -81,6 +107,8 @@ Required for bridge event changes:
   events, duplicate/debounce behavior, and unknown/disconnected/conflict events.
 - Redaction tests cover speech transcripts, image/audio payloads, and NFC tag
   IDs in normal logs.
+- Redaction tests cover raw IR codes and protocol dumps, firmware/bridge
+  diagnostic paths, and public event payloads.
 - Transcript store tests cover memory-only behavior, lookup by `utterance_id`,
   and default 10 minute TTL expiry.
 - Speech processing tests cover 20 ms chunk to 10 ms frame splitting, VAD
@@ -90,6 +118,14 @@ Required for bridge event changes:
   behavior.
 - Power telemetry tests cover latest snapshot storage, stale detection, public
   topic naming, and `device_id` preservation while relaying telemetry.
+- Audio routing tests cover command_id/direction separation, no per-chunk ACK
+  assumption, overrun/underrun mapping, same-direction `FIRMWARE_BUSY`, and
+  bounded queue behavior.
+- Camera routing tests cover metadata-only command results, oversize discard,
+  timeout/failure propagation, and no image bytes in public observations.
+- `perform` remains reserved unless implemented; if implemented, bridge tests
+  cover cancel, preempt, timeout, partial failure, per-step result aggregation,
+  and prohibition on maintenance/calibration steps.
 
 ### Firmware
 
@@ -102,6 +138,9 @@ Required for firmware changes:
 - Safety limits remain firmware-owned.
 - Calibration storage remains firmware NVS unless a documented decision changes it.
 - Disconnect, audio underrun, mic overrun, camera failure, NFC failure, and servo/safety failure behavior remains documented.
+- Calibration NVS behavior covers schema version, checksum/corruption
+  detection, atomic write or rollback, reset-to-default, and missing/corrupted
+  calibration rejection.
 - Any change touching hardware control preserves resource arbitration order:
 
 ```text
@@ -113,6 +152,12 @@ safety > motion stop/neutral > audio capture/playback > command handling > camer
 - Touch, proximity, light, remote/IR, and power event additions include
   hardware-free contract tests for event names, bounded payloads, non-blocking
   queue behavior, and safe defaults when hardware is unavailable.
+- Audio, camera, raw sensor, face, and LED adapters include bounded queues or
+  callback budgets proving they cannot block safety, fault handling, or
+  motion-neutral work.
+- Firmware normal diagnostics must not print raw `payload_json`, PCM payloads,
+  image bytes, raw NFC tag IDs, raw IR codes, or protocol dumps outside an
+  explicit local maintenance/debug mode.
 
 ### Codex Skill
 
@@ -124,6 +169,9 @@ Required for skill changes:
 - Event-policy behavior treats events as observations rather than direct
   commands, fetches transcripts explicitly after `transcript_ready`, and avoids
   noisy responses to repeated low-value events.
+- Skill validation proves routine cues never call maintenance commands, raw
+  hardware controls, calibration writes, raw telemetry streams, or undocumented
+  face/LED names.
 
 ### Rust Companion Workers
 
@@ -171,7 +219,8 @@ Manual hardware checks should cover:
 - LED command behavior.
 - Audio playback and capture.
 - Camera snapshot.
-- NFC tag event reporting.
+- NFC/IR/remote event reporting with redacted/reference identifiers in normal
+  output.
 - IMU raw stream and high-level events.
 - Disconnect and reconnect behavior.
 - Device event publishing for button, IMU, NFC, audio overrun/underrun, and
