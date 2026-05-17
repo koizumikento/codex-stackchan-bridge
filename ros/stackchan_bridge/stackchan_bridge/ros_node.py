@@ -9,7 +9,8 @@ from stackchan_bridge.event_aggregator import EventAggregator
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
 from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import CommandMeta, Result
-from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
+from stackchan_bridge.models import PRIORITY_SAFETY
+from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
 from stackchan_bridge.speech_node import SpeechEvent, SpeechSessionProcessor
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
 from stackchan_bridge.telemetry import HeadPoseSnapshot, HeadPoseTelemetryStore, PowerStatusSnapshot, PowerTelemetryStore
@@ -65,6 +66,32 @@ def _copy_status(response: object, status: object) -> None:
     response.motion = status.motion
     response.last_command_id = status.last_command_id
     _copy_result(response.last_error, status.last_error)
+
+
+def _reject_external_safety_priority(meta: CommandMeta, response: object) -> bool:
+    if meta.priority != PRIORITY_SAFETY:
+        return False
+
+    result = Result.rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for bridge and firmware internals.",
+    )
+    if hasattr(response, "result"):
+        _copy_result(response.result, result)
+    elif hasattr(response, "last_error"):
+        _copy_result(response.last_error, result)
+
+    if hasattr(response, "events"):
+        response.events = []
+    if hasattr(response, "cursor"):
+        response.cursor = ""
+    if hasattr(response, "stale"):
+        response.stale = False
+    if hasattr(response, "transcript"):
+        response.transcript = ""
+    if hasattr(response, "confidence"):
+        response.confidence = 0.0
+    return True
 
 
 def _stamp_to_seconds(stamp: object) -> float | None:
@@ -515,6 +542,17 @@ def main(args: list[str] | None = None) -> None:
             response: object,
         ) -> object:
             meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                response.device_id = meta.device_id
+                response.connected = (
+                    self.facade.registry.availability(meta.device_id)
+                    == DeviceAvailability.AVAILABLE
+                )
+                response.state = "rejected"
+                response.face = ""
+                response.motion = ""
+                response.last_command_id = meta.command_id
+                return response
             status_response = self.facade.get_status(
                 meta.device_id,
                 command_id=meta.command_id,
@@ -542,6 +580,9 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                return response
             limit = max(0, min(int(request.limit), 32))
             records = self.event_buffer.records(device_id)
             records = _records_after_event_id(records, getattr(request, "since_event_id", ""))
@@ -558,6 +599,8 @@ def main(args: list[str] | None = None) -> None:
             response: object,
         ) -> object:
             meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                return response
             consumer_id = getattr(request, "consumer_id", "") or meta.source or "stackchanctl"
             after_event_id = getattr(request, "after_event_id", "")
             if after_event_id:
@@ -585,6 +628,8 @@ def main(args: list[str] | None = None) -> None:
             response: object,
         ) -> object:
             meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                return response
             consumer_id = getattr(request, "consumer_id", "") or meta.source or "stackchanctl"
             self.event_buffer.clear_cursor(consumer_id, device_id)
             _copy_result(response.result, Result.completed("event cursor cleared"))
@@ -597,6 +642,10 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                response.utterance_id = getattr(request, "utterance_id", "")
+                return response
             utterance_id = getattr(request, "utterance_id", "")
             transcript = self.transcript_store.get(device_id, utterance_id)
             if transcript is None:
@@ -621,7 +670,9 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
-            del request
+            meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                return response
             snapshot, stale = self.power_store.get(device_id)
             if snapshot is None:
                 _copy_result(
@@ -655,6 +706,8 @@ def main(args: list[str] | None = None) -> None:
             response: object,
         ) -> object:
             meta = _meta_from_ros(request.meta, device_id)
+            if _reject_external_safety_priority(meta, response):
+                return response
             status_response = self.facade.get_status(
                 meta.device_id,
                 command_id=meta.command_id,
