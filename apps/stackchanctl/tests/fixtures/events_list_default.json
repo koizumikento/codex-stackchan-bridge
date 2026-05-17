@@ -1,5 +1,13 @@
 {
   "device_id": "default",
+  "command_id": "cmd-test-0001",
+  "metadata": {
+    "device_id": "default",
+    "command_id": "cmd-test-0001",
+    "source": "human_cli",
+    "created_at": "2026-05-16T00:00:00Z",
+    "priority": "NORMAL"
+  },
   "events": [
     {
       "command_id": null,

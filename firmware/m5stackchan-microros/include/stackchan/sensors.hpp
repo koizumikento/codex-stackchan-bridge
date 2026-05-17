@@ -72,6 +72,11 @@ inline Result nfc_read_failed(
   return Result::rejected("NFC_READ_FAILED", "NFC read failed", true);
 }
 
+enum class NfcReadStatus : uint8_t {
+  Ok,
+  ReadFailed,
+};
+
 class ButtonEventEstimator {
  public:
   Result update(
@@ -120,8 +125,14 @@ class NfcPresenceEstimator {
       bool present,
       const char* tag_id,
       uint32_t now_ms,
-      EventPublisher& events) {
+      EventPublisher& events,
+      NfcReadStatus read_status = NfcReadStatus::Ok) {
     const char* safe_tag_id = tag_id == nullptr ? "" : tag_id;
+    if (present &&
+        (read_status == NfcReadStatus::ReadFailed || safe_tag_id[0] == '\0')) {
+      return nfc_read_failed(events, now_ms);
+    }
+
     if (present && (!present_ || strcmp(safe_tag_id, last_tag_id_) != 0)) {
       present_ = true;
       copy_event_string(last_tag_id_, sizeof(last_tag_id_), safe_tag_id);

@@ -408,7 +408,7 @@ class RclpyBridgeClient:
         request.since_event_id = since_event_id or ""
         client = self._service_client(self._list_events_type, meta.device_id, "events/list", timeout)
         response = self._call_service(client, request, timeout)
-        return _event_list_from_ros(meta.device_id, response.result, response.events, response.cursor)
+        return _event_list_from_ros(meta, response.result, response.events, response.cursor)
 
     def next_event(
         self,
@@ -423,7 +423,7 @@ class RclpyBridgeClient:
         request.timeout_ms = _timeout_ms(timeout)
         client = self._service_client(self._next_event_type, meta.device_id, "events/next", timeout)
         response = self._call_service(client, request, timeout)
-        return _event_list_from_ros(meta.device_id, response.result, response.events, response.cursor)
+        return _event_list_from_ros(meta, response.result, response.events, response.cursor)
 
     def clear_events(
         self, meta: CommandMeta, consumer_id: str, timeout: float
@@ -438,6 +438,7 @@ class RclpyBridgeClient:
             device_id=meta.device_id,
             events=[],
             cursor=response.cursor or None,
+            meta=meta,
             error=_error_from_ros(response.result),
         )
 
@@ -456,6 +457,7 @@ class RclpyBridgeClient:
             transcript=response.transcript if response.transcript else None,
             confidence=float(response.confidence),
             expires_at=_stamp_to_iso(response.expires_at),
+            meta=meta,
             error=_error_from_ros(response.result),
         )
 
@@ -573,13 +575,14 @@ def _unsupported_media(feature: str) -> BridgeCommandResponse:
     )
 
 
-def _event_list_from_ros(device_id: str, result, events, cursor: str) -> EventListResult:
+def _event_list_from_ros(meta: CommandMeta, result, events, cursor: str) -> EventListResult:
     return EventListResult(
         ok=bool(result.ok),
         result_state=_state_from_ros(int(result.state)),
-        device_id=device_id,
+        device_id=meta.device_id,
         events=[_event_from_ros(event) for event in events],
         cursor=cursor or None,
+        meta=meta,
         error=_error_from_ros(result),
     )
 
@@ -705,11 +708,12 @@ def _error_result(
     }:
         return EventListResult(
             ok=False,
-            result_state=result_state,
-            device_id=request.meta.device_id,
-            events=[],
-            error=error,
-        )
+        result_state=result_state,
+        device_id=request.meta.device_id,
+        events=[],
+        meta=request.meta,
+        error=error,
+    )
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
         return TranscriptResult(
             ok=False,
@@ -719,6 +723,7 @@ def _error_result(
             transcript=None,
             confidence=None,
             expires_at=None,
+            meta=request.meta,
             error=error,
         )
     return CommandResult(

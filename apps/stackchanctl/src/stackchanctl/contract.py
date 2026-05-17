@@ -147,6 +147,7 @@ class EventListResult:
     device_id: str
     events: list[Event]
     cursor: str | None = None
+    meta: CommandMeta | None = None
     error: ErrorDetail | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -154,6 +155,8 @@ class EventListResult:
             "ok": self.ok,
             "result_state": self.result_state.value,
             "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
             "events": [event.to_dict() for event in self.events],
             "cursor": self.cursor,
         }
@@ -171,6 +174,7 @@ class TranscriptResult:
     transcript: str | None
     confidence: float | None
     expires_at: str | None
+    meta: CommandMeta | None = None
     error: ErrorDetail | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -178,6 +182,8 @@ class TranscriptResult:
             "ok": self.ok,
             "result_state": self.result_state.value,
             "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
             "utterance_id": self.utterance_id,
             "transcript": self.transcript,
             "confidence": self.confidence,

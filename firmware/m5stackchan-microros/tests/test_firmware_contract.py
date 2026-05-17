@@ -68,6 +68,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("update_agent_connection(false)", main)
         self.assertIn("copy_bounded", main)
         self.assertIn("stackchan::EventPublisher event_publisher", main)
+        self.assertIn("event_publisher.set_callback", main)
+        self.assertIn("drain_device_events", main)
+        self.assertIn("kEventDrainBudget", main)
         self.assertIn("kDeviceEventsTopicSuffix", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
@@ -97,6 +100,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kCameraMaxPayloadBytes = 98304", sensors)
         self.assertIn('"CAMERA_CAPTURE_FAILED"', sensors)
         self.assertIn('"NFC_READ_FAILED"', sensors)
+        self.assertIn("enum class NfcReadStatus", sensors)
+        self.assertIn("NfcReadStatus::ReadFailed", sensors)
         self.assertIn("kButtonDebounceMs = 30", sensors)
         self.assertIn("kButtonHeldMs = 700", sensors)
         self.assertIn("ButtonEventEstimator", sensors)

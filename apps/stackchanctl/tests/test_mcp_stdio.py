@@ -270,6 +270,38 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(structured["device_id"], "default")
         self.assertEqual(len(structured["events"]), 1)
         self.assertEqual(structured["events"][0]["device_id"], "default")
+        self.assertEqual(structured["command_id"], "cmd-test-0001")
+
+    def test_events_next_tool_empty_after_cursor_exhaustion_is_ok(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "first",
+                    "method": "tools/call",
+                    "params": {"name": "events_next", "arguments": {}},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "second",
+                    "method": "tools/call",
+                    "params": {"name": "events_next", "arguments": {}},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "third",
+                    "method": "tools/call",
+                    "params": {"name": "events_next", "arguments": {}},
+                },
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[2]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["events"], [])
+        self.assertIsNone(structured["cursor"])
 
     def test_events_clear_then_list_tool_empty_events_are_ok(self) -> None:
         code, responses, stderr = run_mcp(

@@ -28,6 +28,7 @@ unsigned long last_agent_attempt_ms = 0;
 bool microros_connected = false;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
 stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
+constexpr size_t kEventDrainBudget = 2;
 
 void copy_bounded(char* destination, size_t size, const char* source) {
   if (size == 0) {
@@ -66,12 +67,41 @@ bool check_microros_agent_connection() {
   return microros_connected;
 }
 
+bool publish_device_event_ros(const stackchan::DeviceEvent& event, void*) {
+  if (!microros_connected) {
+    return false;
+  }
+
+  // TODO: replace this diagnostic path with rcl_publish() for
+  // /stackchan/<device_id>/device/events after support/node setup lands.
+  Serial.print("stackchan event device_id=");
+  Serial.print(event.device_id);
+  Serial.print(" name=");
+  Serial.print(event.event_name);
+  Serial.print(" source=");
+  Serial.print(event.source);
+  Serial.print(" payload=");
+  Serial.println(event.payload_json);
+  return true;
+}
+
 void update_agent_connection(bool connected) {
   microros_connected = connected;
   if (connected) {
     state_machine.agent_connected();
   } else {
     state_machine.agent_disconnected();
+  }
+}
+
+void drain_device_events() {
+  if (!microros_connected || event_publisher.queued_count() == 0) {
+    return;
+  }
+
+  const stackchan::Result result = event_publisher.drain(kEventDrainBudget);
+  if (!result.ok && strcmp(result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+    last_error = result;
   }
 }
 
@@ -170,6 +200,7 @@ void publish_status_heartbeat() {
 
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+  event_publisher.set_callback(publish_device_event_ros);
   show_neutral_face();
   state_machine.booted();
 }
@@ -189,5 +220,6 @@ void loop() {
   }
 
   // TODO: spin micro-ROS executor and dispatch generated stackchan_msgs handlers.
+  drain_device_events();
   delay(10);
 }

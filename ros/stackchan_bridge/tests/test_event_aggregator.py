@@ -53,6 +53,26 @@ class EventAggregatorTests(unittest.TestCase):
         )
         self.assertEqual(len(buffer.records("desk")), 1)
 
+    def test_debounce_fingerprints_expire_and_are_bounded(self) -> None:
+        clock = MutableClock(100.0)
+        aggregator = EventAggregator(
+            EventBuffer(clock=clock),
+            debounce_seconds=1.0,
+            max_debounce_entries=2,
+            clock=clock,
+        )
+
+        aggregator.add("default", "picked_up", payload={"index": 1})
+        aggregator.add("default", "picked_up", payload={"index": 2})
+        aggregator.add("default", "picked_up", payload={"index": 3})
+
+        self.assertLessEqual(len(aggregator._last_emit), 2)
+
+        clock.now = 101.0
+        aggregator.add("default", "picked_up", payload={"index": 4})
+
+        self.assertEqual(len(aggregator._last_emit), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

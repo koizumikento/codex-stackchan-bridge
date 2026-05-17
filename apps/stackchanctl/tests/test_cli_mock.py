@@ -172,6 +172,20 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(payload["events"][0]["event_id"], "mock-event-0001")
         self.assertEqual(payload["events"][0]["source"], "firmware")
         self.assertEqual(payload["cursor"], "mock-event-0001")
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+        self.assertEqual(payload["metadata"]["source"], "human_cli")
+
+    def test_events_next_mock_json_empty_after_last_event_is_ok(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["events", "next", "--after", "mock-event-0002", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["events"], [])
+        self.assertIsNone(payload["cursor"])
 
     def test_events_tail_mock_json_uses_count(self) -> None:
         code, stdout, stderr = run_stackchanctl(
@@ -208,6 +222,20 @@ class MockCliTests(unittest.TestCase):
             (ROOT / "tests" / "fixtures" / "speech_transcript_default.json").read_text()
         )
         self.assertEqual(json.loads(stdout), expected)
+
+    def test_speech_transcript_missing_json_is_structured_error(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["speech", "transcript", "missing", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+        self.assertEqual(payload["error"]["code"], "TRANSCRIPT_NOT_FOUND")
 
     def test_camera_quality_failure_is_recoverable(self) -> None:
         code, stdout, stderr = run_stackchanctl(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 from typing import Any
 
@@ -81,6 +82,7 @@ class MockBackend:
             device_id=request.meta.device_id,
             events=selected,
             cursor=_cursor_for(selected),
+            meta=request.meta,
         )
 
     def _next_event(self, request: CommandRequest) -> EventListResult:
@@ -99,6 +101,7 @@ class MockBackend:
                 device_id=request.meta.device_id,
                 events=[],
                 cursor=None,
+                meta=request.meta,
             )
         event = candidates[0]
         consumer_id = str(request.args.get("consumer_id") or request.meta.source)
@@ -109,6 +112,7 @@ class MockBackend:
             device_id=request.meta.device_id,
             events=[event],
             cursor=event.event_id,
+            meta=request.meta,
         )
 
     def _clear_events(self, request: CommandRequest) -> EventListResult:
@@ -120,6 +124,7 @@ class MockBackend:
             device_id=request.meta.device_id,
             events=[],
             cursor=None,
+            meta=request.meta,
         )
 
     def _get_transcript(self, request: CommandRequest) -> TranscriptResult:
@@ -137,13 +142,14 @@ class MockBackend:
                 transcript=None,
                 confidence=None,
                 expires_at=None,
+                meta=request.meta,
                 error=ErrorDetail(
                     code="TRANSCRIPT_NOT_FOUND",
                     message=f"transcript {utterance_id!r} was not found",
                     recoverable=False,
                 ),
             )
-        return transcript
+        return replace(transcript, meta=request.meta)
 
     def _events_for(self, device_id: str) -> list[Event]:
         if device_id not in self._events_by_device:
@@ -180,6 +186,7 @@ class MockBackend:
                     transcript="mock transcript",
                     confidence=1.0,
                     expires_at="2026-05-16T00:10:02Z",
+                    meta=None,
                 )
             }
         return self._transcripts_by_device[device_id]
@@ -327,6 +334,7 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
             result_state=ResultState.REJECTED,
             device_id=request.meta.device_id,
             events=[],
+            meta=request.meta,
             error=error,
         )
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
@@ -338,6 +346,7 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
             transcript=None,
             confidence=None,
             expires_at=None,
+            meta=request.meta,
             error=error,
         )
     return CommandResult(
@@ -365,6 +374,7 @@ def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult 
             result_state=ResultState.TIMEOUT,
             device_id=request.meta.device_id,
             events=[],
+            meta=request.meta,
             error=error,
         )
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
@@ -376,6 +386,7 @@ def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult 
             transcript=None,
             confidence=None,
             expires_at=None,
+            meta=request.meta,
             error=error,
         )
     return CommandResult(

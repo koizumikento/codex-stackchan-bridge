@@ -56,6 +56,40 @@ STACKCHAN_EVENT_FIELDS = [
     "string<=256 payload_json",
 ]
 
+SERVICE_FIELDS = {
+    "ListEvents.srv": [
+        "uint8 MAX_EVENTS=32",
+        "uint8 limit",
+        "string<=36 since_event_id",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/StackChanEvent[<=32] events",
+        "string<=36 cursor",
+    ],
+    "NextEvent.srv": [
+        "uint8 MAX_EVENTS=1",
+        "string<=64 consumer_id",
+        "string<=36 after_event_id",
+        "uint32 timeout_ms",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/StackChanEvent[<=1] events",
+        "string<=36 cursor",
+    ],
+    "ClearEventCursor.srv": [
+        "string<=64 consumer_id",
+        "stackchan_msgs/Result result",
+        "string<=36 cursor",
+    ],
+    "GetTranscript.srv": [
+        "uint16 MAX_TRANSCRIPT_CHARS=2048",
+        "string<=64 utterance_id",
+        "stackchan_msgs/Result result",
+        "string<=64 utterance_id",
+        "string<=2048 transcript",
+        "float32 confidence",
+        "builtin_interfaces/Time expires_at",
+    ],
+}
+
 
 def main() -> int:
     cmake = (MSGS / "CMakeLists.txt").read_text()
@@ -76,19 +110,10 @@ def main() -> int:
     for field in STACKCHAN_EVENT_FIELDS:
         require(field in event, f"StackChanEvent missing {field}")
 
-    list_events = (MSGS / "srv" / "ListEvents.srv").read_text()
-    require("uint8 MAX_EVENTS=32" in list_events, "ListEvents missing MAX_EVENTS")
-    require("stackchan_msgs/StackChanEvent[<=32] events" in list_events, "ListEvents events bound drifted")
-
-    next_event = (MSGS / "srv" / "NextEvent.srv").read_text()
-    require("string<=64 consumer_id" in next_event, "NextEvent missing consumer_id")
-    require("stackchan_msgs/StackChanEvent[<=1] events" in next_event, "NextEvent events bound drifted")
-
-    clear_cursor = (MSGS / "srv" / "ClearEventCursor.srv").read_text()
-    require("string<=64 consumer_id" in clear_cursor, "ClearEventCursor missing consumer_id")
-
-    transcript = (MSGS / "srv" / "GetTranscript.srv").read_text()
-    require("string<=2048 transcript" in transcript, "GetTranscript transcript bound drifted")
+    for service_name, fields in SERVICE_FIELDS.items():
+        text = (MSGS / "srv" / service_name).read_text()
+        for field in fields:
+            require(field in text, f"{service_name} missing {field}")
 
     for action in (MSGS / "action").glob("*.action"):
         text = action.read_text()

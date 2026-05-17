@@ -96,6 +96,32 @@ class EventBufferTests(unittest.TestCase):
             {"truncated": True, "reason": "payload_json_exceeds_256_bytes"},
         )
 
+    def test_consumer_cursors_are_bounded_and_expire(self) -> None:
+        now = 10.0
+        buffer = EventBuffer(
+            maxlen=4,
+            max_cursors=2,
+            cursor_ttl_seconds=5.0,
+            clock=lambda: now,
+        )
+        buffer.append("default", "one")
+
+        buffer.read("default", "first")
+        buffer.read("default", "second")
+        buffer.read("default", "third")
+
+        self.assertIsNone(buffer.cursor_sequence("first", "default"))
+        self.assertEqual(buffer.cursor_sequence("second", "default"), 1)
+        self.assertEqual(buffer.cursor_sequence("third", "default"), 1)
+
+        now = 16.0
+        buffer.append("default", "two")
+        buffer.read("default", "fourth")
+
+        self.assertIsNone(buffer.cursor_sequence("second", "default"))
+        self.assertIsNone(buffer.cursor_sequence("third", "default"))
+        self.assertEqual(buffer.cursor_sequence("fourth", "default"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,12 +30,16 @@ class EventAggregator:
         buffer: EventBuffer | None = None,
         *,
         debounce_seconds: float = 0.25,
+        max_debounce_entries: int = 256,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if debounce_seconds < 0:
             raise ValueError("debounce_seconds must be non-negative")
+        if max_debounce_entries < 1:
+            raise ValueError("max_debounce_entries must be at least 1")
         self.buffer = buffer or EventBuffer()
         self.debounce_seconds = debounce_seconds
+        self.max_debounce_entries = max_debounce_entries
         self._clock = clock
         self._last_emit: dict[tuple[str, str, str, str], float] = {}
 
@@ -58,6 +62,7 @@ class EventAggregator:
         normalized_name = normalize_event_name(event_name)
         normalized_payload = normalize_payload(payload)
         now = self._clock()
+        self._prune_debounce(now)
         fingerprint = _fingerprint(normalized_payload)
         debounce_key = (device_id, normalized_name, command_id, fingerprint)
         last_emit = self._last_emit.get(debounce_key)
@@ -65,6 +70,7 @@ class EventAggregator:
             return None
 
         self._last_emit[debounce_key] = now
+        self._reserve_debounce_slot()
         return self.buffer.append(
             device_id,
             normalized_name,
@@ -74,6 +80,24 @@ class EventAggregator:
             payload=normalized_payload,
             stamp=stamp,
         )
+
+    def _prune_debounce(self, now: float) -> None:
+        if self.debounce_seconds == 0:
+            self._last_emit.clear()
+            return
+
+        expired = tuple(
+            key
+            for key, last_emit in self._last_emit.items()
+            if now - last_emit >= self.debounce_seconds
+        )
+        for key in expired:
+            self._last_emit.pop(key, None)
+
+    def _reserve_debounce_slot(self) -> None:
+        while len(self._last_emit) > self.max_debounce_entries:
+            oldest = min(self._last_emit, key=self._last_emit.__getitem__)
+            self._last_emit.pop(oldest, None)
 
 
 def normalize_event_name(event_name: str) -> str:
