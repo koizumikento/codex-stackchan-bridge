@@ -158,7 +158,20 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "stackchanctl")
         tool_names = {tool["name"] for tool in responses[1]["result"]["tools"]}
-        self.assertEqual(tool_names, {"say", "face", "motion", "led", "observe"})
+        self.assertEqual(
+            tool_names,
+            {
+                "say",
+                "face",
+                "motion",
+                "led",
+                "observe",
+                "events_list",
+                "events_next",
+                "events_clear",
+                "speech_get_transcript",
+            },
+        )
         for tool in responses[1]["result"]["tools"]:
             self.assertEqual(tool["inputSchema"]["properties"]["priority"]["enum"], ["LOW", "NORMAL", "HIGH"])
 
@@ -237,6 +250,77 @@ class McpStdioTests(unittest.TestCase):
         structured = responses[0]["result"]["structuredContent"]
         self.assertEqual(structured["device_id"], "default")
         self.assertEqual(structured["device_state"], "idle")
+
+    def test_events_next_tool_returns_event_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-1",
+                    "method": "tools/call",
+                    "params": {"name": "events_next", "arguments": {}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["device_id"], "default")
+        self.assertEqual(len(structured["events"]), 1)
+        self.assertEqual(structured["events"][0]["device_id"], "default")
+
+    def test_events_clear_then_list_tool_empty_events_are_ok(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "clear",
+                    "method": "tools/call",
+                    "params": {"name": "events_clear", "arguments": {}},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "list",
+                    "method": "tools/call",
+                    "params": {"name": "events_list", "arguments": {}},
+                },
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        cleared = responses[0]["result"]["structuredContent"]
+        listed = responses[1]["result"]["structuredContent"]
+        self.assertTrue(cleared["ok"])
+        self.assertEqual(cleared["device_id"], "default")
+        self.assertEqual(cleared["events"], [])
+        self.assertIsNone(cleared["cursor"])
+        self.assertTrue(listed["ok"])
+        self.assertEqual(listed["device_id"], "default")
+        self.assertEqual(len(listed["events"]), 2)
+
+    def test_speech_get_transcript_tool_returns_transcript_shape(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-1",
+                    "method": "tools/call",
+                    "params": {"name": "speech_get_transcript", "arguments": {}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["device_id"], "default")
+        self.assertEqual(structured["utterance_id"], "mock-utt-001")
+        self.assertEqual(structured["transcript"], "mock transcript")
+        self.assertEqual(structured["confidence"], 1.0)
 
     def test_safety_priority_is_tool_result_not_protocol_error(self) -> None:
         code, responses, stderr = run_mcp(

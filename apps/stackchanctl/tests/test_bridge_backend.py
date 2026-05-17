@@ -22,7 +22,13 @@ from stackchanctl.backends.bridge import (  # noqa: E402
 )
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
-from stackchanctl.contract import DeviceStatus, ErrorDetail, ResultState  # noqa: E402
+from stackchanctl.contract import (  # noqa: E402
+    DeviceStatus,
+    ErrorDetail,
+    EventListResult,
+    ResultState,
+    TranscriptResult,
+)
 
 
 FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
@@ -87,6 +93,32 @@ class FakeBridgeClient:
     ) -> BridgeCommandResponse:
         return self._unsupported_media()
 
+    def list_events(self, meta, limit: int, timeout: float) -> EventListResult:
+        return self._unsupported_events(meta.device_id)
+
+    def next_event(self, meta, timeout: float) -> EventListResult:
+        return self._unsupported_events(meta.device_id)
+
+    def clear_events(self, meta, timeout: float) -> EventListResult:
+        return self._unsupported_events(meta.device_id)
+
+    def get_transcript(
+        self, meta, utterance_id: str | None, timeout: float
+    ) -> TranscriptResult:
+        return TranscriptResult(
+            ok=False,
+            device_id=meta.device_id,
+            utterance_id=utterance_id,
+            transcript=None,
+            confidence=None,
+            expires_at=None,
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="bridge facade does not implement transcripts yet",
+                recoverable=False,
+            ),
+        )
+
     @staticmethod
     def _accepted() -> BridgeCommandResponse:
         return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
@@ -99,6 +131,19 @@ class FakeBridgeClient:
             error=ErrorDetail(
                 code="UNSUPPORTED_FEATURE",
                 message="bridge facade does not implement media transport yet",
+                recoverable=False,
+            ),
+        )
+
+    @staticmethod
+    def _unsupported_events(device_id: str) -> EventListResult:
+        return EventListResult(
+            ok=False,
+            device_id=device_id,
+            events=[],
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="bridge facade does not implement event buffer yet",
                 recoverable=False,
             ),
         )
@@ -257,6 +302,41 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "camera.capture")
         self.assertEqual(payload["command"]["quality"], 80)
+
+    def test_bridge_events_list_is_unsupported_until_service_exists(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "events", "list", "--json"],
+            FakeBridgeClient(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["device_id"], "default")
+        self.assertEqual(payload["events"], [])
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+
+    def test_bridge_speech_transcript_is_unsupported_until_service_exists(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "speech",
+                "transcript",
+                "u-1",
+                "--json",
+            ],
+            FakeBridgeClient(),
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["device_id"], "default")
+        self.assertEqual(payload["utterance_id"], "u-1")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
 
     def test_non_wait_action_normalizes_success_after_facade_validation(self) -> None:
         response = _normalize_action_response(

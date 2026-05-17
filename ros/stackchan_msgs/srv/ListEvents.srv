@@ -1,0 +1,8 @@
+uint8 MAX_EVENTS=32
+
+uint8 limit
+string<=36 since_event_id
+---
+stackchan_msgs/Result result
+stackchan_msgs/StackChanEvent[<=32] events
+string<=36 cursor

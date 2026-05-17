@@ -26,6 +26,10 @@ class CommandType(StrEnum):
     MOTION = "motion"
     LED = "led"
     OBSERVE = "observe"
+    EVENTS_LIST = "events-list"
+    EVENTS_NEXT = "events-next"
+    EVENTS_CLEAR = "events-clear"
+    SPEECH_TRANSCRIPT = "speech-transcript"
     AUDIO_PLAY = "audio-play"
     AUDIO_CAPTURE = "audio-capture"
     CAMERA_CAPTURE = "camera-capture"
@@ -112,6 +116,72 @@ class DeviceStatus:
             "face": self.face,
             "last_error": None if self.last_error is None else self.last_error.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class Event:
+    event_id: str
+    device_id: str
+    event_name: str
+    source: str
+    stamp: str
+    command_id: str | None = None
+    payload: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "device_id": self.device_id,
+            "event_name": self.event_name,
+            "source": self.source,
+            "stamp": self.stamp,
+            "command_id": self.command_id,
+            "payload": self.payload or {},
+        }
+
+
+@dataclass(frozen=True)
+class EventListResult:
+    ok: bool
+    device_id: str
+    events: list[Event]
+    cursor: str | None = None
+    error: ErrorDetail | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "device_id": self.device_id,
+            "events": [event.to_dict() for event in self.events],
+            "cursor": self.cursor,
+        }
+        if self.error is not None:
+            payload["error"] = self.error.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class TranscriptResult:
+    ok: bool
+    device_id: str
+    utterance_id: str | None
+    transcript: str | None
+    confidence: float | None
+    expires_at: str | None
+    error: ErrorDetail | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "device_id": self.device_id,
+            "utterance_id": self.utterance_id,
+            "transcript": self.transcript,
+            "confidence": self.confidence,
+            "expires_at": self.expires_at,
+        }
+        if self.error is not None:
+            payload["error"] = self.error.to_dict()
+        return payload
 
 
 def utc_timestamp(now: datetime | None = None) -> str:

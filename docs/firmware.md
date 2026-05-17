@@ -304,8 +304,39 @@ Raw IMU should be supported as a separate stream from high-level events. The ini
 Baseline high-level IMU events:
 
 - `picked_up`
+- `placed_down`
 - `shaken`
 - `tilted`
+- `face_up`
+- `face_down`
+
+### Device-side event publishing
+
+Firmware publishes hardware-origin high-level events to
+`/stackchan/<device_id>/device/events`. The bridge owns the public
+`/stackchan/<device_id>/events` topic, where it normalizes, redacts, debounces,
+buffers, and republishes events for `stackchanctl`, MCP, and diagnostics.
+
+Firmware event publishers should:
+
+- bound event names and payloads before publishing
+- include `device_id`
+- include `command_id` only when an event is associated with a command
+- leave application meaning to the PC/Codex side
+- avoid putting speech transcripts, image payloads, PCM audio, or large data in
+  `payload_json`
+
+Baseline firmware event sources:
+
+- button: `button_pressed`, `button_released`, `button_held`
+- IMU/posture: `picked_up`, `placed_down`, `shaken`, `tilted`, `face_up`, `face_down`
+- NFC: `nfc_detected`, `nfc_removed`
+- audio device errors: `mic_overrun`, `audio_playback_underrun`,
+  `audio_capture_started`, `audio_capture_finished`, `audio_capture_failed`
+- device health: `camera_capture_failed`, `battery_low`, `transport_unstable`
+
+`button_held` uses a firmware-owned 700 ms default threshold. Bridge may
+coalesce repeated events, but hardware bounce belongs on the device side.
 
 ## State publishing
 

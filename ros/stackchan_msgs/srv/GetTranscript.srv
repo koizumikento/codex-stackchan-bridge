@@ -1,0 +1,9 @@
+uint16 MAX_TRANSCRIPT_CHARS=2048
+
+string<=64 utterance_id
+---
+stackchan_msgs/Result result
+string<=64 utterance_id
+string<=2048 transcript
+float32 confidence
+builtin_interfaces/Time expires_at

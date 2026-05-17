@@ -67,6 +67,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("check_microros_agent_connection", main)
         self.assertIn("update_agent_connection(false)", main)
         self.assertIn("copy_bounded", main)
+        self.assertIn("stackchan::EventPublisher event_publisher", main)
+        self.assertIn("kDeviceEventsTopicSuffix", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
@@ -78,6 +80,11 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kAudioMaxChunkBytes = 1280", audio)
         self.assertIn('"AUDIO_UNDERRUN"', audio)
         self.assertIn('"MIC_OVERRUN"', audio)
+        self.assertIn("publish_audio_underrun_event", audio)
+        self.assertIn("publish_mic_overrun_event", audio)
+        self.assertIn("AudioCaptureEvent::Started", audio)
+        self.assertIn("AudioCaptureEvent::Finished", audio)
+        self.assertIn("AudioCaptureEvent::Failed", audio)
 
     def test_sensor_policy_uses_explicit_bounds_and_errors(self) -> None:
         sensors = (ROOT / "include" / "stackchan" / "sensors.hpp").read_text()
@@ -90,6 +97,60 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kCameraMaxPayloadBytes = 98304", sensors)
         self.assertIn('"CAMERA_CAPTURE_FAILED"', sensors)
         self.assertIn('"NFC_READ_FAILED"', sensors)
+        self.assertIn("kButtonDebounceMs = 30", sensors)
+        self.assertIn("kButtonHeldMs = 700", sensors)
+        self.assertIn("ButtonEventEstimator", sensors)
+        self.assertIn("NfcPresenceEstimator", sensors)
+        self.assertIn("ImuEventEstimator", sensors)
+        self.assertIn("DeviceEventKind::PickedUp", sensors)
+        self.assertIn("DeviceEventKind::PlacedDown", sensors)
+        self.assertIn("DeviceEventKind::Shaken", sensors)
+        self.assertIn("DeviceEventKind::Tilted", sensors)
+        self.assertIn("DeviceEventKind::FaceUp", sensors)
+        self.assertIn("DeviceEventKind::FaceDown", sensors)
+
+    def test_device_event_contract_scaffold_names_and_bounds(self) -> None:
+        events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
+
+        self.assertIn("kDeviceEventsTopicSuffix = \"/device/events\"", events)
+        self.assertIn("kEventIdMaxLength = 36", events)
+        self.assertIn("kEventDeviceIdMaxLength = 32", events)
+        self.assertIn("kEventNameMaxLength = 32", events)
+        self.assertIn("kEventSourceMaxLength = 32", events)
+        self.assertIn("kFirmwareEventSource = \"firmware\"", events)
+        self.assertIn("kEventCommandIdMaxLength = 36", events)
+        self.assertIn("kEventPayloadJsonMaxLength = 256", events)
+        self.assertIn("struct DeviceEvent", events)
+        self.assertIn("EventPublishFn", events)
+        self.assertIn("class EventPublisher", events)
+
+        for name in (
+            "button_pressed",
+            "button_released",
+            "button_held",
+            "picked_up",
+            "placed_down",
+            "shaken",
+            "tilted",
+            "face_up",
+            "face_down",
+            "nfc_detected",
+            "nfc_removed",
+            "mic_overrun",
+            "audio_playback_underrun",
+            "audio_capture_started",
+            "audio_capture_finished",
+            "audio_capture_failed",
+            "camera_capture_failed",
+            "battery_low",
+            "transport_unstable",
+        ):
+            self.assertIn(f'"{name}"', events)
+
+        self.assertIn("is_firmware_device_event_name", events)
+        self.assertIn("event_payload_json_fits", events)
+        self.assertIn('"event payload_json exceeds 256 bytes"', events)
+        self.assertIn("make_string_payload", events)
 
 
 if __name__ == "__main__":
