@@ -120,7 +120,12 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kFirmwareEventSource = \"firmware\"", events)
         self.assertIn("kEventCommandIdMaxLength = 36", events)
         self.assertIn("kEventPayloadJsonMaxLength = 256", events)
+        self.assertIn("kEventQueueCapacity = 8", events)
         self.assertIn("struct DeviceEvent", events)
+        self.assertIn("queued_count", events)
+        self.assertIn("drain", events)
+        self.assertIn('"device event queue is full"', events)
+        self.assertIn('"device event publisher callback is not configured"', events)
         self.assertIn("EventPublishFn", events)
         self.assertIn("class EventPublisher", events)
 
@@ -136,6 +141,7 @@ class FirmwareContractTests(unittest.TestCase):
             "face_down",
             "nfc_detected",
             "nfc_removed",
+            "nfc_read_failed",
             "mic_overrun",
             "audio_playback_underrun",
             "audio_capture_started",
@@ -151,6 +157,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("event_payload_json_fits", events)
         self.assertIn('"event payload_json exceeds 256 bytes"', events)
         self.assertIn("make_string_payload", events)
+        self.assertIn("kFirmwareEventSource", events)
 
 
 if __name__ == "__main__":

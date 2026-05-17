@@ -309,17 +309,18 @@ Baseline firmware/device event names:
 - `button_held`
 - `nfc_detected`
 - `nfc_removed`
+- `nfc_read_failed`
 - `mic_overrun`
 - `audio_playback_underrun`
+- `audio_capture_started`
+- `audio_capture_finished`
+- `audio_capture_failed`
 - `camera_capture_failed`
 - `battery_low`
 - `transport_unstable`
 
 Baseline bridge/PC event names:
 
-- `audio_capture_started`
-- `audio_capture_finished`
-- `audio_capture_failed`
 - `speech_detected`
 - `transcript_ready`
 - `transcript_failed`

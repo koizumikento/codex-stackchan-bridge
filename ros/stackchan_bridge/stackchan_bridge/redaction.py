@@ -12,6 +12,7 @@ REDACTED = "<redacted>"
 
 SPEECH_TEXT_FIELDS = frozenset({"speech_text", "text", "transcript", "utterance"})
 IMAGE_FIELDS = frozenset({"image", "image_payload", "image_data", "jpeg", "frame"})
+AUDIO_FIELDS = frozenset({"audio", "audio_payload", "audio_data", "pcm", "pcm_data"})
 NFC_FIELDS = frozenset({"nfc_tag_id", "tag_id", "uid"})
 SECRET_FIELDS = frozenset(
     {
@@ -54,6 +55,8 @@ def redact_payload(
 
     if isinstance(payload, Mapping):
         return redact_fields(payload, policy=policy)
+    if isinstance(payload, bytes | bytearray):
+        return REDACTED
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
         return [redact_payload(item, policy=policy) for item in payload]
     return payload
@@ -88,6 +91,8 @@ def redact_value(
     if normalized_key in SPEECH_TEXT_FIELDS:
         return REDACTED
     if normalized_key in IMAGE_FIELDS:
+        return REDACTED
+    if normalized_key in AUDIO_FIELDS:
         return REDACTED
     if normalized_key in SECRET_FIELDS or _contains_secret_marker(normalized_key):
         return REDACTED

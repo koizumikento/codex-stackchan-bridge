@@ -15,6 +15,7 @@ constexpr size_t kEventNameMaxLength = 32;
 constexpr size_t kEventSourceMaxLength = 32;
 constexpr size_t kEventCommandIdMaxLength = 36;
 constexpr size_t kEventPayloadJsonMaxLength = 256;
+constexpr size_t kEventQueueCapacity = 8;
 constexpr const char* kDeviceEventsTopicSuffix = "/device/events";
 constexpr const char* kFirmwareEventSource = "firmware";
 
@@ -30,6 +31,7 @@ enum class DeviceEventKind : uint8_t {
   FaceDown,
   NfcDetected,
   NfcRemoved,
+  NfcReadFailed,
   MicOverrun,
   AudioPlaybackUnderrun,
   AudioCaptureStarted,
@@ -76,6 +78,8 @@ inline const char* device_event_name(DeviceEventKind kind) {
       return "nfc_detected";
     case DeviceEventKind::NfcRemoved:
       return "nfc_removed";
+    case DeviceEventKind::NfcReadFailed:
+      return "nfc_read_failed";
     case DeviceEventKind::MicOverrun:
       return "mic_overrun";
     case DeviceEventKind::AudioPlaybackUnderrun:
@@ -111,6 +115,7 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "face_down") == 0 ||
          strcmp(name, "nfc_detected") == 0 ||
          strcmp(name, "nfc_removed") == 0 ||
+         strcmp(name, "nfc_read_failed") == 0 ||
          strcmp(name, "mic_overrun") == 0 ||
          strcmp(name, "audio_playback_underrun") == 0 ||
          strcmp(name, "audio_capture_started") == 0 ||
@@ -192,6 +197,31 @@ class EventPublisher {
     context_ = context;
   }
 
+  size_t queued_count() const { return count_; }
+
+  Result drain(size_t max_events = kEventQueueCapacity) {
+    if (callback_ == nullptr) {
+      return Result::rejected(
+          "TRANSPORT_DISCONNECTED",
+          "device event publisher callback is not configured",
+          true);
+    }
+
+    size_t drained = 0;
+    while (count_ > 0 && drained < max_events) {
+      if (!callback_(queue_[head_], context_)) {
+        return Result::rejected(
+            "FIRMWARE_BUSY",
+            "event publisher callback rejected the event",
+            true);
+      }
+      head_ = (head_ + 1) % kEventQueueCapacity;
+      --count_;
+      ++drained;
+    }
+    return Result::accepted("events drained");
+  }
+
   Result publish(
       DeviceEventKind kind,
       uint32_t stamp_ms,
@@ -227,12 +257,15 @@ class EventPublisher {
         sizeof(event.payload_json),
         payload_json == nullptr ? "{}" : payload_json);
 
-    if (callback_ != nullptr && !callback_(event, context_)) {
+    if (count_ >= kEventQueueCapacity) {
       return Result::rejected(
           "FIRMWARE_BUSY",
-          "event publisher callback rejected the event",
+          "device event queue is full",
           true);
     }
+    const size_t tail = (head_ + count_) % kEventQueueCapacity;
+    queue_[tail] = event;
+    ++count_;
     return Result::accepted("event accepted");
   }
 
@@ -270,6 +303,12 @@ class EventPublisher {
     return publish(DeviceEventKind::NfcRemoved, stamp_ms, "", payload);
   }
 
+  Result nfc_read_failed(uint32_t stamp_ms, const char* reason = "") {
+    char payload[kEventPayloadJsonMaxLength + 1];
+    make_string_payload(payload, sizeof(payload), "reason", reason);
+    return publish(DeviceEventKind::NfcReadFailed, stamp_ms, "", payload);
+  }
+
   Result mic_overrun(uint32_t stamp_ms, const char* command_id = "") {
     return publish(DeviceEventKind::MicOverrun, stamp_ms, command_id);
   }
@@ -298,6 +337,9 @@ class EventPublisher {
 
  private:
   char device_id_[kEventDeviceIdMaxLength + 1]{};
+  DeviceEvent queue_[kEventQueueCapacity]{};
+  size_t head_ = 0;
+  size_t count_ = 0;
   EventPublishFn callback_ = nullptr;
   void* context_ = nullptr;
 };

@@ -3,6 +3,7 @@
   "device_id": "default",
   "expires_at": "2026-05-16T00:10:02Z",
   "ok": true,
+  "result_state": "COMPLETED",
   "transcript": "mock transcript",
   "utterance_id": "mock-utt-001"
 }

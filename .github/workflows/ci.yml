@@ -58,3 +58,5 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Check firmware contracts
         run: uv run python -m unittest discover -s firmware/m5stackchan-microros/tests
+      - name: Build firmware
+        run: uv run --no-project python scripts/firmware_container.py build

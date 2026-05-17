@@ -257,8 +257,10 @@ def _build_tool_request(
         command_args = {}
     elif name == "speech_get_transcript":
         command_type = CommandType.SPEECH_TRANSCRIPT
-        utterance_id = _optional_string(arguments, "utterance_id", "")
-        command_args = {"utterance_id": utterance_id.strip() or None}
+        utterance_id = _required_string(arguments, "utterance_id").strip()
+        if not utterance_id:
+            raise ValueError("utterance_id is required")
+        command_args = {"utterance_id": utterance_id}
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"unknown tool: {name}")
 
@@ -317,6 +319,8 @@ def _optional_int(arguments: Mapping[str, Any], key: str, default: int) -> int:
         value = raw
     if value < 1:
         raise ValueError(f"{key} must be positive")
+    if key == "limit" and value > 32:
+        raise ValueError("limit must be 32 or less")
     return value
 
 
@@ -390,6 +394,7 @@ def _tool_schema(name: str) -> dict[str, Any]:
         properties["after_event_id"] = {"type": "string"}
     elif name == "speech_get_transcript":
         properties["utterance_id"] = {"type": "string"}
+        required.append("utterance_id")
 
     if name in {"say", "motion"}:
         properties["wait"] = {"type": "boolean"}

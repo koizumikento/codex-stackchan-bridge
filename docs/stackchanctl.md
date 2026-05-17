@@ -317,7 +317,8 @@ Rules:
 - `events clear` clears the consumer cursor only. It does not delete the bridge
   ring buffer.
 - `events tail --follow` is a human diagnostic command. Codex skills and MCP
-  clients should use `events next` or `events list`.
+  clients should use `events next` or `events list`. Follow mode streams
+  human-readable output and is rejected with `--json`.
 - JSON output includes `device_id`, `events`, and `cursor`.
 
 Example JSON shape:
@@ -325,6 +326,7 @@ Example JSON shape:
 ```json
 {
   "ok": true,
+  "result_state": "COMPLETED",
   "device_id": "default",
   "events": [
     {

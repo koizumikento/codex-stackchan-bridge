@@ -24,6 +24,7 @@ ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 BASELINE_AUDIO_FORMAT = "pcm_s16le"
 BASELINE_AUDIO_SAMPLE_RATE = 16000
 BASELINE_AUDIO_CHANNELS = 1
+MAX_EVENTS = 32
 
 
 class MockBackend:
@@ -31,7 +32,7 @@ class MockBackend:
 
     def __init__(self) -> None:
         self._events_by_device: dict[str, list[Event]] = {}
-        self._event_cursors_by_device: dict[str, int] = {}
+        self._event_cursors: dict[tuple[str, str], int] = {}
         self._transcripts_by_device: dict[str, dict[str, TranscriptResult]] = {}
 
     def execute(
@@ -76,6 +77,7 @@ class MockBackend:
         selected = events[-limit:]
         return EventListResult(
             ok=True,
+            result_state=ResultState.COMPLETED,
             device_id=request.meta.device_id,
             events=selected,
             cursor=_cursor_for(selected),
@@ -87,23 +89,34 @@ class MockBackend:
         if after_event_id:
             candidates = _events_after(events, str(after_event_id))
         else:
-            cursor = self._event_cursors_by_device.get(request.meta.device_id, 0)
+            consumer_id = str(request.args.get("consumer_id") or request.meta.source)
+            cursor = self._event_cursors.get((consumer_id, request.meta.device_id), 0)
             candidates = events[cursor:]
         if not candidates:
-            return EventListResult(ok=True, device_id=request.meta.device_id, events=[])
+            return EventListResult(
+                ok=True,
+                result_state=ResultState.COMPLETED,
+                device_id=request.meta.device_id,
+                events=[],
+                cursor=None,
+            )
         event = candidates[0]
-        self._event_cursors_by_device[request.meta.device_id] = events.index(event) + 1
+        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
+        self._event_cursors[(consumer_id, request.meta.device_id)] = events.index(event) + 1
         return EventListResult(
             ok=True,
+            result_state=ResultState.COMPLETED,
             device_id=request.meta.device_id,
             events=[event],
             cursor=event.event_id,
         )
 
     def _clear_events(self, request: CommandRequest) -> EventListResult:
-        self._event_cursors_by_device.pop(request.meta.device_id, None)
+        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
+        self._event_cursors.pop((consumer_id, request.meta.device_id), None)
         return EventListResult(
             ok=True,
+            result_state=ResultState.COMPLETED,
             device_id=request.meta.device_id,
             events=[],
             cursor=None,
@@ -118,6 +131,7 @@ class MockBackend:
         if transcript is None:
             return TranscriptResult(
                 ok=False,
+                result_state=ResultState.REJECTED,
                 device_id=request.meta.device_id,
                 utterance_id=str(utterance_id),
                 transcript=None,
@@ -160,6 +174,7 @@ class MockBackend:
             self._transcripts_by_device[device_id] = {
                 "mock-utt-001": TranscriptResult(
                     ok=True,
+                    result_state=ResultState.COMPLETED,
                     device_id=device_id,
                     utterance_id="mock-utt-001",
                     transcript="mock transcript",
@@ -269,10 +284,10 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
 
     if request.command_type in {CommandType.EVENTS_LIST, CommandType.EVENTS_NEXT}:
         limit = int(request.args["limit"])
-        if limit < 1:
+        if limit < 1 or limit > MAX_EVENTS:
             return ErrorDetail(
                 code="UNKNOWN_COMMAND",
-                message="events limit must be positive",
+                message="events limit must be between 1 and 32",
                 recoverable=False,
             )
 
@@ -309,6 +324,7 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
     }:
         return EventListResult(
             ok=False,
+            result_state=ResultState.REJECTED,
             device_id=request.meta.device_id,
             events=[],
             error=error,
@@ -316,6 +332,7 @@ def _rejected(request: CommandRequest, error: ErrorDetail) -> CommandResult | Ev
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
         return TranscriptResult(
             ok=False,
+            result_state=ResultState.REJECTED,
             device_id=request.meta.device_id,
             utterance_id=request.args.get("utterance_id"),
             transcript=None,
@@ -345,6 +362,7 @@ def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult 
     }:
         return EventListResult(
             ok=False,
+            result_state=ResultState.TIMEOUT,
             device_id=request.meta.device_id,
             events=[],
             error=error,
@@ -352,6 +370,7 @@ def _timeout_result(request: CommandRequest) -> CommandResult | EventListResult 
     if request.command_type is CommandType.SPEECH_TRANSCRIPT:
         return TranscriptResult(
             ok=False,
+            result_state=ResultState.TIMEOUT,
             device_id=request.meta.device_id,
             utterance_id=request.args.get("utterance_id"),
             transcript=None,

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Callable, Mapping, TextIO
@@ -74,6 +75,15 @@ def run_cli(
             return 1
         return run_mcp_stdio(runtime, stderr=stderr)
 
+    if (
+        args.command == "events"
+        and args.events_command == "tail"
+        and args.follow
+        and runtime.output == "json"
+    ):
+        stderr.write("events tail --follow is only supported for human output\n")
+        return 2
+
     priority = Priority(args.priority or Priority.NORMAL.value)
     request = build_request(
         args=args,
@@ -87,6 +97,14 @@ def run_cli(
 
     backend = create_backend(runtime.backend)
     try:
+        if args.command == "events" and args.events_command == "tail" and args.follow:
+            return _run_follow_loop(
+                backend,
+                request,
+                stdout=stdout,
+                stderr=stderr,
+                poll_interval=args.poll_interval,
+            )
         result = backend.execute(request)
         render(result, json_output=runtime.output == "json", stdout=stdout, stderr=stderr)
         if _is_failed_result(result):
@@ -156,13 +174,14 @@ def build_parser() -> argparse.ArgumentParser:
     events = subparsers.add_parser("events")
     events_subparsers = events.add_subparsers(dest="events_command", required=True)
     events_list = events_subparsers.add_parser("list")
-    events_list.add_argument("--limit", type=positive_int, default=32)
+    events_list.add_argument("--limit", type=events_limit, default=32)
     events_list.add_argument("--since-event")
     events_next = events_subparsers.add_parser("next")
     events_next.add_argument("--after")
     events_tail = events_subparsers.add_parser("tail")
-    events_tail.add_argument("--limit", type=positive_int, default=10)
+    events_tail.add_argument("--limit", type=events_limit, default=10)
     events_tail.add_argument("--follow", action="store_true")
+    events_tail.add_argument("--poll-interval", type=finite_float, default=1.0)
     events_subparsers.add_parser("clear")
 
     speech = subparsers.add_parser("speech")
@@ -235,9 +254,13 @@ def build_request(
             command_args = {"limit": args.limit, "since_event_id": since_event_id or None}
     elif command_type is CommandType.EVENTS_NEXT:
         after_event_id = None if args.after is None else args.after.strip()
-        command_args = {"limit": 1, "after_event_id": after_event_id or None}
+        command_args = {
+            "limit": 1,
+            "after_event_id": after_event_id or None,
+            "consumer_id": source,
+        }
     elif command_type is CommandType.EVENTS_CLEAR:
-        command_args = {}
+        command_args = {"consumer_id": source}
     elif command_type is CommandType.SPEECH_TRANSCRIPT:
         command_args = {"utterance_id": args.utterance_id.strip()}
     else:
@@ -329,6 +352,28 @@ def _render_error_result(device_id: str, error, stderr: TextIO) -> None:
     stderr.write(f"REJECTED {message} device={device_id}\n")
 
 
+def _run_follow_loop(
+    backend,
+    request: CommandRequest,
+    *,
+    stdout: TextIO,
+    stderr: TextIO,
+    poll_interval: float,
+) -> int:
+    if poll_interval <= 0:
+        stderr.write("events tail --follow requires a positive poll interval\n")
+        return 2
+    try:
+        while True:
+            result = backend.execute(request)
+            render(result, json_output=False, stdout=stdout, stderr=stderr)
+            if _is_failed_result(result):
+                return 1
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        return 0
+
+
 def _normalize_global_options(argv: list[str]) -> list[str]:
     globals_part: list[str] = []
     command_part: list[str] = []
@@ -372,4 +417,11 @@ def positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from exc
     if parsed < 1:
         raise argparse.ArgumentTypeError(f"{value!r} must be positive")
+    return parsed
+
+
+def events_limit(value: str) -> int:
+    parsed = positive_int(value)
+    if parsed > 32:
+        raise argparse.ArgumentTypeError(f"{value!r} must be 32 or less")
     return parsed

@@ -308,7 +308,10 @@ class McpStdioTests(unittest.TestCase):
                     "jsonrpc": "2.0",
                     "id": "call-1",
                     "method": "tools/call",
-                    "params": {"name": "speech_get_transcript", "arguments": {}},
+                    "params": {
+                        "name": "speech_get_transcript",
+                        "arguments": {"utterance_id": "mock-utt-001"},
+                    },
                 }
             ]
         )
@@ -321,6 +324,45 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(structured["utterance_id"], "mock-utt-001")
         self.assertEqual(structured["transcript"], "mock transcript")
         self.assertEqual(structured["confidence"], 1.0)
+
+    def test_speech_get_transcript_requires_utterance_id(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-1",
+                    "method": "tools/call",
+                    "params": {"name": "speech_get_transcript", "arguments": {}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(responses[0]["error"]["code"], -32602)
+        self.assertIn("utterance_id is required", responses[0]["error"]["message"])
+
+    def test_speech_get_transcript_not_found_is_tool_result(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-1",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "speech_get_transcript",
+                        "arguments": {"utterance_id": "missing"},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertFalse(structured["ok"])
+        self.assertEqual(structured["result_state"], "REJECTED")
+        self.assertEqual(structured["error"]["code"], "TRANSCRIPT_NOT_FOUND")
 
     def test_safety_priority_is_tool_result_not_protocol_error(self) -> None:
         code, responses, stderr = run_mcp(

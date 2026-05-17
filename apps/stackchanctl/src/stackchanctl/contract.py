@@ -143,6 +143,7 @@ class Event:
 @dataclass(frozen=True)
 class EventListResult:
     ok: bool
+    result_state: ResultState
     device_id: str
     events: list[Event]
     cursor: str | None = None
@@ -151,6 +152,7 @@ class EventListResult:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": self.ok,
+            "result_state": self.result_state.value,
             "device_id": self.device_id,
             "events": [event.to_dict() for event in self.events],
             "cursor": self.cursor,
@@ -163,6 +165,7 @@ class EventListResult:
 @dataclass(frozen=True)
 class TranscriptResult:
     ok: bool
+    result_state: ResultState
     device_id: str
     utterance_id: str | None
     transcript: str | None
@@ -173,6 +176,7 @@ class TranscriptResult:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": self.ok,
+            "result_state": self.result_state.value,
             "device_id": self.device_id,
             "utterance_id": self.utterance_id,
             "transcript": self.transcript,

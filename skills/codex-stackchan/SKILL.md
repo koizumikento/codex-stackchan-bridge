@@ -1,6 +1,6 @@
 ---
 name: codex-stackchan
-description: Express Codex work state through a local M5StackChan by calling stackchanctl. Use when Codex should send restrained local cues for work start, progress, waiting for user input, running checks, test success or failure, blockers, or task completion through StackChan without calling raw ROS 2 commands.
+description: Express Codex work state through a local M5StackChan and read StackChan-origin observations by calling stackchanctl. Use when Codex should send restrained local cues or interpret events such as button, IMU, NFC, or transcript_ready without calling raw ROS 2 commands.
 ---
 
 # Codex StackChan
@@ -153,6 +153,8 @@ Run these checks from the repository root:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
 ```
 
 Expected validation result:

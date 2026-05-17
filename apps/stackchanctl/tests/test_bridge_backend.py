@@ -37,6 +37,9 @@ FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
 class FakeBridgeClient:
     def __init__(self, *, timeout: bool = False) -> None:
         self.timeout = timeout
+        self.list_events_args = None
+        self.next_event_args = None
+        self.clear_events_args = None
 
     def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
         if self.timeout:
@@ -93,13 +96,24 @@ class FakeBridgeClient:
     ) -> BridgeCommandResponse:
         return self._unsupported_media()
 
-    def list_events(self, meta, limit: int, timeout: float) -> EventListResult:
+    def list_events(
+        self, meta, limit: int, since_event_id: str | None, timeout: float
+    ) -> EventListResult:
+        self.list_events_args = (meta.device_id, limit, since_event_id, timeout)
         return self._unsupported_events(meta.device_id)
 
-    def next_event(self, meta, timeout: float) -> EventListResult:
+    def next_event(
+        self,
+        meta,
+        consumer_id: str,
+        after_event_id: str | None,
+        timeout: float,
+    ) -> EventListResult:
+        self.next_event_args = (meta.device_id, consumer_id, after_event_id, timeout)
         return self._unsupported_events(meta.device_id)
 
-    def clear_events(self, meta, timeout: float) -> EventListResult:
+    def clear_events(self, meta, consumer_id: str, timeout: float) -> EventListResult:
+        self.clear_events_args = (meta.device_id, consumer_id, timeout)
         return self._unsupported_events(meta.device_id)
 
     def get_transcript(
@@ -107,6 +121,7 @@ class FakeBridgeClient:
     ) -> TranscriptResult:
         return TranscriptResult(
             ok=False,
+            result_state=ResultState.REJECTED,
             device_id=meta.device_id,
             utterance_id=utterance_id,
             transcript=None,
@@ -139,6 +154,7 @@ class FakeBridgeClient:
     def _unsupported_events(device_id: str) -> EventListResult:
         return EventListResult(
             ok=False,
+            result_state=ResultState.REJECTED,
             device_id=device_id,
             events=[],
             error=ErrorDetail(
@@ -303,10 +319,19 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["command"]["type"], "camera.capture")
         self.assertEqual(payload["command"]["quality"], 80)
 
-    def test_bridge_events_list_is_unsupported_until_service_exists(self) -> None:
+    def test_bridge_events_list_passes_since_event_to_client(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
-            ["--backend", "bridge", "events", "list", "--json"],
-            FakeBridgeClient(),
+            [
+                "--backend",
+                "bridge",
+                "events",
+                "list",
+                "--since-event",
+                "evt-1",
+                "--json",
+            ],
+            client,
         )
 
         self.assertEqual(code, 1)
@@ -316,6 +341,47 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["device_id"], "default")
         self.assertEqual(payload["events"], [])
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(client.list_events_args, ("default", 32, "evt-1", 5.0))
+
+    def test_bridge_events_next_and_clear_pass_consumer_cursor_args(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "--source",
+                "codex_skill",
+                "events",
+                "next",
+                "--after",
+                "evt-1",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(json.loads(stderr)["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(client.next_event_args, ("default", "codex_skill", "evt-1", 5.0))
+
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "--source",
+                "codex_skill",
+                "events",
+                "clear",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(json.loads(stderr)["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(client.clear_events_args, ("default", "codex_skill", 5.0))
 
     def test_bridge_speech_transcript_is_unsupported_until_service_exists(self) -> None:
         code, stdout, stderr = run_stackchanctl(

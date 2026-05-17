@@ -74,6 +74,28 @@ class EventBufferTests(unittest.TestCase):
         self.assertEqual(buffer.cursor_sequence("observer", "default"), 1)
         self.assertEqual(buffer.cursor_sequence("observer", "desk"), 2)
 
+    def test_event_fields_are_bounded_to_ros_contract(self) -> None:
+        buffer = EventBuffer(maxlen=4, clock=lambda: 1.0)
+
+        record = buffer.append(
+            "d" * 40,
+            "e" * 40,
+            event_id="i" * 40,
+            source="s" * 40,
+            command_id="c" * 40,
+            payload={"value": "x" * 300},
+        )
+
+        self.assertEqual(len(record.event_id), 36)
+        self.assertEqual(len(record.device_id), 32)
+        self.assertEqual(len(record.event_name), 32)
+        self.assertEqual(len(record.source), 32)
+        self.assertEqual(len(record.command_id), 36)
+        self.assertEqual(
+            record.payload,
+            {"truncated": True, "reason": "payload_json_exceeds_256_bytes"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ from stackchan_bridge.redaction import (
     redact_fields,
     redact_payload_json,
 )
+from stackchan_bridge.logging import log_structured
 
 
 class RedactionTests(unittest.TestCase):
@@ -26,6 +27,23 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(redacted["text"], REDACTED)
         self.assertEqual(redacted["image_payload"], REDACTED)
         self.assertEqual(redacted["token"], REDACTED)
+
+    def test_redacts_audio_payloads_and_keeps_logs_json_serializable(self) -> None:
+        class Logger:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            def info(self, message: str) -> None:
+                self.messages.append(message)
+
+        logger = Logger()
+
+        redacted = redact_fields({"audio_payload": b"pcm-bytes"})
+        log_structured(logger, 20, "audio", audio_payload=b"pcm-bytes")
+
+        self.assertEqual(redacted["audio_payload"], REDACTED)
+        payload = json.loads(logger.messages[0])
+        self.assertEqual(payload["audio_payload"], REDACTED)
 
     def test_redacts_nfc_tag_ids_by_default(self) -> None:
         redacted = redact_fields({"nfc_tag_id": "04AABBCCDD"})

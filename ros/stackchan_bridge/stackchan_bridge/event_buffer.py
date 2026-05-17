@@ -6,8 +6,16 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+import json
 from threading import RLock
 from typing import Any
+
+EVENT_ID_MAX_LENGTH = 36
+DEVICE_ID_MAX_LENGTH = 32
+EVENT_NAME_MAX_LENGTH = 32
+SOURCE_MAX_LENGTH = 32
+COMMAND_ID_MAX_LENGTH = 36
+PAYLOAD_JSON_MAX_LENGTH = 256
 
 
 @dataclass(frozen=True)
@@ -59,15 +67,16 @@ class EventBuffer:
 
         with self._lock:
             sequence = self._next_sequence
+            bounded_payload = _bounded_payload(payload or {})
             record = EventRecord(
                 sequence=sequence,
-                event_id=event_id or f"evt-{sequence:08d}",
-                device_id=device_id,
-                event_name=event_name,
+                event_id=_bounded_text(event_id or f"evt-{sequence:08d}", EVENT_ID_MAX_LENGTH),
+                device_id=_bounded_text(device_id, DEVICE_ID_MAX_LENGTH),
+                event_name=_bounded_text(event_name, EVENT_NAME_MAX_LENGTH),
                 stamp=self._clock() if stamp is None else stamp,
-                command_id=command_id,
-                source=source,
-                payload=dict(payload or {}),
+                command_id=_bounded_text(command_id, COMMAND_ID_MAX_LENGTH),
+                source=_bounded_text(source, SOURCE_MAX_LENGTH),
+                payload=bounded_payload,
             )
             self._next_sequence = sequence + 1
             self._events[device_id].append(record)
@@ -143,3 +152,18 @@ def _head_limit(
     if limit == 0:
         return ()
     return records[:limit]
+
+
+def _bounded_text(value: str, max_length: int) -> str:
+    return str(value or "")[:max_length]
+
+
+def _bounded_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    copied = dict(payload)
+    compact = json.dumps(copied, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(compact.encode("utf-8")) <= PAYLOAD_JSON_MAX_LENGTH:
+        return copied
+    return {
+        "truncated": True,
+        "reason": "payload_json_exceeds_256_bytes",
+    }

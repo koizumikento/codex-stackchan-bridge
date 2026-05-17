@@ -23,5 +23,6 @@
     }
   ],
   "ok": true,
+  "result_state": "COMPLETED",
   "cursor": "mock-event-0002"
 }

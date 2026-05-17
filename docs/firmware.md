@@ -331,12 +331,19 @@ Baseline firmware event sources:
 - button: `button_pressed`, `button_released`, `button_held`
 - IMU/posture: `picked_up`, `placed_down`, `shaken`, `tilted`, `face_up`, `face_down`
 - NFC: `nfc_detected`, `nfc_removed`
+- NFC failures: `nfc_read_failed`
 - audio device errors: `mic_overrun`, `audio_playback_underrun`,
   `audio_capture_started`, `audio_capture_finished`, `audio_capture_failed`
 - device health: `camera_capture_failed`, `battery_low`, `transport_unstable`
 
 `button_held` uses a firmware-owned 700 ms default threshold. Bridge may
 coalesce repeated events, but hardware bounce belongs on the device side.
+
+Device event publication is non-blocking from estimator callbacks. Firmware
+queues bounded `DeviceEvent` records first and drains them later through the
+micro-ROS publisher below safety and motion-neutral work. If the event queue is
+full or the publisher is unavailable, firmware returns a recoverable structured
+error instead of blocking sensor or fault handling.
 
 ## State publishing
 

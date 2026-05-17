@@ -61,7 +61,14 @@ inline Result validate_imu_rate(float hz) {
   return Result::accepted("IMU stream accepted");
 }
 
-inline Result nfc_read_failed() {
+inline Result nfc_read_failed(
+    EventPublisher& events,
+    uint32_t stamp_ms,
+    const char* reason = "read_failed") {
+  Result event_result = events.nfc_read_failed(stamp_ms, reason);
+  if (!event_result.ok) {
+    return event_result;
+  }
   return Result::rejected("NFC_READ_FAILED", "NFC read failed", true);
 }
 
