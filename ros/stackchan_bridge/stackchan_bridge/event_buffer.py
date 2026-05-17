@@ -207,7 +207,12 @@ def _unique_event_id(records: object, candidate: str, sequence: int) -> str:
     existing = {record.event_id for record in records}
     if candidate not in existing:
         return candidate
-    return _bounded_text(f"evt-{sequence:08d}", EVENT_ID_MAX_LENGTH)
+    fallback_sequence = sequence
+    while True:
+        fallback = _bounded_text(f"evt-{fallback_sequence:08d}", EVENT_ID_MAX_LENGTH)
+        if fallback not in existing:
+            return fallback
+        fallback_sequence += 1
 
 
 def _bounded_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:

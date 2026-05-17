@@ -120,6 +120,15 @@ class EventBufferTests(unittest.TestCase):
         self.assertEqual(first.event_id, "firmware-reused")
         self.assertEqual(second.event_id, "evt-00000002")
 
+    def test_duplicate_incoming_event_id_cannot_collide_with_fallback_id(self) -> None:
+        buffer = EventBuffer(maxlen=4, clock=lambda: 1.0)
+
+        first = buffer.append("default", "picked_up", event_id="evt-00000002")
+        second = buffer.append("default", "shaken", event_id="evt-00000002")
+
+        self.assertEqual(first.event_id, "evt-00000002")
+        self.assertEqual(second.event_id, "evt-00000003")
+
     def test_consumer_cursors_are_bounded_and_expire(self) -> None:
         now = 10.0
         buffer = EventBuffer(

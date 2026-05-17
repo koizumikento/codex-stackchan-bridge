@@ -231,10 +231,23 @@ inline bool is_priority_device_event_name(const char* name) {
          strcmp(name, "audio_playback_underrun") == 0 ||
          strcmp(name, "audio_capture_failed") == 0 ||
          strcmp(name, "camera_capture_failed") == 0 ||
+         strcmp(name, "nfc_read_failed") == 0 ||
+         strcmp(name, "ir_transmit_failed") == 0 ||
          strcmp(name, "battery_low") == 0 ||
          strcmp(name, "brownout_risk") == 0 ||
          strcmp(name, "power_fault") == 0 ||
          strcmp(name, "transport_unstable") == 0;
+}
+
+inline bool is_bounded_object_json(const char* payload_json) {
+  if (payload_json == nullptr) {
+    return true;
+  }
+  const size_t length = strlen(payload_json);
+  return length >= 2 &&
+         length <= kEventPayloadJsonMaxLength &&
+         payload_json[0] == '{' &&
+         payload_json[length - 1] == '}';
 }
 
 inline char safe_json_char(char value) {
@@ -350,11 +363,13 @@ class EventPublisher {
     if (!is_firmware_device_event_name(event_name)) {
       return Result::rejected("UNKNOWN_COMMAND", "unknown firmware event name");
     }
-    if (!event_payload_json_fits(payload_json)) {
-      return Result::rejected(
-          "UNSUPPORTED_FEATURE",
-          "event payload_json exceeds 256 bytes",
-          true);
+    const char* normalized_payload_json = payload_json == nullptr ? "{}" : payload_json;
+    if (!event_payload_json_fits(normalized_payload_json)) {
+      normalized_payload_json =
+          "{\"truncated\":true,\"reason\":\"payload_json_exceeds_256_bytes\"}";
+    } else if (!is_bounded_object_json(normalized_payload_json)) {
+      normalized_payload_json =
+          "{\"truncated\":true,\"reason\":\"payload_json_invalid\"}";
     }
 
     DeviceEvent event{};
@@ -367,7 +382,7 @@ class EventPublisher {
     copy_event_string(
         event.payload_json,
         sizeof(event.payload_json),
-        payload_json == nullptr ? "{}" : payload_json);
+        normalized_payload_json);
 
     if (count_ >= kEventQueueCapacity &&
         (!is_priority_device_event_name(event_name) ||
