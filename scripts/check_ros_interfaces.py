@@ -92,6 +92,16 @@ SERVICE_FIELDS = {
         "float32 confidence",
         "builtin_interfaces/Time expires_at",
     ],
+    "GetStatus.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "string<=32 device_id",
+        "bool connected",
+        "string<=32 state",
+        "string<=32 face",
+        "string<=32 motion",
+        "string<=36 last_command_id",
+        "stackchan_msgs/Result last_error",
+    ],
 }
 
 

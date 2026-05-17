@@ -39,7 +39,7 @@ class BridgeCommandResponse:
 
 
 class BridgeClient(Protocol):
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
+    def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
         raise NotImplementedError
 
     def set_face(
@@ -129,7 +129,7 @@ class BridgeBackend:
             client = self._get_client()
             if request.command_type is CommandType.OBSERVE:
                 return replace(
-                    client.get_status(request.meta.device_id, request.timeout),
+                    client.get_status(request.meta, request.timeout),
                     meta=request.meta,
                 )
             if request.command_type in {
@@ -288,9 +288,11 @@ class RclpyBridgeClient:
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
 
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
-        client = self._service_client(self._get_status_type, device_id, "get_status", timeout)
-        response = self._call_service(client, self._get_status_type.Request(), timeout)
+    def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
+        request = self._get_status_type.Request()
+        _copy_meta(request.meta, meta)
+        client = self._service_client(self._get_status_type, meta.device_id, "get_status", timeout)
+        response = self._call_service(client, request, timeout)
         return DeviceStatus(
             device_id=response.device_id,
             connected=bool(response.connected),

@@ -21,9 +21,9 @@ FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
 
 
 class FakeBridgeClient:
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
+    def get_status(self, meta, timeout: float) -> DeviceStatus:
         return DeviceStatus(
-            device_id=device_id,
+            device_id=meta.device_id,
             connected=True,
             device_state="idle",
             face="neutral",

@@ -326,7 +326,11 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
-            status_response = self.facade.get_status(device_id)
+            meta = _meta_from_ros(request.meta, device_id)
+            status_response = self.facade.get_status(
+                meta.device_id,
+                command_id=meta.command_id,
+            )
             _copy_status(response, status_response.status)
             return response
 
@@ -377,7 +381,7 @@ def main(args: list[str] | None = None) -> None:
                     device_id,
                     consumer_id,
                     limit=1,
-                    after_sequence=after_sequence,
+                    after_sequence=0 if after_sequence is None else after_sequence,
                 )
             else:
                 records = self.event_buffer.read(device_id, consumer_id, limit=1)

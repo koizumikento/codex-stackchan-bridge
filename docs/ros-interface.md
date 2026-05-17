@@ -411,7 +411,15 @@ Response fields:
 
 Purpose: return the latest status snapshot for `stackchanctl observe`.
 
+Request fields:
+
+- `meta`
+
 Response fields mirror `/stackchan/<device_id>/status`.
+
+IDL constraints:
+
+- `meta` is `stackchan_msgs/CommandMeta`.
 
 Device-side service mirrors:
 

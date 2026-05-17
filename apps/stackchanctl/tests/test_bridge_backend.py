@@ -37,15 +37,17 @@ FIXED_NOW = datetime(2026, 5, 16, 0, 0, tzinfo=UTC)
 class FakeBridgeClient:
     def __init__(self, *, timeout: bool = False) -> None:
         self.timeout = timeout
+        self.get_status_args = None
         self.list_events_args = None
         self.next_event_args = None
         self.clear_events_args = None
 
-    def get_status(self, device_id: str, timeout: float) -> DeviceStatus:
+    def get_status(self, meta, timeout: float) -> DeviceStatus:
         if self.timeout:
             raise BridgeBackendTimeout()
+        self.get_status_args = (meta.device_id, meta.command_id, meta.source, timeout)
         return DeviceStatus(
-            device_id=device_id,
+            device_id=meta.device_id,
             connected=True,
             device_state="idle",
             face="neutral",
@@ -157,6 +159,7 @@ class FakeBridgeClient:
             result_state=ResultState.REJECTED,
             device_id=device_id,
             events=[],
+            meta=None,
             error=ErrorDetail(
                 code="UNSUPPORTED_FEATURE",
                 message="bridge facade does not implement event buffer yet",
@@ -186,9 +189,10 @@ def run_stackchanctl(argv: list[str], client: FakeBridgeClient):
 
 class BridgeBackendTests(unittest.TestCase):
     def test_bridge_observe_json_uses_client_status(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "observe", "--json"],
-            FakeBridgeClient(),
+            client,
         )
 
         self.assertEqual(code, 0, stderr)
@@ -197,6 +201,10 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["device_state"], "idle")
         self.assertEqual(payload["command_id"], "cmd-test-0001")
         self.assertEqual(payload["metadata"]["source"], "human_cli")
+        self.assertEqual(
+            client.get_status_args,
+            ("default", "cmd-test-0001", "human_cli", 5.0),
+        )
 
     def test_bridge_face_json_matches_mock_shape(self) -> None:
         bridge_backend = BridgeBackend(FakeBridgeClient())
