@@ -90,6 +90,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"INVALID_PRIORITY"', main)
         self.assertIn("meta.priority == stackchan::Priority::Safety", main)
         self.assertNotIn("is_cli_source", main)
+        self.assertIn('strcmp(result.error_code, "SERVO_READ_FAILED") == 0', main)
         self.assertIn("publish_status_heartbeat", main)
         self.assertIn("try_connect_microros_agent", main)
         self.assertIn("check_microros_agent_connection", main)

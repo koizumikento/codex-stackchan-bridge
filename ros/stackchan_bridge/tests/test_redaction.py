@@ -50,6 +50,19 @@ class RedactionTests(unittest.TestCase):
 
         self.assertEqual(redacted["nfc_tag_id"], REDACTED)
 
+    def test_redacts_raw_ir_remote_and_protocol_dumps_by_default(self) -> None:
+        redacted = redact_fields(
+            {
+                "raw_ir_code": "0xDEADBEEF",
+                "remote_code": "volume_up",
+                "protocol_dump": "NEC raw timing data",
+            }
+        )
+
+        self.assertEqual(redacted["raw_ir_code"], REDACTED)
+        self.assertEqual(redacted["remote_code"], REDACTED)
+        self.assertEqual(redacted["protocol_dump"], REDACTED)
+
     def test_can_hash_nfc_tag_ids_without_leaking_raw_value(self) -> None:
         redacted = redact_fields(
             {"nfc_tag_id": "04AABBCCDD"},

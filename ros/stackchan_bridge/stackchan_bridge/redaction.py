@@ -14,6 +14,17 @@ SPEECH_TEXT_FIELDS = frozenset({"speech_text", "text", "transcript", "utterance"
 IMAGE_FIELDS = frozenset({"image", "image_payload", "image_data", "jpeg", "frame"})
 AUDIO_FIELDS = frozenset({"audio", "audio_payload", "audio_data", "pcm", "pcm_data"})
 NFC_FIELDS = frozenset({"nfc_tag_id", "tag_id", "uid"})
+IR_REMOTE_FIELDS = frozenset(
+    {
+        "ir_code",
+        "raw_ir",
+        "raw_ir_code",
+        "remote_code",
+        "raw_remote_code",
+        "protocol",
+        "protocol_dump",
+    }
+)
 SECRET_FIELDS = frozenset(
     {
         "api_key",
@@ -98,11 +109,26 @@ def redact_value(
         return REDACTED
     if normalized_key in NFC_FIELDS:
         return _hash_sensitive(value) if policy.hash_nfc_ids else REDACTED
+    if normalized_key in IR_REMOTE_FIELDS or _contains_ir_remote_marker(normalized_key):
+        return REDACTED
     return redact_payload(value, policy=policy)
 
 
 def _contains_secret_marker(key: str) -> bool:
     return any(marker in key for marker in ("secret", "token", "password"))
+
+
+def _contains_ir_remote_marker(key: str) -> bool:
+    return any(
+        marker in key
+        for marker in (
+            "ir_code",
+            "raw_ir",
+            "raw_remote",
+            "remote_code",
+            "protocol_dump",
+        )
+    )
 
 
 def _hash_sensitive(value: Any) -> str:

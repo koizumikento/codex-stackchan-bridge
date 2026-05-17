@@ -49,6 +49,7 @@ bool is_known_face(const char* name) {
 
 bool is_servo_safety_fault(const stackchan::Result& result) {
   return strcmp(result.error_code, "SERVO_LIMIT_EXCEEDED") == 0 ||
+         strcmp(result.error_code, "SERVO_READ_FAILED") == 0 ||
          strcmp(result.error_code, "MOTION_INTERRUPTED") == 0;
 }
 
