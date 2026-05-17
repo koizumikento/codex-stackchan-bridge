@@ -45,7 +45,7 @@ MCPを使う場合も、Codex/MCP hostがローカルの `stackchanctl mcp serve
 │   ├── stackchan_bridge/      # PC-side ROS 2 nodes
 │   └── stackchan_msgs/        # ROS 2 message/service/action definitions
 ├── skills/
-│   └── codex-stackchan/       # Codex agent skill draft
+│   └── codex-stackchan/       # Codex agent skill
 ├── docs/
 │   ├── README.md              # Documentation map
 │   ├── architecture.md        # Architecture notes
@@ -88,7 +88,7 @@ This repository currently contains the first MVP scaffold:
 - A Python `stackchanctl` CLI with mock backend and bridge backend skeleton.
 - A hardware-free `stackchan_bridge` facade core with a lazy ROS node adapter.
 - A PlatformIO firmware scaffold with safety, audio, and sensor policy headers.
-- A Codex skill draft that calls `stackchanctl`.
+- A Codex skill that calls `stackchanctl`.
 
 ROS 2 Jazzy `colcon` builds, micro-ROS firmware build/flash, and hardware behavior validation still need to run in the prepared ROS/PlatformIO environment.
 

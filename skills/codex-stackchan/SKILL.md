@@ -1,39 +1,92 @@
 ---
 name: codex-stackchan
-description: Express Codex work state through a local M5StackChan using stackchanctl. Use when Codex should signal start, progress, waiting, test success/failure, or completion through StackChan.
+description: Express Codex work state through a local M5StackChan by calling stackchanctl. Use when Codex should send restrained local cues for work start, progress, waiting for user input, running checks, test success or failure, blockers, or task completion through StackChan without calling raw ROS 2 commands.
 ---
 
 # Codex StackChan
 
-Use this skill to send small local expression cues to StackChan while Codex works.
+Use this skill to make StackChan reflect Codex's work state with short local cues.
 
-## Rules
+## Core Rules
 
 - Call `stackchanctl` only. Do not call `ros2` commands directly.
-- Keep cues short and non-blocking unless the user explicitly wants to wait.
-- Never let a StackChan failure block the user's main task.
-- Use `source=codex_skill` through `STACKCHANCTL_SOURCE=codex_skill` or `--source codex_skill`.
-- Respect `STACKCHANCTL_BACKEND`, `STACKCHANCTL_DEVICE`, and `STACKCHANCTL_OUTPUT` when they are already set.
-- Prefer the mock backend for tests and dry runs.
+- Keep cues short, local, and non-blocking unless the user explicitly asks to wait.
+- Never let a StackChan command failure block the user's main task.
+- Use `source=codex_skill` with `--source codex_skill` or `STACKCHANCTL_SOURCE=codex_skill`.
+- Respect existing `STACKCHANCTL_BACKEND`, `STACKCHANCTL_DEVICE`, `STACKCHANCTL_OUTPUT`, and `STACKCHANCTL_TIMEOUT` values.
+- Prefer the mock backend for validation, tests, dry runs, and examples.
+- Do not send repeated cues for every small internal step. Cue meaningful state changes only.
 
-## Event Mapping
+## Command Pattern
 
-Use these defaults:
+For normal use, run one small command at a time:
+
+```bash
+stackchanctl --source codex_skill face thinking
+```
+
+When diagnosing or validating behavior, request JSON:
+
+```bash
+stackchanctl --backend mock --source codex_skill face thinking --json
+```
+
+When targeting a non-default device, use the public device contract:
+
+```bash
+stackchanctl --device desk --source codex_skill led progress
+```
+
+Do not override environment-provided backend, device, output, or timeout settings unless the user asks for a specific target or you are running hardware-free validation.
+
+## Event Recipes
+
+Use these defaults unless the user's context suggests a quieter cue:
 
 - Work start: `stackchanctl face thinking` then `stackchanctl led progress`
-- Waiting for user: `stackchanctl face neutral` then `stackchanctl led listening`
+- Meaningful progress: `stackchanctl led progress`
+- Waiting for user input: `stackchanctl face neutral` then `stackchanctl led listening`
 - Tests running: `stackchanctl face thinking` then `stackchanctl led progress`
 - Tests passed: `stackchanctl face happy` then `stackchanctl led success`
 - Tests failed: `stackchanctl face error` then `stackchanctl led error`
-- Done: `stackchanctl motion nod` then `stackchanctl face happy`
+- Recoverable blocker: `stackchanctl face surprised` then `stackchanctl led warning`
+- Done: `stackchanctl motion nod` then `stackchanctl face happy` then `stackchanctl led success`
 
-Use `say` sparingly for short local announcements, for example:
+Add `--source codex_skill` to each command unless `STACKCHANCTL_SOURCE=codex_skill` is already set.
+
+## Voice Use
+
+Use `say` sparingly. Prefer face, motion, and LED cues for routine work because they are less disruptive.
+
+Good `say` messages are short and local:
 
 ```bash
-stackchanctl say "テスト終わったよ"
+stackchanctl --source codex_skill say "テスト終わったよ"
 ```
 
-## Environment
+Avoid reading long summaries, secrets, file paths, command output, or private user content aloud. Do not use `say` for errors unless the user is likely waiting on the physical device.
+
+## Failure Handling
+
+If `stackchanctl` exits non-zero:
+
+1. Continue the user's main task.
+2. Do not retry in a tight loop.
+3. Report the StackChan issue only when it helps the user fix local setup.
+4. If JSON is available, preserve `error.code`, `message`, and `recoverable` when summarizing the problem.
+
+Treat `REJECTED` and `TIMEOUT` result states as StackChan command outcomes, not as failures of the user's requested coding or research task.
+
+## Quiet Mode
+
+Skip cues when:
+
+- The user asks for no physical notifications.
+- The task is a tiny answer that finishes immediately.
+- Multiple cues would be noisy during fast edit/test loops.
+- A prior StackChan command in the same task already failed.
+
+## Environment Reference
 
 For Codex-originated commands, set:
 
@@ -53,10 +106,6 @@ For a non-default device:
 STACKCHANCTL_DEVICE=desk
 ```
 
-## Failure Handling
-
-If a command exits non-zero, continue the user's main task. Report the StackChan failure only when it helps the user diagnose the local setup. Do not retry in a tight loop.
-
 ## Mock Validation
 
 Run these checks from the repository root:
@@ -66,3 +115,10 @@ uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
 ```
+
+Expected validation result:
+
+- `ok` is `true`.
+- `result_state` is `ACCEPTED` or `COMPLETED`.
+- `metadata.source` is `codex_skill`.
+- `device_id` matches the selected or default device.

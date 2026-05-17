@@ -1,8 +1,8 @@
 # codex-stackchan
 
-Draft area for a Codex agent skill that lets Codex express local work state through StackChan.
+Codex agent skill for expressing local work state through StackChan.
 
-The skill should eventually call `stackchanctl` for events such as starting work, waiting for user input, reporting test results, or finishing a task.
+The skill calls `stackchanctl` for events such as starting work, waiting for user input, reporting test results, recovering from blockers, or finishing a task. It does not call raw ROS 2 commands.
 
 See [SKILL.md](SKILL.md) for the active skill instructions.
 
