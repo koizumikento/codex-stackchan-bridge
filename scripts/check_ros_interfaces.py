@@ -59,6 +59,7 @@ STACKCHAN_EVENT_FIELDS = [
 SERVICE_FIELDS = {
     "ListEvents.srv": [
         "uint8 MAX_EVENTS=32",
+        "stackchan_msgs/CommandMeta meta",
         "uint8 limit",
         "string<=36 since_event_id",
         "stackchan_msgs/Result result",
@@ -67,6 +68,7 @@ SERVICE_FIELDS = {
     ],
     "NextEvent.srv": [
         "uint8 MAX_EVENTS=1",
+        "stackchan_msgs/CommandMeta meta",
         "string<=64 consumer_id",
         "string<=36 after_event_id",
         "uint32 timeout_ms",
@@ -75,12 +77,14 @@ SERVICE_FIELDS = {
         "string<=36 cursor",
     ],
     "ClearEventCursor.srv": [
+        "stackchan_msgs/CommandMeta meta",
         "string<=64 consumer_id",
         "stackchan_msgs/Result result",
         "string<=36 cursor",
     ],
     "GetTranscript.srv": [
         "uint16 MAX_TRANSCRIPT_CHARS=2048",
+        "stackchan_msgs/CommandMeta meta",
         "string<=64 utterance_id",
         "stackchan_msgs/Result result",
         "string<=64 utterance_id",

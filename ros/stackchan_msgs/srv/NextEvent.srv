@@ -1,5 +1,6 @@
 uint8 MAX_EVENTS=1
 
+stackchan_msgs/CommandMeta meta
 string<=64 consumer_id
 string<=36 after_event_id
 uint32 timeout_ms

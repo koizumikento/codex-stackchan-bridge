@@ -58,6 +58,21 @@ class EventBufferTests(unittest.TestCase):
             ["three"],
         )
 
+    def test_after_sequence_read_advances_consumer_cursor(self) -> None:
+        buffer = EventBuffer(maxlen=4, clock=lambda: 1.0)
+        buffer.append("default", "one")
+        buffer.append("default", "two")
+        buffer.append("default", "three")
+
+        after_read = buffer.read("default", "observer", limit=1, after_sequence=1)
+
+        self.assertEqual([record.event_name for record in after_read], ["two"])
+        self.assertEqual(buffer.cursor_sequence("observer", "default"), 2)
+        self.assertEqual(
+            [record.event_name for record in buffer.read("default", "observer")],
+            ["three"],
+        )
+
     def test_events_and_cursors_are_separated_per_device(self) -> None:
         buffer = EventBuffer(maxlen=4, clock=lambda: 1.0)
         buffer.append("default", "picked_up")

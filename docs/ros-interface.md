@@ -428,6 +428,7 @@ Service type: `stackchan_msgs/srv/ListEvents`.
 
 Request fields:
 
+- `meta`
 - `limit`
 - `since_event_id`
 
@@ -440,6 +441,7 @@ Response fields:
 IDL constraints:
 
 - `limit` is `uint8`, with service constant `MAX_EVENTS=32`.
+- `meta` is `stackchan_msgs/CommandMeta`.
 - `since_event_id` and `cursor` are `string<=36`.
 - `events` is `StackChanEvent[<=32]`.
 
@@ -451,6 +453,7 @@ Service type: `stackchan_msgs/srv/NextEvent`.
 
 Request fields:
 
+- `meta`
 - `consumer_id`
 - `after_event_id`
 - `timeout_ms`
@@ -466,6 +469,7 @@ No unread event is a successful empty event list, not a protocol error.
 IDL constraints:
 
 - `consumer_id` is `string<=64`.
+- `meta` is `stackchan_msgs/CommandMeta`.
 - `after_event_id` and `cursor` are `string<=36`.
 - `events` is `StackChanEvent[<=1]`.
 
@@ -477,6 +481,7 @@ Service type: `stackchan_msgs/srv/ClearEventCursor`.
 
 Request fields:
 
+- `meta`
 - `consumer_id`
 
 Response fields:
@@ -487,6 +492,7 @@ Response fields:
 IDL constraints:
 
 - `consumer_id` is `string<=64`.
+- `meta` is `stackchan_msgs/CommandMeta`.
 - `cursor` is `string<=36`.
 
 ### `/stackchan/<device_id>/cmd/speech/transcript/get`
@@ -497,6 +503,7 @@ Service type: `stackchan_msgs/srv/GetTranscript`.
 
 Request fields:
 
+- `meta`
 - `utterance_id`
 
 Response fields:
@@ -509,6 +516,7 @@ Response fields:
 
 IDL constraints:
 
+- `meta` is `stackchan_msgs/CommandMeta`.
 - `utterance_id` is `string<=64`.
 - `transcript` is `string<=2048`, with service constant `MAX_TRANSCRIPT_CHARS=2048`.
 

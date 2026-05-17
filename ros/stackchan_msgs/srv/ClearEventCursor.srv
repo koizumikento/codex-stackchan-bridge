@@ -1,3 +1,4 @@
+stackchan_msgs/CommandMeta meta
 string<=64 consumer_id
 ---
 stackchan_msgs/Result result

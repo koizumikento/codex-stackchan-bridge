@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -127,7 +128,10 @@ class BridgeBackend:
         try:
             client = self._get_client()
             if request.command_type is CommandType.OBSERVE:
-                return client.get_status(request.meta.device_id, request.timeout)
+                return replace(
+                    client.get_status(request.meta.device_id, request.timeout),
+                    meta=request.meta,
+                )
             if request.command_type in {
                 CommandType.EVENTS_LIST,
                 CommandType.EVENTS_NEXT,
@@ -404,6 +408,7 @@ class RclpyBridgeClient:
         timeout: float,
     ) -> EventListResult:
         request = self._list_events_type.Request()
+        _copy_meta(request.meta, meta)
         request.limit = limit
         request.since_event_id = since_event_id or ""
         client = self._service_client(self._list_events_type, meta.device_id, "events/list", timeout)
@@ -418,6 +423,7 @@ class RclpyBridgeClient:
         timeout: float,
     ) -> EventListResult:
         request = self._next_event_type.Request()
+        _copy_meta(request.meta, meta)
         request.consumer_id = consumer_id
         request.after_event_id = after_event_id or ""
         request.timeout_ms = _timeout_ms(timeout)
@@ -429,6 +435,7 @@ class RclpyBridgeClient:
         self, meta: CommandMeta, consumer_id: str, timeout: float
     ) -> EventListResult:
         request = self._clear_event_cursor_type.Request()
+        _copy_meta(request.meta, meta)
         request.consumer_id = consumer_id
         client = self._service_client(self._clear_event_cursor_type, meta.device_id, "events/clear_cursor", timeout)
         response = self._call_service(client, request, timeout)
@@ -446,6 +453,7 @@ class RclpyBridgeClient:
         self, meta: CommandMeta, utterance_id: str | None, timeout: float
     ) -> TranscriptResult:
         request = self._get_transcript_type.Request()
+        _copy_meta(request.meta, meta)
         request.utterance_id = utterance_id or ""
         client = self._service_client(self._get_transcript_type, meta.device_id, "speech/transcript/get", timeout)
         response = self._call_service(client, request, timeout)

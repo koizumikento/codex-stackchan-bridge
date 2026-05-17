@@ -107,10 +107,13 @@ class DeviceStatus:
     device_state: str
     face: str
     last_error: ErrorDetail | None = None
+    meta: CommandMeta | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
             "connected": self.connected,
             "device_state": self.device_state,
             "face": self.face,

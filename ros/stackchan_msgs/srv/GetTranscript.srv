@@ -1,5 +1,6 @@
 uint16 MAX_TRANSCRIPT_CHARS=2048
 
+stackchan_msgs/CommandMeta meta
 string<=64 utterance_id
 ---
 stackchan_msgs/Result result

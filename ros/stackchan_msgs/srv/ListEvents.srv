@@ -1,5 +1,6 @@
 uint8 MAX_EVENTS=32
 
+stackchan_msgs/CommandMeta meta
 uint8 limit
 string<=36 since_event_id
 ---

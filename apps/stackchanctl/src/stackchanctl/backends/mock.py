@@ -88,10 +88,10 @@ class MockBackend:
     def _next_event(self, request: CommandRequest) -> EventListResult:
         events = self._events_for(request.meta.device_id)
         after_event_id = request.args.get("after_event_id")
+        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
         if after_event_id:
             candidates = _events_after(events, str(after_event_id))
         else:
-            consumer_id = str(request.args.get("consumer_id") or request.meta.source)
             cursor = self._event_cursors.get((consumer_id, request.meta.device_id), 0)
             candidates = events[cursor:]
         if not candidates:
@@ -104,7 +104,6 @@ class MockBackend:
                 meta=request.meta,
             )
         event = candidates[0]
-        consumer_id = str(request.args.get("consumer_id") or request.meta.source)
         self._event_cursors[(consumer_id, request.meta.device_id)] = events.index(event) + 1
         return EventListResult(
             ok=True,
@@ -313,6 +312,7 @@ def _observe(request: CommandRequest) -> DeviceStatus:
                 message="mock device is disconnected",
                 recoverable=True,
             ),
+            meta=request.meta,
         )
 
     return DeviceStatus(
@@ -320,6 +320,7 @@ def _observe(request: CommandRequest) -> DeviceStatus:
         connected=True,
         device_state="idle",
         face="neutral",
+        meta=request.meta,
     )
 
 

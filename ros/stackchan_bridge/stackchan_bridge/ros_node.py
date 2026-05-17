@@ -11,6 +11,8 @@ from stackchan_bridge.models import CommandMeta, Result
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
 
+EVENT_QOS_DEPTH = 32
+
 
 def _time_to_string(stamp: object) -> str:
     sec = getattr(stamp, "sec", 0)
@@ -102,6 +104,15 @@ def _records_after_event_id(
     return records
 
 
+def _sequence_for_event_id(records: tuple[EventRecord, ...], event_id: str) -> int | None:
+    if not event_id:
+        return None
+    for record in records:
+        if record.event_id == event_id:
+            return record.sequence
+    return None
+
+
 def _cursor_for(records: tuple[EventRecord, ...]) -> str:
     return records[-1].event_id if records else ""
 
@@ -120,22 +131,6 @@ def _copy_transcript(response: object, transcript: SpeechTranscript) -> None:
     response.transcript = transcript.text
     response.confidence = 1.0
     _copy_seconds_to_stamp(response.expires_at, transcript.expires_at)
-
-
-def _transcript_from_event_payload(payload: object) -> tuple[str, str] | None:
-    if not isinstance(payload, str) or not payload:
-        return None
-    try:
-        decoded = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(decoded, dict):
-        return None
-    utterance_id = str(decoded.get("utterance_id") or "")
-    transcript = str(decoded.get("transcript") or decoded.get("text") or "")
-    if not utterance_id or not transcript:
-        return None
-    return utterance_id, transcript
 
 
 def main(args: list[str] | None = None) -> None:
@@ -256,7 +251,7 @@ def main(args: list[str] | None = None) -> None:
             self._public_event_publishers[device_id] = self.create_publisher(
                 StackChanEvent,
                 f"/stackchan/{device_id}/events",
-                10,
+                EVENT_QOS_DEPTH,
             )
             self._device_event_subscriptions.append(
                 self.create_subscription(
@@ -266,7 +261,7 @@ def main(args: list[str] | None = None) -> None:
                         device_id,
                         event,
                     ),
-                    10,
+                    EVENT_QOS_DEPTH,
                 )
             )
             self._action_servers.append(
@@ -370,14 +365,21 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            consumer_id = getattr(request, "consumer_id", "") or meta.source or "stackchanctl"
             after_event_id = getattr(request, "after_event_id", "")
             if after_event_id:
-                records = _records_after_event_id(
+                after_sequence = _sequence_for_event_id(
                     self.event_buffer.records(device_id),
                     after_event_id,
-                )[:1]
+                )
+                records = self.event_buffer.read(
+                    device_id,
+                    consumer_id,
+                    limit=1,
+                    after_sequence=after_sequence,
+                )
             else:
-                consumer_id = getattr(request, "consumer_id", "") or "stackchanctl"
                 records = self.event_buffer.read(device_id, consumer_id, limit=1)
             _copy_result(response.result, Result.completed("event read"))
             _copy_records(response, self._stackchan_event_type, records)
@@ -390,7 +392,8 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
-            consumer_id = getattr(request, "consumer_id", "") or "stackchanctl"
+            meta = _meta_from_ros(request.meta, device_id)
+            consumer_id = getattr(request, "consumer_id", "") or meta.source or "stackchanctl"
             self.event_buffer.clear_cursor(consumer_id, device_id)
             _copy_result(response.result, Result.completed("event cursor cleared"))
             response.cursor = ""
@@ -422,7 +425,6 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_device_event(self, device_id: str, event: object) -> None:
             payload_json = getattr(event, "payload_json", "")
-            transcript_payload = _transcript_from_event_payload(payload_json)
             record = self.event_aggregator.add(
                 device_id,
                 getattr(event, "event_name", ""),
@@ -434,26 +436,9 @@ def main(args: list[str] | None = None) -> None:
             )
             if record is None:
                 return
-            self._maybe_store_transcript(record, transcript_payload)
             public_event = self._stackchan_event_type()
             _copy_event_record(public_event, record)
             self._public_event_publishers[device_id].publish(public_event)
-
-        def _maybe_store_transcript(
-            self,
-            record: EventRecord,
-            transcript_payload: tuple[str, str] | None,
-        ) -> None:
-            if record.event_name != "transcript_ready" or transcript_payload is None:
-                return
-            utterance_id, transcript = transcript_payload
-            self.transcript_store.put(
-                record.device_id,
-                utterance_id,
-                transcript,
-                command_id=record.command_id,
-                source=record.source,
-            )
 
         def _handle_set_led(
             self,

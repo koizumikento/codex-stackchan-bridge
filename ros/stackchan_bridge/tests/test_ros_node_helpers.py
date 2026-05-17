@@ -9,9 +9,9 @@ from stackchan_bridge.ros_node import (
     _copy_event_record,
     _configured_device_records,
     _records_after_event_id,
+    _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
-    _transcript_from_event_payload,
 )
 
 
@@ -81,14 +81,8 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertEqual(_records_after_event_id(records, "evt-1"), records[1:])
         self.assertEqual(_records_after_event_id(records, "missing"), records)
-
-    def test_transcript_ready_payload_extracts_utterance_and_text(self) -> None:
-        decoded = _transcript_from_event_payload(
-            '{"utterance_id":"utt-1","transcript":"hello"}'
-        )
-
-        self.assertEqual(decoded, ("utt-1", "hello"))
-        self.assertIsNone(_transcript_from_event_payload('{"utterance_id":"utt-1"}'))
+        self.assertEqual(_sequence_for_event_id(records, "evt-1"), 1)
+        self.assertIsNone(_sequence_for_event_id(records, "missing"))
 
     def test_bridge_node_source_wires_event_services_and_topics(self) -> None:
         source = (ROOT / "stackchan_bridge" / "ros_node.py").read_text()
@@ -99,6 +93,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "ClearEventCursor",
             "GetTranscript",
             "StackChanEvent",
+            "EVENT_QOS_DEPTH = 32",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",

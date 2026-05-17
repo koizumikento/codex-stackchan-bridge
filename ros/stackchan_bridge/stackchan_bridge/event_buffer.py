@@ -103,6 +103,7 @@ class EventBuffer:
         consumer_id: str,
         *,
         limit: int | None = None,
+        after_sequence: int | None = None,
     ) -> tuple[EventRecord, ...]:
         """Read events after the consumer cursor and advance that cursor."""
 
@@ -112,11 +113,12 @@ class EventBuffer:
             now = self._clock()
             self._prune_cursors(now)
             cursor_key = (consumer_id, device_id)
-            after_sequence = self._cursors.get(cursor_key, 0)
+            cursor_sequence = self._cursors.get(cursor_key, 0)
+            selected_after = cursor_sequence if after_sequence is None else after_sequence
             available = tuple(
                 record
                 for record in self._events.get(device_id, ())
-                if record.sequence > after_sequence
+                if record.sequence > selected_after
             )
             selected = _head_limit(available, limit)
             if selected:

@@ -364,11 +364,22 @@ def _run_follow_loop(
         stderr.write("events tail --follow requires a positive poll interval\n")
         return 2
     try:
+        follow_request = request
         while True:
-            result = backend.execute(request)
+            result = backend.execute(follow_request)
             render(result, json_output=False, stdout=stdout, stderr=stderr)
             if _is_failed_result(result):
                 return 1
+            if isinstance(result, EventListResult) and result.cursor:
+                follow_args = dict(follow_request.args)
+                follow_args["since_event_id"] = result.cursor
+                follow_request = CommandRequest(
+                    command_type=follow_request.command_type,
+                    meta=follow_request.meta,
+                    args=follow_args,
+                    wait=follow_request.wait,
+                    timeout=follow_request.timeout,
+                )
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         return 0

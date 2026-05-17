@@ -195,6 +195,8 @@ class BridgeBackendTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["device_id"], "default")
         self.assertEqual(payload["device_state"], "idle")
+        self.assertEqual(payload["command_id"], "cmd-test-0001")
+        self.assertEqual(payload["metadata"]["source"], "human_cli")
 
     def test_bridge_face_json_matches_mock_shape(self) -> None:
         bridge_backend = BridgeBackend(FakeBridgeClient())
