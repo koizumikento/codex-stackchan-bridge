@@ -261,7 +261,14 @@ def build_request(
     elif command_type is CommandType.FACE:
         command_args = {"name": args.name.strip()}
     elif command_type is CommandType.MOTION:
-        if args.pan_deg is not None or args.tilt_deg is not None or args.speed != 0 or args.duration_ms != 0:
+        if len(args.motion_args) != 1:
+            raise ValueError("named motion accepts exactly one motion name")
+        if (
+            args.pan_deg is not None
+            or args.tilt_deg is not None
+            or args.speed != 0
+            or args.duration_ms != 0
+        ):
             raise ValueError("named motion does not accept pose, speed, or duration options")
         command_args = {"name": args.motion_args[0].strip()}
     elif command_type is CommandType.MOTION_POSE:

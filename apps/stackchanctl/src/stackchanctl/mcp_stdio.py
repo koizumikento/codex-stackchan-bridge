@@ -455,12 +455,22 @@ def _tool_schema(name: str) -> dict[str, Any]:
         properties["pan_deg"] = {"type": "number", "minimum": -128.0, "maximum": 128.0}
         properties["tilt_deg"] = {"type": "number", "minimum": 0.0, "maximum": 90.0}
         properties["speed"] = {"type": "integer", "minimum": 0, "maximum": 1000}
-        properties["duration_ms"] = {"type": "integer", "minimum": 0, "maximum": 2000}
+        properties["duration_ms"] = {
+            "anyOf": [
+                {"type": "integer", "const": 0},
+                {"type": "integer", "minimum": 100, "maximum": 2000},
+            ]
+        }
         properties["wait"] = {"type": "boolean"}
         required.extend(["pan_deg", "tilt_deg"])
     elif name == "motion_home":
         properties["speed"] = {"type": "integer", "minimum": 0, "maximum": 1000}
-        properties["duration_ms"] = {"type": "integer", "minimum": 0, "maximum": 2000}
+        properties["duration_ms"] = {
+            "anyOf": [
+                {"type": "integer", "const": 0},
+                {"type": "integer", "minimum": 100, "maximum": 2000},
+            ]
+        }
         properties["wait"] = {"type": "boolean"}
     elif name == "led":
         properties["pattern"] = {"type": "string"}

@@ -178,6 +178,21 @@ class McpStdioTests(unittest.TestCase):
         )
         for tool in responses[1]["result"]["tools"]:
             self.assertEqual(tool["inputSchema"]["properties"]["priority"]["enum"], ["LOW", "NORMAL", "HIGH"])
+        schemas = {tool["name"]: tool["inputSchema"] for tool in responses[1]["result"]["tools"]}
+        self.assertEqual(
+            schemas["motion_pose"]["properties"]["duration_ms"]["anyOf"],
+            [
+                {"type": "integer", "const": 0},
+                {"type": "integer", "minimum": 100, "maximum": 2000},
+            ],
+        )
+        self.assertEqual(
+            schemas["motion_home"]["properties"]["duration_ms"]["anyOf"],
+            [
+                {"type": "integer", "const": 0},
+                {"type": "integer", "minimum": 100, "maximum": 2000},
+            ],
+        )
 
     def test_shutdown_exit_stops_server(self) -> None:
         code, responses, stderr = run_mcp(

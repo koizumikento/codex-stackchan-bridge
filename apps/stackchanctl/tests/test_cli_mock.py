@@ -83,6 +83,16 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
 
+    def test_named_motion_rejects_extra_positional_args(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "nod", "extra", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("named motion accepts exactly one motion name", stderr)
+
     def test_motion_pose_mock_json_uses_home_frame_absolute_angles(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["motion", "pose", "--pan-deg", "30", "--tilt-deg", "20", "--speed", "500", "--json"],
