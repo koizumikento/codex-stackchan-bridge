@@ -105,17 +105,33 @@ class FacadeTests(unittest.TestCase):
 
         self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_ACCEPTED)
 
-    def test_media_actions_are_unsupported_until_payload_transport_exists(self) -> None:
+    def test_media_actions_remain_unsupported_until_firmware_confirmed_transport_exists(self) -> None:
         bridge = facade()
 
         self.assertEqual(bridge.play_audio(meta()).result.error_code, "UNSUPPORTED_FEATURE")
         self.assertEqual(
-            bridge.capture_audio(meta()).result.error_code,
+            bridge.capture_audio(meta(), duration_ms=1000).result.error_code,
             "UNSUPPORTED_FEATURE",
         )
         self.assertEqual(
-            bridge.capture_camera(meta()).result.error_code,
+            bridge.capture_camera(meta(), quality=80).result.error_code,
             "UNSUPPORTED_FEATURE",
+        )
+
+    def test_media_actions_reject_outside_baseline_without_payloads(self) -> None:
+        bridge = facade()
+
+        self.assertEqual(
+            bridge.play_audio(meta(), format="mp3").result.error_code,
+            "AUDIO_FORMAT_UNSUPPORTED",
+        )
+        self.assertEqual(
+            bridge.capture_audio(meta(), duration_ms=0).result.error_code,
+            "AUDIO_CAPTURE_FAILED",
+        )
+        self.assertEqual(
+            bridge.capture_camera(meta(), width=640, height=480).result.error_code,
+            "CAMERA_CAPTURE_FAILED",
         )
 
     def test_unknown_device_returns_device_not_found(self) -> None:
@@ -161,6 +177,21 @@ class FacadeTests(unittest.TestCase):
         self.assertFalse(response.result.ok)
         self.assertEqual(response.result.error_code, "INVALID_PRIORITY")
         self.assertTrue(status.connected)
+
+    def test_safety_priority_is_rejected_even_when_source_is_spoofed(self) -> None:
+        bridge = facade()
+        spoofed = CommandMeta(
+            device_id="default",
+            command_id="cmd-test-0001",
+            source="bridge",
+            created_at="2026-05-16T00:00:00Z",
+            priority=PRIORITY_SAFETY,
+        )
+
+        response = bridge.set_led(spoofed, "progress")
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "INVALID_PRIORITY")
 
 
 if __name__ == "__main__":

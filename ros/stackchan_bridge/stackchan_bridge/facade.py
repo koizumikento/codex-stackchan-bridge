@@ -17,7 +17,6 @@ from stackchan_bridge.models import (
 )
 from stackchan_bridge.registry import DeviceAvailability, DeviceRegistry
 
-CLI_SOURCES = {"cli", "codex_skill", "human_cli", "mcp_agent", "stackchanctl"}
 AVAILABILITY_ERROR_CODES = {
     "DEVICE_NOT_FOUND",
     "TRANSPORT_DISCONNECTED",
@@ -31,6 +30,15 @@ SPEED_MIN = 0
 SPEED_MAX = 1000
 MIN_NONZERO_DURATION_MS = 100
 MAX_DURATION_MS = 2000
+AUDIO_FORMAT = "pcm_s16le"
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CHANNELS = 1
+MAX_AUDIO_CAPTURE_MS = 15000
+CAMERA_FORMAT = "jpeg"
+CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 240
+CAMERA_MIN_QUALITY = 1
+CAMERA_MAX_QUALITY = 95
 
 
 class StackChanBridgeFacade:
@@ -202,36 +210,92 @@ class StackChanBridgeFacade:
         status = self._mark_accepted(meta)
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
-    def play_audio(self, meta: CommandMeta) -> CommandResponse:
+    def play_audio(
+        self,
+        meta: CommandMeta,
+        *,
+        format: str = AUDIO_FORMAT,
+        sample_rate: int = AUDIO_SAMPLE_RATE,
+        channels: int = AUDIO_CHANNELS,
+    ) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
 
-        result = self._unsupported_media(meta, "audio playback data transport")
+        validation = self._validate_audio_contract(format, sample_rate, channels)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
+
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "audio playback requires firmware-confirmed device transport.",
+        )
+        self._record_error(meta, result, connected=True)
         return CommandResponse(meta.device_id, meta.command_id, result)
 
-    def capture_audio(self, meta: CommandMeta) -> CommandResponse:
+    def capture_audio(
+        self,
+        meta: CommandMeta,
+        *,
+        format: str = AUDIO_FORMAT,
+        sample_rate: int = AUDIO_SAMPLE_RATE,
+        channels: int = AUDIO_CHANNELS,
+        duration_ms: int = 0,
+    ) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
 
-        result = self._unsupported_media(meta, "audio capture data transport")
+        validation = self._validate_audio_contract(format, sample_rate, channels)
+        if validation is None and (duration_ms < 1 or duration_ms > MAX_AUDIO_CAPTURE_MS):
+            validation = Result.rejected(
+                "AUDIO_CAPTURE_FAILED",
+                "audio capture duration must be between 1 and 15000 ms",
+                recoverable=True,
+            )
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
+
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "audio capture requires firmware-confirmed device transport.",
+        )
+        self._record_error(meta, result, connected=True)
         return CommandResponse(meta.device_id, meta.command_id, result)
 
-    def capture_camera(self, meta: CommandMeta) -> CommandResponse:
+    def capture_camera(
+        self,
+        meta: CommandMeta,
+        *,
+        format: str = CAMERA_FORMAT,
+        width: int = CAMERA_WIDTH,
+        height: int = CAMERA_HEIGHT,
+        quality: int = 80,
+    ) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
 
-        result = self._unsupported_media(meta, "camera capture result transport")
+        validation = self._validate_camera_contract(format, width, height, quality)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
+
+        result = Result.rejected(
+            "UNSUPPORTED_FEATURE",
+            "camera capture requires firmware-confirmed device transport.",
+        )
+        self._record_error(meta, result, connected=True)
         return CommandResponse(meta.device_id, meta.command_id, result)
 
     def _validate(self, meta: CommandMeta) -> CommandResponse | None:
         availability = self.registry.availability(meta.device_id)
-        if meta.priority == PRIORITY_SAFETY and meta.source in CLI_SOURCES:
+        if meta.priority == PRIORITY_SAFETY:
             result = Result.rejected(
                 "INVALID_PRIORITY",
-                "CLI-originated SAFETY priority is reserved for bridge and firmware.",
+                "SAFETY priority is reserved for bridge and firmware internals.",
             )
             self._record_error(
                 meta,
@@ -295,6 +359,53 @@ class StackChanBridgeFacade:
             )
         return None
 
+    @staticmethod
+    def _validate_audio_contract(
+        format: str,
+        sample_rate: int,
+        channels: int,
+    ) -> Result | None:
+        if format != AUDIO_FORMAT:
+            return Result.rejected(
+                "AUDIO_FORMAT_UNSUPPORTED",
+                "audio action only accepts pcm_s16le",
+                recoverable=True,
+            )
+        if sample_rate != AUDIO_SAMPLE_RATE or channels != AUDIO_CHANNELS:
+            return Result.rejected(
+                "AUDIO_FORMAT_UNSUPPORTED",
+                "audio action only accepts 16 kHz mono",
+                recoverable=True,
+            )
+        return None
+
+    @staticmethod
+    def _validate_camera_contract(
+        format: str,
+        width: int,
+        height: int,
+        quality: int,
+    ) -> Result | None:
+        if format != CAMERA_FORMAT:
+            return Result.rejected(
+                "CAMERA_CAPTURE_FAILED",
+                "camera capture only accepts jpeg",
+                recoverable=True,
+            )
+        if width != CAMERA_WIDTH or height != CAMERA_HEIGHT:
+            return Result.rejected(
+                "CAMERA_CAPTURE_FAILED",
+                "camera capture only accepts QVGA 320x240",
+                recoverable=True,
+            )
+        if quality < CAMERA_MIN_QUALITY or quality > CAMERA_MAX_QUALITY:
+            return Result.rejected(
+                "CAMERA_CAPTURE_FAILED",
+                "camera quality must be between 1 and 95",
+                recoverable=True,
+            )
+        return None
+
     def _mark_accepted(
         self,
         meta: CommandMeta,
@@ -346,14 +457,6 @@ class StackChanBridgeFacade:
             error_message=result.message,
             recoverable=result.recoverable,
         )
-
-    def _unsupported_media(self, meta: CommandMeta, feature: str) -> Result:
-        result = Result.rejected(
-            "UNSUPPORTED_FEATURE",
-            f"bridge facade does not implement {feature} yet.",
-        )
-        self._record_error(meta, result, connected=True)
-        return result
 
     def _status_for(self, device_id: str) -> StatusSnapshot:
         if device_id not in self._status:

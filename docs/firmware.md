@@ -124,6 +124,21 @@ Calibration NVS rules:
   fallback is allowed only if firmware owns and tests that fallback as
   non-actuating or hard-limit-safe behavior.
 
+Current MVP scaffold:
+
+- `stackchan/calibration.hpp` defines the firmware-owned calibration record,
+  schema version, NVS namespace/key, checksum validation, and default-invalid
+  store behavior.
+- The calibration record stores home basis and bounded per-device corrections.
+  It does not store hard min/max safety envelopes; those remain firmware
+  constants in the motion safety layer.
+- `firmware_calibration_valid()` reads only the firmware calibration store.
+  Until setup loads a valid NVS record, servo-actuating commands remain gated by
+  `CALIBRATION_INVALID`.
+- The CLI and MCP surfaces intentionally do not expose calibration writes,
+  import/export, or reset-to-default operations. Those belong to a later
+  explicit maintenance mode.
+
 Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 
 ## Runtime responsibilities

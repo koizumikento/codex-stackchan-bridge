@@ -1,8 +1,9 @@
 #include <Arduino.h>
 #include <string.h>
 
-#include "stackchan/contract.hpp"
 #include "stackchan/audio.hpp"
+#include "stackchan/calibration.hpp"
+#include "stackchan/contract.hpp"
 #include "stackchan/events.hpp"
 #include "stackchan/motion_safety.hpp"
 #include "stackchan/sensors.hpp"
@@ -26,6 +27,7 @@ stackchan::Result last_error = stackchan::Result::accepted("ok");
 unsigned long last_heartbeat_ms = 0;
 unsigned long last_agent_attempt_ms = 0;
 bool microros_connected = false;
+stackchan::CalibrationStore calibration_store;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
 stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
 constexpr size_t kEventDrainBudget = 2;
@@ -54,8 +56,8 @@ bool is_servo_safety_fault(const stackchan::Result& result) {
 }
 
 bool firmware_calibration_valid() {
-  // TODO: replace with firmware-owned NVS schema/checksum validation.
-  return false;
+  // TODO: load kCalibrationNvsNamespace/kCalibrationNvsKey from ESP32 NVS during setup.
+  return calibration_store.valid();
 }
 
 bool servo_position_read_available() {
@@ -123,18 +125,18 @@ void show_neutral_face() {
 stackchan::Result handle_face_command(
     const stackchan::CommandMeta& meta,
     const char* name) {
+  if (meta.priority == stackchan::Priority::Safety) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for firmware-internal fault handling");
+    return last_error;
+  }
+
   if (state_machine.state() == stackchan::RuntimeState::Fault) {
     last_error = stackchan::Result::rejected(
         "FIRMWARE_BUSY",
         "firmware is in fault state; recover before accepting face commands",
         true);
-    return last_error;
-  }
-
-  if (meta.priority == stackchan::Priority::Safety) {
-    last_error = stackchan::Result::rejected(
-        "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 
@@ -154,18 +156,18 @@ stackchan::Result handle_motion_command(
     const char* name,
     float intensity,
     uint32_t duration_ms) {
+  if (meta.priority == stackchan::Priority::Safety) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for firmware-internal fault handling");
+    return last_error;
+  }
+
   if (state_machine.state() == stackchan::RuntimeState::Fault) {
     last_error = stackchan::Result::rejected(
         "FIRMWARE_BUSY",
         "firmware is in fault state; recover before accepting motion commands",
         true);
-    return last_error;
-  }
-
-  if (meta.priority == stackchan::Priority::Safety) {
-    last_error = stackchan::Result::rejected(
-        "INVALID_PRIORITY",
-        "SAFETY priority is reserved for firmware-internal fault handling");
     return last_error;
   }
 

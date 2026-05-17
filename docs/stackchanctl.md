@@ -499,8 +499,9 @@ wrong command id, sequence gaps, overrun, underrun, and disconnects are
 structured command results or events.
 
 The current bridge backend rejects audio play/capture with
-`UNSUPPORTED_FEATURE` until chunk transport is implemented. The mock backend
-keeps deterministic responses for CLI development.
+`UNSUPPORTED_FEATURE` until firmware-confirmed device transport exists. CLI JSON
+still reports the baseline metadata contract and never includes PCM bytes. The
+mock backend keeps deterministic responses for CLI development.
 
 ### Camera commands
 
@@ -522,8 +523,9 @@ payload 96 KiB. Continuous streaming, follow mode, and video-like frame
 sequences require a separate contract.
 
 The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
-until image result transport is implemented. The mock backend keeps
-deterministic camera validation behavior for CLI development.
+until firmware-confirmed device transport exists. CLI JSON still reports the
+baseline QVGA JPEG metadata contract and never includes JPEG bytes. The mock
+backend keeps deterministic camera validation behavior for CLI development.
 
 ### NFC commands
 

@@ -12,6 +12,7 @@ REDACTED = "<redacted>"
 INVALID_PAYLOAD_MARKER = {"truncated": True, "reason": "payload_json_invalid"}
 
 SPEECH_TEXT_FIELDS = frozenset({"speech_text", "text", "transcript", "utterance"})
+SPEECH_TEXT_MARKERS = ("transcript", "speech_text")
 IMAGE_FIELDS = frozenset({"image", "image_payload", "image_data", "jpeg", "frame"})
 AUDIO_FIELDS = frozenset({"audio", "audio_payload", "audio_data", "pcm", "pcm_data"})
 NFC_FIELDS = frozenset({"nfc_tag_id", "tag_id", "uid"})
@@ -102,7 +103,7 @@ def redact_value(
         return redact_payload(value, policy=policy)
 
     normalized_key = key.strip().lower()
-    if normalized_key in SPEECH_TEXT_FIELDS:
+    if _is_speech_text_key(normalized_key):
         return REDACTED
     if normalized_key in IMAGE_FIELDS:
         return REDACTED
@@ -119,6 +120,14 @@ def redact_value(
 
 def _contains_secret_marker(key: str) -> bool:
     return any(marker in key for marker in ("secret", "token", "password"))
+
+
+def _is_speech_text_key(key: str) -> bool:
+    return (
+        key in SPEECH_TEXT_FIELDS
+        or any(marker in key for marker in SPEECH_TEXT_MARKERS)
+        or ("utterance" in key and key != "utterance_id")
+    )
 
 
 def _contains_ir_remote_marker(key: str) -> bool:

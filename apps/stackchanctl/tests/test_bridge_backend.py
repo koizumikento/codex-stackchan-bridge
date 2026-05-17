@@ -47,6 +47,9 @@ class FakeBridgeClient:
         self.power_status_args = None
         self.move_head_pose_args = None
         self.home_head_pose_args = None
+        self.play_audio_args = None
+        self.capture_audio_args = None
+        self.capture_camera_args = None
 
     def get_status(self, meta, timeout: float) -> DeviceStatus:
         if self.timeout:
@@ -132,6 +135,7 @@ class FakeBridgeClient:
     def play_audio(
         self, meta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
+        self.play_audio_args = (meta.device_id, path, wait, timeout)
         return self._unsupported_media()
 
     def capture_audio(
@@ -143,11 +147,13 @@ class FakeBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
+        self.capture_audio_args = (meta.device_id, seconds, output, wait, timeout)
         return self._unsupported_media()
 
     def capture_camera(
         self, meta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
+        self.capture_camera_args = (meta.device_id, output, quality, wait, timeout)
         return self._unsupported_media()
 
     def list_events(
@@ -387,10 +393,11 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
 
-    def test_bridge_audio_play_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_audio_play_is_unsupported_until_firmware_transport_exists(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "audio", "play", "prompt.wav", "--json"],
-            FakeBridgeClient(),
+            client,
         )
 
         self.assertEqual(code, 1)
@@ -398,9 +405,44 @@ class BridgeBackendTests(unittest.TestCase):
         payload = json.loads(stderr)
         self.assertEqual(payload["result_state"], "REJECTED")
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
-        self.assertEqual(payload["command"], {"type": "audio.play", "path": "prompt.wav"})
+        self.assertEqual(
+            payload["command"],
+            {
+                "type": "audio.play",
+                "path": "prompt.wav",
+                "format": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
+                "chunk_ms": 20,
+                "max_chunk_ms": 40,
+            },
+        )
+        self.assertEqual(client.play_audio_args, ("default", "prompt.wav", False, 5.0))
 
-    def test_bridge_audio_capture_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_media_rejects_safety_priority_before_unsupported_feature(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "--priority",
+                "SAFETY",
+                "audio",
+                "play",
+                "prompt.wav",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "INVALID_PRIORITY")
+        self.assertIsNone(client.play_audio_args)
+
+    def test_bridge_audio_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -414,7 +456,7 @@ class BridgeBackendTests(unittest.TestCase):
                 "--wait",
                 "--json",
             ],
-            FakeBridgeClient(),
+            client,
         )
 
         self.assertEqual(code, 1)
@@ -424,8 +466,12 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "audio.capture")
         self.assertEqual(payload["command"]["output"], "mic.wav")
+        self.assertEqual(payload["command"]["format"], "pcm_s16le")
+        self.assertEqual(payload["command"]["sample_rate"], 16000)
+        self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
 
-    def test_bridge_camera_capture_is_unsupported_until_transport_exists(self) -> None:
+    def test_bridge_camera_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
             [
                 "--backend",
@@ -439,7 +485,7 @@ class BridgeBackendTests(unittest.TestCase):
                 "--wait",
                 "--json",
             ],
-            FakeBridgeClient(),
+            client,
         )
 
         self.assertEqual(code, 1)
@@ -448,7 +494,12 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["result_state"], "REJECTED")
         self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command"]["type"], "camera.capture")
+        self.assertEqual(payload["command"]["format"], "jpeg")
+        self.assertEqual(payload["command"]["width"], 320)
+        self.assertEqual(payload["command"]["height"], 240)
         self.assertEqual(payload["command"]["quality"], 80)
+        self.assertEqual(payload["command"]["max_payload_bytes"], 98304)
+        self.assertEqual(client.capture_camera_args, ("default", "frame.jpg", 80, True, 5.0))
 
     def test_bridge_events_list_passes_since_event_to_client(self) -> None:
         client = FakeBridgeClient()
@@ -533,17 +584,26 @@ class BridgeBackendTests(unittest.TestCase):
     def test_bridge_payload_json_redacts_sensitive_object_fields(self) -> None:
         payload = _payload_from_json(
             '{"raw_ir_code":"0xDEADBEEF","tag_id":"04AABB","protocol_dump":"NEC raw",'
-            '"speech_text":"hello","nested":{"remote_code":"volume_up"},"level":3}'
+            '"speech_text":"hello","asr_transcript":"open the window",'
+            '"full_transcript":"turn the light on","utterance_text":"hello again",'
+            '"utterance_id":"mock-utt-001","nested":{"remote_code":"volume_up"},"level":3}'
         )
 
         self.assertEqual(payload["raw_ir_code"], "<redacted>")
         self.assertEqual(payload["tag_id"], "<redacted>")
         self.assertEqual(payload["protocol_dump"], "<redacted>")
         self.assertEqual(payload["speech_text"], "<redacted>")
+        self.assertEqual(payload["asr_transcript"], "<redacted>")
+        self.assertEqual(payload["full_transcript"], "<redacted>")
+        self.assertEqual(payload["utterance_text"], "<redacted>")
+        self.assertEqual(payload["utterance_id"], "mock-utt-001")
         self.assertEqual(payload["nested"]["remote_code"], "<redacted>")
         self.assertEqual(payload["level"], 3)
         self.assertNotIn("0xDEADBEEF", str(payload))
         self.assertNotIn("04AABB", str(payload))
+        self.assertNotIn("open the window", str(payload))
+        self.assertNotIn("turn the light on", str(payload))
+        self.assertNotIn("hello again", str(payload))
 
     def test_bridge_payload_json_redacts_valid_object_secrets_and_images(self) -> None:
         payload = _payload_from_json(

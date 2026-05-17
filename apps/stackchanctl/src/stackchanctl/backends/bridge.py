@@ -64,6 +64,7 @@ SENSITIVE_EVENT_MARKERS = (
     "secret",
     "token",
 )
+SENSITIVE_EVENT_KEY_PARTS = ("transcript", "speech_text")
 
 
 class BridgeBackendError(RuntimeError):
@@ -295,11 +296,28 @@ class BridgeBackend:
                 timeout=request.timeout,
             )
         if request.command_type is CommandType.AUDIO_PLAY:
-            return _unsupported_media("audio playback data transport")
+            return client.play_audio(
+                request.meta,
+                str(request.args["path"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.AUDIO_CAPTURE:
-            return _unsupported_media("audio capture data transport")
+            return client.capture_audio(
+                request.meta,
+                float(request.args["seconds"]),
+                str(request.args["output"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         if request.command_type is CommandType.CAMERA_CAPTURE:
-            return _unsupported_media("camera capture result transport")
+            return client.capture_camera(
+                request.meta,
+                str(request.args["output"]),
+                int(request.args["quality"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -535,8 +553,21 @@ class RclpyBridgeClient:
     def play_audio(
         self, meta: CommandMeta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del meta, path, wait, timeout
-        return _unsupported_media("audio playback data transport")
+        del path
+        goal = self._play_audio_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "pcm_s16le"
+        goal.sample_rate = 16000
+        goal.channels = 1
+        goal.face_hint = ""
+        goal.motion_hint = ""
+        return self._send_action_goal(
+            self._play_audio_type,
+            f"/stackchan/{meta.device_id}/cmd/audio/play",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def capture_audio(
         self,
@@ -547,14 +578,38 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        del meta, seconds, output, wait, timeout
-        return _unsupported_media("audio capture data transport")
+        del output
+        goal = self._capture_audio_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "pcm_s16le"
+        goal.sample_rate = 16000
+        goal.channels = 1
+        goal.duration_ms = max(1, int(seconds * 1000))
+        return self._send_action_goal(
+            self._capture_audio_type,
+            f"/stackchan/{meta.device_id}/cmd/audio/capture",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def capture_camera(
         self, meta: CommandMeta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del meta, output, quality, wait, timeout
-        return _unsupported_media("camera capture result transport")
+        del output
+        goal = self._capture_camera_type.Goal()
+        _copy_meta(goal.meta, meta)
+        goal.format = "jpeg"
+        goal.width = 320
+        goal.height = 240
+        goal.quality = quality
+        return self._send_action_goal(
+            self._capture_camera_type,
+            f"/stackchan/{meta.device_id}/cmd/camera/capture",
+            goal,
+            wait=wait,
+            timeout=timeout,
+        )
 
     def list_events(
         self,
@@ -741,18 +796,6 @@ def _normalize_action_response(
     return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
 
 
-def _unsupported_media(feature: str) -> BridgeCommandResponse:
-    return BridgeCommandResponse(
-        ok=False,
-        result_state=ResultState.REJECTED,
-        error=ErrorDetail(
-            code="UNSUPPORTED_FEATURE",
-            message=f"bridge backend does not implement {feature} yet",
-            recoverable=False,
-        ),
-    )
-
-
 def _event_list_from_ros(meta: CommandMeta, result, events, cursor: str) -> EventListResult:
     return EventListResult(
         ok=bool(result.ok),
@@ -800,9 +843,7 @@ def _redact_event_payload(payload: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, value in payload.items():
             normalized_key = str(key).strip().lower()
-            if normalized_key in SENSITIVE_EVENT_FIELDS or any(
-                marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS
-            ):
+            if _is_sensitive_event_key(normalized_key):
                 redacted[str(key)] = REDACTED
             else:
                 redacted[str(key)] = _redact_event_payload(value)
@@ -812,6 +853,16 @@ def _redact_event_payload(payload: Any) -> Any:
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
         return [_redact_event_payload(item) for item in payload]
     return payload
+
+
+def _is_sensitive_event_key(normalized_key: str) -> bool:
+    utterance_text_key = "utterance" in normalized_key and normalized_key != "utterance_id"
+    return (
+        normalized_key in SENSITIVE_EVENT_FIELDS
+        or any(marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS)
+        or any(part in normalized_key for part in SENSITIVE_EVENT_KEY_PARTS)
+        or utterance_text_key
+    )
 
 
 def _stamp_to_iso(stamp) -> str | None:
@@ -996,18 +1047,35 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
     if request.command_type is CommandType.SAY:
         return {"type": "say", "text_length": len(str(request.args["text"]))}
     if request.command_type is CommandType.AUDIO_PLAY:
-        return {"type": "audio.play", "path": request.args["path"]}
+        return {
+            "type": "audio.play",
+            "path": request.args["path"],
+            "format": "pcm_s16le",
+            "sample_rate": 16000,
+            "channels": 1,
+            "chunk_ms": 20,
+            "max_chunk_ms": 40,
+        }
     if request.command_type is CommandType.AUDIO_CAPTURE:
         return {
             "type": "audio.capture",
             "seconds": request.args["seconds"],
             "output": request.args["output"],
+            "format": "pcm_s16le",
+            "sample_rate": 16000,
+            "channels": 1,
+            "chunk_ms": 20,
+            "max_chunk_ms": 40,
         }
     if request.command_type is CommandType.CAMERA_CAPTURE:
         return {
             "type": "camera.capture",
             "output": request.args["output"],
+            "format": "jpeg",
+            "width": 320,
+            "height": 240,
             "quality": request.args["quality"],
+            "max_payload_bytes": 98304,
         }
     if request.command_type is CommandType.NFC_WAIT:
         return {"type": "nfc.wait"}

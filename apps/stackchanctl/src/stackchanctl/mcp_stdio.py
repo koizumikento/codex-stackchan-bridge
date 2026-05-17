@@ -44,6 +44,48 @@ SUPPORTED_TOOLS = (
     "power_status",
 )
 _EXIT = object()
+REDACTED = "<redacted>"
+SENSITIVE_EVENT_FIELDS = frozenset(
+    {
+        "api_key",
+        "authorization",
+        "audio",
+        "audio_data",
+        "audio_payload",
+        "frame",
+        "image",
+        "image_data",
+        "image_payload",
+        "ir_code",
+        "jpeg",
+        "nfc_tag_id",
+        "pcm",
+        "pcm_data",
+        "protocol",
+        "protocol_dump",
+        "raw_ir",
+        "raw_remote_code",
+        "remote_code",
+        "speech_text",
+        "tag_id",
+        "text",
+        "token",
+        "transcript",
+        "uid",
+        "utterance",
+    }
+)
+SENSITIVE_EVENT_MARKERS = (
+    "ir_code",
+    "password",
+    "protocol_dump",
+    "raw_ir",
+    "raw_remote",
+    "remote_code",
+    "secret",
+    "token",
+)
+SENSITIVE_EVENT_KEY_PARTS = ("transcript", "speech_text")
 
 
 def run_mcp_stdio(
@@ -196,7 +238,7 @@ def _handle_tool_call(
         return _error_response(request_id, -32602, str(exc))
 
     result = backend_factory().execute(request)
-    structured = result.to_dict()
+    structured = _sanitize_mcp_structured_content(result.to_dict())
     content_text = json.dumps(structured, ensure_ascii=False, sort_keys=True, allow_nan=False)
     return _success_response(
         request_id,
@@ -205,6 +247,54 @@ def _handle_tool_call(
             "structuredContent": structured,
             "isError": False,
         },
+    )
+
+
+def _sanitize_mcp_structured_content(structured: dict[str, Any]) -> dict[str, Any]:
+    """Defensively redact event payloads before exposing MCP tool output."""
+
+    events = structured.get("events")
+    if not isinstance(events, list):
+        return structured
+    sanitized = dict(structured)
+    sanitized_events: list[Any] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            sanitized_events.append(event)
+            continue
+        sanitized_event = dict(event)
+        sanitized_event["payload"] = _redact_event_payload(
+            sanitized_event.get("payload", {})
+        )
+        sanitized_events.append(sanitized_event)
+    sanitized["events"] = sanitized_events
+    return sanitized
+
+
+def _redact_event_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, value in payload.items():
+            normalized_key = str(key).strip().lower()
+            if _is_sensitive_event_key(normalized_key):
+                redacted[str(key)] = REDACTED
+            else:
+                redacted[str(key)] = _redact_event_payload(value)
+        return redacted
+    if isinstance(payload, bytes | bytearray):
+        return REDACTED
+    if isinstance(payload, list):
+        return [_redact_event_payload(item) for item in payload]
+    return payload
+
+
+def _is_sensitive_event_key(normalized_key: str) -> bool:
+    utterance_text_key = "utterance" in normalized_key and normalized_key != "utterance_id"
+    return (
+        normalized_key in SENSITIVE_EVENT_FIELDS
+        or any(marker in normalized_key for marker in SENSITIVE_EVENT_MARKERS)
+        or any(part in normalized_key for part in SENSITIVE_EVENT_KEY_PARTS)
+        or utterance_text_key
     )
 
 

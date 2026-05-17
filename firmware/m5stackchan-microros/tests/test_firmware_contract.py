@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
 import re
 import unittest
 
@@ -84,6 +86,60 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("bool fault_state = false", safety)
         self.assertNotIn("clamp_head_pose", safety)
 
+    def test_calibration_store_uses_schema_checksum_and_default_invalid_gate(self) -> None:
+        calibration = (ROOT / "include" / "stackchan" / "calibration.hpp").read_text()
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("kCalibrationSchemaVersion = 1", calibration)
+        self.assertIn("kCalibrationNvsNamespace", calibration)
+        self.assertIn("kCalibrationNvsKey", calibration)
+        self.assertIn("struct CalibrationRecord", calibration)
+        self.assertIn("checksum", calibration)
+        self.assertIn("calibration_checksum_without_checksum", calibration)
+        self.assertIn("validate_calibration_record", calibration)
+        self.assertIn('"CALIBRATION_INVALID"', calibration)
+        self.assertIn("servo_calibration_bounds_are_safe", calibration)
+        self.assertIn("kDefaultServoLimits.min_x", calibration)
+        self.assertIn("kDefaultServoLimits.max_x", calibration)
+        self.assertIn("kMaxCalibrationCorrection", calibration)
+        self.assertNotIn("int16_t min_x", calibration)
+        self.assertNotIn("int16_t max_x", calibration)
+        self.assertIn("correction_x", calibration)
+        self.assertIn("correction_y", calibration)
+        self.assertIn("load_from_nvs_record", calibration)
+        self.assertIn("void reset()", calibration)
+        self.assertIn("valid_ = false", calibration)
+        self.assertIn("stackchan::CalibrationStore calibration_store", main)
+        self.assertIn("return calibration_store.valid();", main)
+        self.assertNotIn("return true;", main[main.find("bool firmware_calibration_valid") : main.find("bool servo_position_read_available")])
+
+    def test_calibration_contract_cpp_harness(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler not available")
+
+        binary = ROOT / "tests" / "calibration_contract_test"
+        source = ROOT / "tests" / "calibration_contract_test.cpp"
+        if binary.exists():
+            binary.unlink()
+        if binary.with_suffix(".exe").exists():
+            binary.with_suffix(".exe").unlink()
+
+        output = binary.with_suffix(".exe") if compiler.lower().endswith("cl.exe") else binary
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-I",
+                str(ROOT / "include"),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        subprocess.run([str(output)], check=True)
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
@@ -103,6 +159,20 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kDeviceEventsTopicSuffix", main)
         self.assertIn("firmware_calibration_valid", main)
         self.assertIn("servo_position_read_available", main)
+        face_handler = main[
+            main.find("stackchan::Result handle_face_command") : main.find("stackchan::Result handle_motion_command")
+        ]
+        motion_handler = main[
+            main.find("stackchan::Result handle_motion_command") : main.find("void publish_status_heartbeat")
+        ]
+        self.assertLess(
+            face_handler.find("meta.priority == stackchan::Priority::Safety"),
+            face_handler.find("state_machine.state() == stackchan::RuntimeState::Fault"),
+        )
+        self.assertLess(
+            motion_handler.find("meta.priority == stackchan::Priority::Safety"),
+            motion_handler.find("state_machine.state() == stackchan::RuntimeState::Fault"),
+        )
         self.assertIn("payload_bytes=", main)
         self.assertNotIn("Serial.println(event.payload_json)", main)
 
