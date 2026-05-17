@@ -249,6 +249,36 @@ inline void skip_json_ws(const char* value, size_t length, size_t* index) {
   }
 }
 
+inline bool is_json_hex(char value) {
+  return (value >= '0' && value <= '9') ||
+         (value >= 'a' && value <= 'f') ||
+         (value >= 'A' && value <= 'F');
+}
+
+inline bool parse_json_escape(const char* value, size_t length, size_t* index) {
+  if (*index >= length) {
+    return false;
+  }
+  const char escaped = value[*index];
+  if (escaped == '"' || escaped == '\\' || escaped == '/' ||
+      escaped == 'b' || escaped == 'f' || escaped == 'n' ||
+      escaped == 'r' || escaped == 't') {
+    ++(*index);
+    return true;
+  }
+  if (escaped != 'u') {
+    return false;
+  }
+  ++(*index);
+  for (size_t digit = 0; digit < 4; ++digit) {
+    if (*index >= length || !is_json_hex(value[*index])) {
+      return false;
+    }
+    ++(*index);
+  }
+  return true;
+}
+
 inline bool parse_json_string(const char* value, size_t length, size_t* index) {
   if (*index >= length || value[*index] != '"') {
     return false;
@@ -262,9 +292,10 @@ inline bool parse_json_string(const char* value, size_t length, size_t* index) {
     }
     if (current == '\\') {
       ++(*index);
-      if (*index >= length) {
+      if (!parse_json_escape(value, length, index)) {
         return false;
       }
+      continue;
     } else if (static_cast<unsigned char>(current) < 0x20) {
       return false;
     }

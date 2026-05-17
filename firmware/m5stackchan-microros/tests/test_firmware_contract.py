@@ -149,6 +149,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("nfc_read_failed", events)
         self.assertIn("ir_transmit_failed", events)
         self.assertIn("is_bounded_object_json", events)
+        self.assertIn("is_json_hex", events)
+        self.assertIn("parse_json_escape", events)
         self.assertIn("parse_json_string", events)
         self.assertIn("parse_json_value", events)
         self.assertIn("payload_json_invalid", events)
