@@ -189,9 +189,28 @@ Initial tools:
 - `motion_pose`
 - `motion_home`
 - `motion_status`
+- `audio_play`
+- `audio_capture`
+- `camera_capture`
 
 MCP mode defaults `source` to `mcp_agent`. `command_id` is generated per tool
 call and must not be copied from the MCP JSON-RPC request id.
+
+The media tools use the same metadata-only result contract as the CLI. They do
+not return PCM bytes, image bytes/base64, speech text, transcript text, raw NFC
+tag IDs, raw IR codes, or protocol dumps. The mock backend returns deterministic
+metadata-only results. The bridge backend may return structured
+`UNSUPPORTED_FEATURE` results for audio and camera until firmware-confirmed
+transport exists.
+
+`nfc wait` remains a CLI/human observation surface until the bridge exposes a
+bounded NFC wait facade. MCP clients should use event tools for NFC-related
+observations for now.
+
+`imu stream` remains a CLI/human diagnostic surface only. It is intentionally
+not exposed as a finite MCP request/response tool because raw telemetry streams
+need a separate streaming MCP contract before Codex-facing MCP clients can
+consume them safely.
 
 ## Command groups
 

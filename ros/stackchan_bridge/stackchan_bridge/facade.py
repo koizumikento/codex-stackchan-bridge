@@ -22,6 +22,9 @@ AVAILABILITY_ERROR_CODES = {
     "TRANSPORT_DISCONNECTED",
     "DEVICE_ID_CONFLICT",
 }
+ALLOWED_FACES = {"neutral", "happy", "thinking", "surprised", "sleepy", "error"}
+ALLOWED_MOTIONS = {"nod", "shake", "look-left", "look-right", "look-user", "idle"}
+ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 PAN_MIN_DEG = -128.0
 PAN_MAX_DEG = 128.0
 TILT_MIN_DEG = 0.0
@@ -80,6 +83,10 @@ class StackChanBridgeFacade:
         checked = self._validate(meta)
         if checked is not None:
             return checked
+        validation = self._validate_named_value("face", name, ALLOWED_FACES)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
 
         status = self._mark_accepted(meta, face=name)
         log_structured(
@@ -103,6 +110,10 @@ class StackChanBridgeFacade:
         checked = self._validate(meta)
         if checked is not None:
             return checked
+        validation = self._validate_named_value("LED pattern", pattern, ALLOWED_LEDS)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
 
         status = self._mark_accepted(meta)
         log_structured(
@@ -128,6 +139,10 @@ class StackChanBridgeFacade:
         checked = self._validate(meta)
         if checked is not None:
             return checked
+        validation = self._validate_named_value("motion", name, ALLOWED_MOTIONS)
+        if validation is not None:
+            self._record_error(meta, validation, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, validation)
 
         status = self._mark_completed(meta, motion=name)
         log_structured(
@@ -310,6 +325,20 @@ class StackChanBridgeFacade:
         result = self._availability_error(availability, meta.device_id)
         self._record_error(meta, result, connected=False)
         return CommandResponse(meta.device_id, meta.command_id, result)
+
+    @staticmethod
+    def _validate_named_value(
+        field_name: str,
+        value: str,
+        allowed_values: set[str],
+    ) -> Result | None:
+        if value in allowed_values:
+            return None
+        return Result.rejected(
+            "UNKNOWN_COMMAND",
+            f"unknown {field_name} '{value}'",
+            recoverable=False,
+        )
 
     @staticmethod
     def _validate_head_pose(
