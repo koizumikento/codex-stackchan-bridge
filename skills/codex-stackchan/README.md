@@ -17,4 +17,13 @@ uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
 ```
 
+The `apps/stackchanctl` unit tests include hardware-free policy checks for this
+skill. They guard against examples drifting to raw `ros2` commands,
+maintenance/calibration controls, raw hardware controls, or undocumented cue
+names:
+
+```bash
+uv run --directory apps/stackchanctl python -m unittest discover -s tests
+```
+
 If `stackchanctl` exits non-zero, the skill should keep the user's main task moving and report the local StackChan issue only when useful.

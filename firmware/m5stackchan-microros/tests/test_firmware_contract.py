@@ -8,6 +8,17 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
+
+HARDWARE_FREE_CONTRACT_MATRIX = {
+    "metadata/result": "include/stackchan/contract.hpp",
+    "calibration": "include/stackchan/calibration.hpp",
+    "motion safety": "include/stackchan/motion_safety.hpp",
+    "events": "include/stackchan/events.hpp",
+    "audio policy": "include/stackchan/audio.hpp",
+    "sensor policy": "include/stackchan/sensors.hpp",
+    "device publishers": "include/stackchan/ros_publishers.hpp",
+}
 
 
 class FirmwareContractTests(unittest.TestCase):
@@ -24,6 +35,13 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("STACKCHAN_MICROROS_SERIAL_BAUD=921600", platformio)
         self.assertIn("StackChan-BSP.git#1.1.0", platformio)
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
+
+    def test_hardware_free_contract_matrix_has_coverage_targets(self) -> None:
+        for label, relative_path in HARDWARE_FREE_CONTRACT_MATRIX.items():
+            with self.subTest(label=label):
+                target = ROOT / relative_path
+                self.assertTrue(target.exists(), relative_path)
+                self.assertGreater(len(target.read_text()), 100)
 
     def test_priority_and_result_contracts_match_shared_values(self) -> None:
         contract = (ROOT / "include" / "stackchan" / "contract.hpp").read_text()
@@ -208,6 +226,28 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("publish_synthetic_telemetry", main)
         self.assertNotIn("Serial.println(stackchan::kDeviceEventsTopicSuffix)", main)
         self.assertNotIn("Serial.println(event.payload_json)", main)
+
+    def test_resource_arbitration_and_sensitive_payload_policy_remain_documented(self) -> None:
+        quality = (REPO_ROOT / "docs" / "quality-gates.md").read_text()
+        firmware = (REPO_ROOT / "docs" / "firmware.md").read_text()
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        order = "safety > motion stop/neutral > audio capture/playback > command handling > camera > LED/idle"
+        self.assertIn(order, quality)
+        for item in (
+            "1. Safety and fault handling.",
+            "2. Motion stop / neutral pose.",
+            "3. Audio capture and playback.",
+            "4. Command handling.",
+            "5. Camera capture.",
+            "6. LED and idle animation.",
+        ):
+            self.assertIn(item, firmware)
+        self.assertIn("Audio, camera, raw sensor, face, and LED adapters include bounded queues", quality)
+        self.assertIn("Firmware normal diagnostics must not print raw `payload_json`", quality)
+        self.assertNotIn("Serial.println(event.payload_json)", main)
+        self.assertNotIn("Serial.println(audio", main)
+        self.assertNotIn("Serial.println(image", main)
 
     def test_device_publisher_contract_names_qos_and_storage(self) -> None:
         publishers = (ROOT / "include" / "stackchan" / "ros_publishers.hpp").read_text()

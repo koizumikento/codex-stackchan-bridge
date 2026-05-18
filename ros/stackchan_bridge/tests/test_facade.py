@@ -70,6 +70,27 @@ class FacadeTests(unittest.TestCase):
         self.assertTrue(idle.result.ok)
         self.assertEqual(bridge.get_status("default").status.motion, "idle")
 
+    def test_unknown_face_led_and_motion_are_rejected(self) -> None:
+        bridge = facade()
+
+        face = bridge.set_face(meta(), "wink")
+        led = bridge.set_led(meta(), "rainbow")
+        motion = bridge.run_motion(meta(), "spin")
+
+        for response in (face, led, motion):
+            self.assertFalse(response.result.ok)
+            self.assertEqual(response.result.error_code, "UNKNOWN_COMMAND")
+            self.assertFalse(response.result.recoverable)
+
+    def test_availability_and_safety_priority_precede_unknown_command_validation(self) -> None:
+        bridge = facade()
+
+        missing = bridge.set_face(meta("desk"), "wink")
+        safety = bridge.run_motion(meta(priority=PRIORITY_SAFETY), "spin")
+
+        self.assertEqual(missing.result.error_code, "DEVICE_NOT_FOUND")
+        self.assertEqual(safety.result.error_code, "INVALID_PRIORITY")
+
     def test_head_pose_accepts_home_frame_absolute_angles(self) -> None:
         bridge = facade()
 

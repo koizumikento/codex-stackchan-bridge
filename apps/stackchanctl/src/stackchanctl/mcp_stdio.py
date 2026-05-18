@@ -42,6 +42,9 @@ SUPPORTED_TOOLS = (
     "events_clear",
     "speech_get_transcript",
     "power_status",
+    "audio_play",
+    "audio_capture",
+    "camera_capture",
 )
 _EXIT = object()
 REDACTED = "<redacted>"
@@ -238,7 +241,7 @@ def _handle_tool_call(
         return _error_response(request_id, -32602, str(exc))
 
     result = backend_factory().execute(request)
-    structured = _sanitize_mcp_structured_content(result.to_dict())
+    structured = _sanitize_mcp_structured_content(result.to_dict(), tool_name=name)
     content_text = json.dumps(structured, ensure_ascii=False, sort_keys=True, allow_nan=False)
     return _success_response(
         request_id,
@@ -250,24 +253,29 @@ def _handle_tool_call(
     )
 
 
-def _sanitize_mcp_structured_content(structured: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_mcp_structured_content(
+    structured: dict[str, Any],
+    *,
+    tool_name: str,
+) -> dict[str, Any]:
     """Defensively redact event payloads before exposing MCP tool output."""
 
-    events = structured.get("events")
-    if not isinstance(events, list):
-        return structured
     sanitized = dict(structured)
-    sanitized_events: list[Any] = []
-    for event in events:
-        if not isinstance(event, Mapping):
-            sanitized_events.append(event)
-            continue
-        sanitized_event = dict(event)
-        sanitized_event["payload"] = _redact_event_payload(
-            sanitized_event.get("payload", {})
-        )
-        sanitized_events.append(sanitized_event)
-    sanitized["events"] = sanitized_events
+    events = structured.get("events")
+    if isinstance(events, list):
+        sanitized_events: list[Any] = []
+        for event in events:
+            if not isinstance(event, Mapping):
+                sanitized_events.append(event)
+                continue
+            sanitized_event = dict(event)
+            sanitized_event["payload"] = _redact_event_payload(
+                sanitized_event.get("payload", {})
+            )
+            sanitized_events.append(sanitized_event)
+        sanitized["events"] = sanitized_events
+    if tool_name in {"audio_play", "audio_capture", "camera_capture"}:
+        sanitized["command"] = _redact_event_payload(sanitized.get("command", {}))
     return sanitized
 
 
@@ -375,6 +383,21 @@ def _build_tool_request(
     elif name == "power_status":
         command_type = CommandType.POWER_STATUS
         command_args = {}
+    elif name == "audio_play":
+        command_type = CommandType.AUDIO_PLAY
+        command_args = {"path": _required_string(arguments, "path").strip()}
+    elif name == "audio_capture":
+        command_type = CommandType.AUDIO_CAPTURE
+        command_args = {
+            "seconds": _optional_number(arguments, "seconds", 3.0),
+            "output": _required_string(arguments, "output").strip(),
+        }
+    elif name == "camera_capture":
+        command_type = CommandType.CAMERA_CAPTURE
+        command_args = {
+            "output": _required_string(arguments, "output").strip(),
+            "quality": _optional_int_range(arguments, "quality", 80, minimum=1, maximum=95),
+        }
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"unknown tool: {name}")
 
@@ -513,6 +536,12 @@ def _allowed_argument_keys(name: str) -> set[str]:
         keys.add("after_event_id")
     elif name == "speech_get_transcript":
         keys.add("utterance_id")
+    elif name == "audio_play":
+        keys.update({"path", "wait"})
+    elif name == "audio_capture":
+        keys.update({"seconds", "output", "wait"})
+    elif name == "camera_capture":
+        keys.update({"output", "quality", "wait"})
     return keys
 
 
@@ -573,6 +602,20 @@ def _tool_schema(name: str) -> dict[str, Any]:
     elif name == "speech_get_transcript":
         properties["utterance_id"] = {"type": "string"}
         required.append("utterance_id")
+    elif name == "audio_play":
+        properties["path"] = {"type": "string"}
+        properties["wait"] = {"type": "boolean"}
+        required.append("path")
+    elif name == "audio_capture":
+        properties["seconds"] = {"type": "number", "exclusiveMinimum": 0}
+        properties["output"] = {"type": "string"}
+        properties["wait"] = {"type": "boolean"}
+        required.append("output")
+    elif name == "camera_capture":
+        properties["output"] = {"type": "string"}
+        properties["quality"] = {"type": "integer", "minimum": 1, "maximum": 95}
+        properties["wait"] = {"type": "boolean"}
+        required.append("output")
 
     if name in {"say", "motion"}:
         properties["wait"] = {"type": "boolean"}
@@ -596,6 +639,8 @@ def _tool_description(name: str) -> str:
         return "Read a speech transcript through the configured backend."
     if name == "power_status":
         return "Read StackChan power telemetry through the configured backend."
+    if name in {"audio_play", "audio_capture", "camera_capture"}:
+        return f"Send stackchanctl {name.replace('_', ' ')} through the configured backend without exposing media payloads."
     return f"Send stackchanctl {name} through the configured backend."
 
 

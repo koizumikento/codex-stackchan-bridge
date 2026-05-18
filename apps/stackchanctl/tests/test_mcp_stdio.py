@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from stackchanctl.backends.bridge import BridgeBackend, BridgeCommandResponse  # noqa: E402
 from stackchanctl.config import RuntimeConfig  # noqa: E402
-from stackchanctl.contract import DeviceStatus, Event, EventListResult, ResultState  # noqa: E402
+from stackchanctl.contract import CommandResult, DeviceStatus, ErrorDetail, Event, EventListResult, ResultState  # noqa: E402
 from stackchanctl import mcp_stdio  # noqa: E402
 
 
@@ -31,6 +31,23 @@ class FakeBridgeClient:
 
     def set_face(self, meta, name: str, timeout: float) -> BridgeCommandResponse:
         return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
+
+    def play_audio(self, meta, path: str, *, wait: bool, timeout: float) -> BridgeCommandResponse:
+        return BridgeCommandResponse(
+            ok=False,
+            result_state=ResultState.REJECTED,
+            error=ErrorDetail(
+                code="UNSUPPORTED_FEATURE",
+                message="bridge facade does not implement media transport yet",
+                recoverable=False,
+            ),
+        )
+
+    def capture_audio(self, meta, seconds: float, output: str, *, wait: bool, timeout: float) -> BridgeCommandResponse:
+        return self.play_audio(meta, output, wait=wait, timeout=timeout)
+
+    def capture_camera(self, meta, output: str, quality: int, *, wait: bool, timeout: float) -> BridgeCommandResponse:
+        return self.play_audio(meta, output, wait=wait, timeout=timeout)
 
 
 class ClosingBridgeClient(FakeBridgeClient):
@@ -104,6 +121,21 @@ class SensitiveEventBackend:
             ],
             cursor="evt-sensitive",
             meta=request.meta,
+        )
+
+
+class SensitiveCommandBackend:
+    def execute(self, request):
+        return CommandResult(
+            ok=True,
+            result_state=ResultState.ACCEPTED,
+            meta=request.meta,
+            command={
+                "type": "audio.play",
+                "pcm_data": "raw-pcm",
+                "image_payload": "raw-image",
+                "nested": {"raw_ir_code": "0xDEADBEEF"},
+            },
         )
 
 
@@ -206,6 +238,9 @@ class McpStdioTests(unittest.TestCase):
                 "events_clear",
                 "speech_get_transcript",
                 "power_status",
+                "audio_play",
+                "audio_capture",
+                "camera_capture",
             },
         )
         for tool in responses[1]["result"]["tools"]:
@@ -501,6 +536,114 @@ class McpStdioTests(unittest.TestCase):
         self.assertTrue(structured["ok"])
         self.assertEqual(structured["power"]["power_source"], "usb")
         self.assertIsNone(structured["power"]["percentage"])
+
+    def test_media_and_sensor_tools_return_cli_result_shapes_without_payloads(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "audio-play",
+                    "method": "tools/call",
+                    "params": {"name": "audio_play", "arguments": {"path": "prompt.wav"}},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "audio-capture",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "audio_capture",
+                        "arguments": {"seconds": 1.5, "output": "mic.wav"},
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "camera",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "camera_capture",
+                        "arguments": {"output": "frame.jpg", "quality": 80},
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = [response["result"]["structuredContent"] for response in responses]
+        self.assertEqual(
+            [payload["command"]["type"] for payload in structured],
+            ["audio.play", "audio.capture", "camera.capture"],
+        )
+        content = "\n".join(response["result"]["content"][0]["text"] for response in responses)
+        self.assertNotIn("pcm_data", content.lower())
+        self.assertNotIn("audio_payload", content.lower())
+        self.assertNotIn("base64", content.lower())
+        self.assertNotIn("jpeg_bytes", content.lower())
+        self.assertNotIn("image_payload", content.lower())
+        self.assertNotIn("nfc_tag_id", content.lower())
+        self.assertNotIn("raw_ir_code", content.lower())
+
+    def test_media_tool_redacts_sensitive_backend_command_fields(self) -> None:
+        code, responses, stderr = run_mcp_with_backend_factory(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-audio",
+                    "method": "tools/call",
+                    "params": {"name": "audio_play", "arguments": {"path": "prompt.wav"}},
+                }
+            ],
+            lambda name: SensitiveCommandBackend(),
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertEqual(structured["command"]["pcm_data"], "<redacted>")
+        self.assertEqual(structured["command"]["image_payload"], "<redacted>")
+        self.assertEqual(structured["command"]["nested"]["raw_ir_code"], "<redacted>")
+        self.assertEqual(json.loads(responses[0]["result"]["content"][0]["text"]), structured)
+        self.assertNotIn("raw-pcm", responses[0]["result"]["content"][0]["text"])
+        self.assertNotIn("raw-image", responses[0]["result"]["content"][0]["text"])
+        self.assertNotIn("0xDEADBEEF", responses[0]["result"]["content"][0]["text"])
+
+    def test_bridge_media_tool_rejection_is_tool_result_not_protocol_error(self) -> None:
+        code, responses, stderr = run_mcp_with_backend_factory(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-audio",
+                    "method": "tools/call",
+                    "params": {"name": "audio_play", "arguments": {"path": "prompt.wav"}},
+                }
+            ],
+            lambda name: BridgeBackend(FakeBridgeClient()),
+            RuntimeConfig(backend="bridge", device="default", timeout=5.0, source="mcp_agent"),
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertNotIn("error", responses[0])
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertFalse(structured["ok"])
+        self.assertEqual(structured["error"]["code"], "UNSUPPORTED_FEATURE")
+
+    def test_media_tool_invalid_argument_type_is_protocol_error(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-camera",
+                    "method": "tools/call",
+                    "params": {"name": "camera_capture", "arguments": {"output": "frame.jpg", "quality": 80.5}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(responses[0]["error"]["code"], -32602)
+        self.assertIn("quality must be an integer", responses[0]["error"]["message"])
 
     def test_motion_pose_tool_returns_command_shape(self) -> None:
         code, responses, stderr = run_mcp(

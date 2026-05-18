@@ -205,6 +205,37 @@ The expected CI shape is:
 - Containerized PlatformIO build-only checks for firmware when the pinned
   micro-ROS PlatformIO dependency resolves.
 
+## Hardware-Free Readiness Summary
+
+The practical pre-hardware gate is complete when these checks pass locally or
+in CI:
+
+- `uv run --directory apps/stackchanctl python -m unittest discover -s tests`
+  for CLI, mock backend, MCP stdio, and Codex skill policy regression.
+- `uv run --directory apps/stackchanctl --with ruff ruff check .`.
+- `uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests`
+  for hardware-free bridge facade, event, speech, telemetry, and redaction
+  behavior.
+- `uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .`.
+- `uv run --no-project python scripts/check_ros_interfaces.py` for
+  `stackchan_msgs` contract shape when a full ROS 2 build is unavailable.
+- `uv run python -m unittest discover -s firmware/m5stackchan-microros/tests`
+  for firmware contract checks that do not need a board.
+- `uv run --no-project python scripts/ros2_container.py smoke` when Docker is
+  available, to build `stackchan_msgs` and `stackchan_bridge` in ROS 2 Jazzy and
+  verify the no-device bridge path.
+- `uv run --no-project python scripts/firmware_container.py build` when Docker
+  is available and the pinned PlatformIO/micro-ROS dependencies resolve. If the
+  container daemon, PlatformIO toolchain, or pinned dependency is unavailable,
+  run the firmware contract tests above and explicitly mark the build check
+  unavailable.
+
+Passing these gates does not claim physical behavior works. K151-specific
+servo direction, display rendering, LED behavior, audio I/O, camera data, NFC
+and IR observations, USB serial passthrough, micro-ROS Agent connectivity, and
+disconnect/reconnect behavior remain manual validation items under
+`docs/hardware-validation.md`.
+
 Deferred until implementation stabilizes:
 
 - Markdown formatting checks.
