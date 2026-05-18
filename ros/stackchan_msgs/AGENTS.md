@@ -55,6 +55,14 @@ ROS resources use:
 ```
 
 `default` is the standard single-device id. Mock and physical devices use the same identity contract.
+Firmware-owned resources use `/stackchan/<device_id>/device/...`, bridge facade
+commands use `/stackchan/<device_id>/cmd/...`, and bridge-owned public
+status/telemetry/events use `/stackchan/<device_id>/...` without `/device`.
+Do not document actual resources as bare `/device/...` paths.
+
+When a message needs to distinguish multiple sensor elements within one
+StackChan, use fields such as `sensor_index`. That field must not replace or
+route across `device_id`.
 
 ## Topic / Service / Action Policy
 

@@ -73,7 +73,7 @@ struct DeviceEvent {
   char payload_json[kEventPayloadJsonMaxLength + 1];
 };
 
-using EventPublishFn = bool (*)(const DeviceEvent& event, void* context);
+using EventPublishFn = Result (*)(const DeviceEvent& event, void* context);
 
 inline const char* device_event_name(DeviceEventKind kind) {
   switch (kind) {
@@ -522,11 +522,9 @@ class EventPublisher {
 
     size_t drained = 0;
     while (count_ > 0 && drained < max_events) {
-      if (!callback_(queue_[head_], context_)) {
-        return Result::rejected(
-            "FIRMWARE_BUSY",
-            "event publisher callback rejected the event",
-            true);
+      Result publish_result = callback_(queue_[head_], context_);
+      if (!publish_result.ok) {
+        return publish_result;
       }
       head_ = (head_ + 1) % kEventQueueCapacity;
       --count_;

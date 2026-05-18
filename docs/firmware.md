@@ -141,6 +141,21 @@ Current MVP scaffold:
 
 Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 
+Firmware must construct ROS resource names with the full device namespace:
+
+- `/stackchan/<device_id>/device/...` for firmware-owned publishers,
+  services, and actions.
+- `/stackchan/<device_id>/cmd/...` only when describing the bridge facade that
+  routes commands to firmware.
+- Never publish to or document a bare `/device/...` resource as an actual ROS
+  path. That shorthand can hide the `device_id` namespace needed for multiple
+  StackChan devices.
+
+When a single StackChan has multiple physical sensors of the same kind, keep
+them on the same device-scoped topic and identify the element with fields such
+as `sensor_index`. Do not use `sensor_index` as a device identity or routing
+key.
+
 ## Runtime responsibilities
 
 At runtime, the firmware should maintain a small internal state machine.

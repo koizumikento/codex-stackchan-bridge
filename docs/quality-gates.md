@@ -81,6 +81,13 @@ Required for message, service, or action changes:
   `colcon` build unavailable in the change notes.
 - New command-bearing interfaces include required metadata.
 - Namespaces follow `/stackchan/<device_id>`.
+- Firmware-owned resources use full `/stackchan/<device_id>/device/...` names,
+  bridge facade commands use `/stackchan/<device_id>/cmd/...`, and public
+  bridge-owned status/telemetry/events use `/stackchan/<device_id>/...`
+  without `/device`. Bare `/device/...` shorthand is not acceptable in
+  interface docs, issue plans, or implementation notes for actual resources.
+- Multiple physical devices are separated by `device_id`; fields such as
+  `sensor_index` identify multiple sensors within one device only.
 - Response/error shapes follow the documented error model.
 - Interface changes are reflected in `docs/ros-interface.md`.
 - QoS and heartbeat decisions are documented when implementation touches status, events, IMU, audio chunks, or camera paths.

@@ -48,6 +48,14 @@ Firmware does not own:
 - Enforce servo, LED, audio, camera, and sensor safety limits in firmware.
 - Command-bearing interfaces must preserve `device_id`, `command_id`, `source`, `created_at`, and `priority`.
 - Publish structured status and errors whenever possible.
+- Firmware-owned ROS resources must use full device-scoped names such as
+  `/stackchan/<device_id>/device/events`,
+  `/stackchan/<device_id>/device/touch/state`, and
+  `/stackchan/<device_id>/device/motion/pose`. Do not document or implement
+  bare `/device/...` resources as actual topic/service/action names.
+- Multi-StackChan routing is by `device_id` namespace. Multiple sensor elements
+  within one StackChan may use fields such as `sensor_index`, but those fields
+  must never replace `device_id`.
 - Use `LOW`, `NORMAL`, `HIGH`, and `SAFETY` priority values.
 - Reserve `SAFETY` for firmware and bridge internal use.
 

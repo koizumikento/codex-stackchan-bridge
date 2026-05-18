@@ -31,10 +31,18 @@ Bridge nodes must preserve the shared `device_id` contract.
 Rules:
 
 - Use `/stackchan/<device_id>/...` namespaces.
+- Treat `/stackchan/<device_id>/cmd/...` as bridge facade command resources,
+  `/stackchan/<device_id>/device/...` as firmware-owned device-side resources,
+  and `/stackchan/<device_id>/...` without `/device` as bridge-owned public
+  status, telemetry, and events.
+- Do not use bare `/device/...` shorthand in implementation notes because it
+  hides the `device_id` namespace required for multi-device routing.
 - `default` is the standard single-device id.
 - Include `device_id` in status, events, logs, and command results.
 - Do not treat `source` as authentication.
 - Do not merge state from different devices without keeping device identity explicit.
+- Use message fields such as `sensor_index` only for multiple sensor elements
+  within one device; never as a substitute for `device_id`.
 
 ## Bridge Role
 

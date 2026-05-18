@@ -94,6 +94,15 @@ struct PowerStatusTelemetry {
   char fault_code[33];
 };
 
+struct HeadPoseTelemetry {
+  char device_id[33];
+  uint32_t stamp_ms;
+  float pan_deg;
+  float tilt_deg;
+  bool moving;
+  char frame[17];
+};
+
 inline float abs_float(float value) {
   return value < 0.0f ? -value : value;
 }

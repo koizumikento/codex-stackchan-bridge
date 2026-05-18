@@ -39,6 +39,15 @@ Development assistant surfaces:
 - `stackchanctl` is a Python CLI using `rclpy`.
 - Rust is only for companion workers on measured hot paths or long-running helper processes.
 - ROS resources live under `/stackchan/<device_id>`, with `default` as the standard single-device id.
+- Always write device-scoped ROS resources with the full namespace in docs,
+  issues, and implementation notes. Use `/stackchan/<device_id>/device/...`
+  for firmware-owned resources, `/stackchan/<device_id>/cmd/...` for bridge
+  facade commands, and `/stackchan/<device_id>/...` without `/device` for
+  bridge-owned public status, telemetry, and events. Do not use bare
+  `/device/...` shorthand when describing actual topic/service/action names.
+- Multi-StackChan support is by `device_id` namespace. Multiple sensors within
+  one StackChan use fields such as `sensor_index`; `sensor_index` is not a
+  replacement for `device_id` and must not route between devices.
 - Command-bearing interfaces carry command metadata and return structured results as documented in `docs/ros-interface.md`.
 - The mock backend is required and must share the same command contract as the bridge backend.
 - Firmware owns safety-critical defaults and hard limits.

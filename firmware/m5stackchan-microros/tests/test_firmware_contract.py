@@ -140,6 +140,33 @@ class FirmwareContractTests(unittest.TestCase):
         )
         subprocess.run([str(output)], check=True)
 
+    def test_ros_publishers_contract_cpp_harness(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler not available")
+
+        binary = ROOT / "tests" / "ros_publishers_contract_test"
+        source = ROOT / "tests" / "ros_publishers_contract_test.cpp"
+        if binary.exists():
+            binary.unlink()
+        if binary.with_suffix(".exe").exists():
+            binary.with_suffix(".exe").unlink()
+
+        output = binary.with_suffix(".exe") if compiler.lower().endswith("cl.exe") else binary
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-I",
+                str(ROOT / "include"),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        subprocess.run([str(output)], check=True)
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
@@ -153,10 +180,13 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("update_agent_connection(false)", main)
         self.assertIn("copy_bounded", main)
         self.assertIn("stackchan::EventPublisher event_publisher", main)
+        self.assertIn("stackchan::DevicePublisherRegistry device_publishers", main)
+        self.assertIn("device_publishers.initialize(STACKCHAN_DEVICE_ID)", main)
+        self.assertIn("device_publishers.set_publish_callback", main)
         self.assertIn("event_publisher.set_callback", main)
         self.assertIn("drain_device_events", main)
         self.assertIn("kEventDrainBudget", main)
-        self.assertIn("kDeviceEventsTopicSuffix", main)
+        self.assertIn("/stackchan/<device_id>/device/events", main)
         self.assertIn("firmware_calibration_valid", main)
         self.assertIn("servo_position_read_available", main)
         face_handler = main[
@@ -173,8 +203,55 @@ class FirmwareContractTests(unittest.TestCase):
             motion_handler.find("meta.priority == stackchan::Priority::Safety"),
             motion_handler.find("state_machine.state() == stackchan::RuntimeState::Fault"),
         )
-        self.assertIn("payload_bytes=", main)
+        self.assertIn("firmware_publish topic=", main)
+        self.assertIn("return device_publishers.publish_event(event);", main)
+        self.assertNotIn("publish_synthetic_telemetry", main)
+        self.assertNotIn("Serial.println(stackchan::kDeviceEventsTopicSuffix)", main)
         self.assertNotIn("Serial.println(event.payload_json)", main)
+
+    def test_device_publisher_contract_names_qos_and_storage(self) -> None:
+        publishers = (ROOT / "include" / "stackchan" / "ros_publishers.hpp").read_text()
+
+        self.assertIn("kStackchanNamespacePrefix = \"/stackchan/\"", publishers)
+        self.assertIn("kDeviceEventsTopicSuffix", publishers)
+        self.assertIn("kDeviceTouchStateTopicSuffix = \"/device/touch/state\"", publishers)
+        self.assertIn("kDeviceProximityRawTopicSuffix = \"/device/proximity/raw\"", publishers)
+        self.assertIn("kDeviceLightRawTopicSuffix = \"/device/light/raw\"", publishers)
+        self.assertIn("kDevicePowerStatusTopicSuffix = \"/device/power/status\"", publishers)
+        self.assertIn("kDeviceMotionPoseTopicSuffix = \"/device/motion/pose\"", publishers)
+        self.assertIn("build_device_topic_name", publishers)
+        self.assertIn("is_valid_device_id", publishers)
+        self.assertIn("is_valid_device_id_char", publishers)
+        self.assertIn("telemetry_device_id_matches", publishers)
+        self.assertIn("RosReliability::Reliable", publishers)
+        self.assertIn("RosReliability::BestEffort", publishers)
+        self.assertIn("kDeviceEventsQos", publishers)
+        self.assertIn("32", publishers)
+        self.assertIn("kDeviceTouchStateQos", publishers)
+        self.assertIn("kDeviceProximityRawQos", publishers)
+        self.assertIn("kDeviceLightRawQos", publishers)
+        self.assertIn("kDevicePowerStatusQos", publishers)
+        self.assertIn("kDeviceMotionPoseQos", publishers)
+        self.assertIn("template <size_t Capacity>", publishers)
+        self.assertIn("struct BoundedString", publishers)
+        self.assertIn("struct BoundedSequence", publishers)
+        self.assertIn("kRosTouchIntensityCapacity = 3", publishers)
+        self.assertIn("StackChanEventMsg", publishers)
+        self.assertIn("TouchStateMsg", publishers)
+        self.assertIn("payload_json.assign", publishers)
+        self.assertIn("fill_event_message", publishers)
+        self.assertIn("fill_touch_state_message", publishers)
+        self.assertIn("fill_proximity_raw_message", publishers)
+        self.assertIn("fill_light_raw_message", publishers)
+        self.assertIn("fill_power_status_message", publishers)
+        self.assertIn("fill_head_pose_message", publishers)
+        self.assertIn("event device_id does not match publisher namespace", publishers)
+        self.assertIn("touch telemetry device_id does not match publisher namespace", publishers)
+        self.assertIn("proximity telemetry device_id does not match publisher namespace", publishers)
+        self.assertIn("light telemetry device_id does not match publisher namespace", publishers)
+        self.assertIn("power telemetry device_id does not match publisher namespace", publishers)
+        self.assertIn("head pose telemetry device_id does not match publisher namespace", publishers)
+        self.assertIn("TelemetryPublishScheduler", publishers)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
@@ -247,6 +324,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"device event queue is full"', events)
         self.assertIn('"device event publisher callback is not configured"', events)
         self.assertIn("EventPublishFn", events)
+        self.assertIn("using EventPublishFn = Result (*)", events)
         self.assertIn("class EventPublisher", events)
         self.assertIn("is_priority_device_event_name", events)
         self.assertIn("nfc_read_failed", events)

@@ -6,6 +6,7 @@
 #include "stackchan/contract.hpp"
 #include "stackchan/events.hpp"
 #include "stackchan/motion_safety.hpp"
+#include "stackchan/ros_publishers.hpp"
 #include "stackchan/sensors.hpp"
 #include "stackchan/state_machine.hpp"
 
@@ -30,6 +31,7 @@ bool microros_connected = false;
 stackchan::CalibrationStore calibration_store;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
 stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
+stackchan::DevicePublisherRegistry device_publishers;
 constexpr size_t kEventDrainBudget = 2;
 
 void copy_bounded(char* destination, size_t size, const char* source) {
@@ -69,8 +71,8 @@ bool try_connect_microros_agent() {
   // TODO: initialize StackChan-BSP hardware and micro-ROS serial transport.
   // set_microros_serial_transports(Serial);
   // TODO: ping micro-ROS Agent, initialize support/node/executor, and create
-  // stackchan_msgs publishers, including /device/events, services, and actions
-  // before returning true.
+  // stackchan_msgs publishers, including /stackchan/<device_id>/device/events,
+  // services, and actions before returning true.
   return false;
 }
 
@@ -80,22 +82,34 @@ bool check_microros_agent_connection() {
   return microros_connected;
 }
 
-bool publish_device_event_ros(const stackchan::DeviceEvent& event, void*) {
+bool firmware_publish_callback(
+    stackchan::DevicePublisherTopic topic,
+    const void*,
+    void*) {
   if (!microros_connected) {
     return false;
   }
 
-  // TODO: replace this diagnostic path with rcl_publish() for
-  // /stackchan/<device_id>/device/events after support/node setup lands.
-  Serial.print("stackchan event device_id=");
-  Serial.print(event.device_id);
-  Serial.print(" name=");
-  Serial.print(event.event_name);
-  Serial.print(" source=");
-  Serial.print(event.source);
-  Serial.print(" payload_bytes=");
-  Serial.println(strlen(event.payload_json));
+  // TODO: replace this diagnostic path with rcl_publish() after generated
+  // stackchan_msgs message headers are wired into the PlatformIO build.
+  Serial.print("stackchan firmware_publish topic=");
+  Serial.print(device_publishers.topic_name(topic));
+  Serial.print(" qos_depth=");
+  Serial.println(device_publishers.qos(topic).depth);
   return true;
+}
+
+stackchan::Result publish_device_event_ros(
+    const stackchan::DeviceEvent& event,
+    void*) {
+  if (!microros_connected) {
+    return stackchan::Result::rejected(
+        "TRANSPORT_DISCONNECTED",
+        "micro-ROS publisher is disconnected",
+        true);
+  }
+
+  return device_publishers.publish_event(event);
 }
 
 void update_agent_connection(bool connected) {
@@ -211,14 +225,23 @@ void publish_status_heartbeat() {
   Serial.print(audio_policy.sample_rate);
   Serial.print(" imu_min_hz=");
   Serial.print(stackchan::kImuMinHz);
-  Serial.print(" events=");
-  Serial.println(stackchan::kDeviceEventsTopicSuffix);
+  Serial.print(" events_topic=");
+  if (device_publishers.initialized()) {
+    Serial.println(device_publishers.topic_name(stackchan::DevicePublisherTopic::Events));
+  } else {
+    Serial.println("unavailable");
+  }
 }
 
 }  // namespace
 
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+  stackchan::Result publisher_result = device_publishers.initialize(STACKCHAN_DEVICE_ID);
+  if (!publisher_result.ok) {
+    last_error = publisher_result;
+  }
+  device_publishers.set_publish_callback(firmware_publish_callback);
   event_publisher.set_callback(publish_device_event_ros);
   show_neutral_face();
   state_machine.booted();
@@ -238,6 +261,9 @@ void loop() {
     last_heartbeat_ms = now;
   }
 
+  // Runtime order is safety/fault checks, motion-neutral work, command executor,
+  // high-priority event drain, then low-rate telemetry once real adapters exist.
+  // Do not publish synthetic pose/status samples as real device telemetry.
   // TODO: spin micro-ROS executor and dispatch generated stackchan_msgs handlers.
   drain_device_events();
   delay(10);

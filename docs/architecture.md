@@ -112,17 +112,28 @@ Rules:
 - `default` is the standard single-device id.
 - `device_id` should use only ASCII letters, numbers, `_`, and `-`.
 - ROS resources live under `/stackchan/<device_id>`.
+- Firmware-owned device-side resources live under
+  `/stackchan/<device_id>/device/...`; bridge facade commands live under
+  `/stackchan/<device_id>/cmd/...`; bridge-owned public status, telemetry, and
+  events live directly under `/stackchan/<device_id>/...`.
+- Avoid bare `/device/...` shorthand in implementation plans and issues. It can
+  hide the `device_id` namespace that keeps multiple StackChan devices separate.
 - CLI commands select the target with `--device <device_id>`.
 - If `--device` is omitted, CLI config may provide a default; otherwise use `default`.
 - `device_id` is separate from `command_id`.
 - Status, events, logs, and command results include `device_id`.
+- Multiple physical StackChan devices are separated by `device_id` namespaces.
+  Multiple sensor elements within one StackChan are identified inside message
+  fields, such as `sensor_index`, and do not create separate device namespaces.
 
 Example namespaces:
 
 ```text
 /stackchan/default/status
 /stackchan/default/cmd/face/set
+/stackchan/default/device/events
 /stackchan/desk/status
+/stackchan/desk/device/proximity/raw
 /stackchan/livingroom/cmd/audio/play
 ```
 
