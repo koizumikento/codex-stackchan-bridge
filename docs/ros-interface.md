@@ -37,14 +37,25 @@ Rules:
 - `device_id` is part of the ROS namespace and should also appear in status, events, logs, and command results.
 - `device_id` is not a substitute for `command_id`; they solve different problems.
 - Mock devices use the same namespace and `device_id` rules as physical devices.
+- Write full ROS resource names when documenting implementation work. Bare
+  `/device/...` is only an informal suffix, not an actual ROS path.
+- Firmware-owned resources live under `/stackchan/<device_id>/device/...`.
+  Bridge facade commands live under `/stackchan/<device_id>/cmd/...`.
+  Bridge-owned public status, telemetry, and events live directly under
+  `/stackchan/<device_id>/...`.
+- Multi-StackChan support is achieved by separate `device_id` namespaces.
+  Multiple sensor elements on one StackChan stay on the same device topic and
+  are identified by message fields such as `sensor_index`.
 
 Examples:
 
 ```text
 /stackchan/default/status
 /stackchan/default/cmd/face/set
+/stackchan/default/device/events
 /stackchan/desk/status
 /stackchan/desk/cmd/motion/run
+/stackchan/desk/device/proximity/raw
 ```
 
 ## Bridge facade and device interface
@@ -67,6 +78,9 @@ Rules:
 
 - `cmd` resources are owned by `stackchan_bridge` and are the stable CLI-facing ROS surface.
 - `device` resources are owned by firmware and may be lower-level, but they must still use `stackchan_msgs` contracts.
+- Do not shorten device-side resources to `/device/...` in plans or issues
+  unless the surrounding sentence explicitly says it is a suffix. The actual
+  resource always includes `/stackchan/<device_id>`.
 - Bridge facade calls validate input, verify target device availability, route to the device side, aggregate status, and normalize errors.
 - CLI code must not call `device` resources except in explicit diagnostics or bring-up commands.
 - Firmware must not depend on CLI-specific behavior.
