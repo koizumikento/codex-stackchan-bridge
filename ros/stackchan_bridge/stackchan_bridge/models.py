@@ -71,6 +71,43 @@ class CommandResponse:
     result: Result
 
 
+@dataclass(frozen=True)
+class CapabilitySnapshot:
+    """Latest bridge-visible state for one device capability."""
+
+    name: str
+    state: str
+    detail_code: str = ""
+    active: bool = False
+    queued: int = 0
+    last_update: float | None = None
+
+
+def default_capabilities() -> list[CapabilitySnapshot]:
+    """Conservative hardware-free capability defaults."""
+
+    return [
+        CapabilitySnapshot("face", "available"),
+        CapabilitySnapshot("motion", "available"),
+        CapabilitySnapshot("led", "available"),
+        CapabilitySnapshot(
+            "audio_playback",
+            "unavailable",
+            detail_code="UNSUPPORTED_FEATURE",
+        ),
+        CapabilitySnapshot(
+            "audio_capture",
+            "unavailable",
+            detail_code="UNSUPPORTED_FEATURE",
+        ),
+        CapabilitySnapshot(
+            "camera_snapshot",
+            "unavailable",
+            detail_code="UNSUPPORTED_FEATURE",
+        ),
+    ]
+
+
 @dataclass
 class StatusSnapshot:
     """Latest bridge-aggregated status for one device."""
@@ -82,6 +119,8 @@ class StatusSnapshot:
     motion: str = "idle"
     last_command_id: str = ""
     last_error: Result = field(default_factory=lambda: Result.accepted(""))
+    firmware_version: str = ""
+    capabilities: list[CapabilitySnapshot] = field(default_factory=default_capabilities)
 
 
 @dataclass(frozen=True)

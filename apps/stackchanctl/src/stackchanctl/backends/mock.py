@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from stackchanctl.contract import (
+    CapabilityStatus,
     CommandRequest,
     CommandResult,
     CommandType,
@@ -37,6 +38,21 @@ SPEED_MIN = 0
 SPEED_MAX = 1000
 MIN_NONZERO_DURATION_MS = 100
 MAX_DURATION_MS = 2000
+
+
+def _default_capabilities(device_id: str = "default") -> tuple[CapabilityStatus, ...]:
+    audio_state = "unavailable" if device_id == "unsupported_audio" else "available"
+    camera_state = "unavailable" if device_id == "unsupported_camera" else "available"
+    audio_detail = "UNSUPPORTED_FEATURE" if audio_state == "unavailable" else ""
+    camera_detail = "UNSUPPORTED_FEATURE" if camera_state == "unavailable" else ""
+    return (
+        CapabilityStatus("face", "available"),
+        CapabilityStatus("motion", "available"),
+        CapabilityStatus("led", "available"),
+        CapabilityStatus("audio_playback", audio_state, detail_code=audio_detail),
+        CapabilityStatus("audio_capture", audio_state, detail_code=audio_detail),
+        CapabilityStatus("camera_snapshot", camera_state, detail_code=camera_detail),
+    )
 
 
 class MockBackend:
@@ -393,6 +409,8 @@ def _observe(request: CommandRequest) -> DeviceStatus:
                 recoverable=True,
             ),
             meta=request.meta,
+            firmware_version="mock-firmware-0.1",
+            capabilities=_default_capabilities(request.meta.device_id),
         )
 
     return DeviceStatus(
@@ -401,6 +419,8 @@ def _observe(request: CommandRequest) -> DeviceStatus:
         device_state="idle",
         face="neutral",
         meta=request.meta,
+        firmware_version="mock-firmware-0.1",
+        capabilities=_default_capabilities(request.meta.device_id),
     )
 
 

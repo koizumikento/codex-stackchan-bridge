@@ -250,6 +250,8 @@ Fields:
 - `motion`
 - `last_command_id`
 - `last_error`
+- `firmware_version`
+- `capabilities`
 
 Recommended IDL details:
 
@@ -258,6 +260,17 @@ Recommended IDL details:
 - `connected` reflects current registry/transport availability, not whether the
   previous command succeeded. A healthy device may still report a historical
   command rejection in `last_error` until a later command result replaces it.
+- `capabilities` is a bounded additive status field and does not replace
+  feature-specific interfaces. Capability records include `name`, `state`,
+  `detail_code`, `active`, `queued`, and `last_update`, where `state` is one of
+  `available`, `unavailable`, `degraded`, or `fault`.
+- Capability status is for diagnostics and routing hints only. Commands must
+  still return their own shared `Result`, and telemetry/payload data must stay
+  on explicit topics, services, or actions.
+- Useful aggregated activity hints include audio `queued`/`playing`, camera
+  snapshot availability, firmware version, and adapter initialization state.
+  These hints must not include PCM bytes, speech text, image bytes, NFC tag IDs,
+  raw IR codes, or protocol dumps.
 
 ### `/stackchan/<device_id>/imu/raw`
 
@@ -938,6 +951,10 @@ Privacy and result rules:
   not include PCM bytes, speech text, or transcript text.
 - Results may expose metadata such as `command_id`, input/output path,
   duration, byte count, sample rate, channels, and structured errors.
+- Action acceptance means the bridge and firmware accepted the playback session,
+  not that speaker output has completed. Playback start, queued depth,
+  completion, underrun, and terminal failure should be observable through action
+  feedback, status, or bounded events.
 - Playback underrun returns `AUDIO_UNDERRUN` and stops playback.
 - Mic overrun drops the current chunk and publishes `MIC_OVERRUN`; capture may
   continue unless the failure is terminal.
@@ -994,6 +1011,9 @@ Baseline camera behavior:
 - `quality` range is 1-95
 - `image` uses `CompressedImagePayload`
 - maximum image payload is 96 KiB
+- Action acceptance means the snapshot request was accepted, not that a valid
+  JPEG is already available. Frame acquisition, JPEG encode, size validation,
+  and result delivery are separate failure points.
 - CLI JSON, MCP tool results, public events, and normal logs report metadata
   only; they must not inline base64, JPEG bytes, or image payloads
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with

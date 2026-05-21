@@ -558,6 +558,20 @@ class MockCliTests(unittest.TestCase):
         expected = json.loads((ROOT / "tests" / "fixtures" / "observe_default.json").read_text())
         self.assertEqual(json.loads(stdout), expected)
 
+    def test_observe_json_reports_unavailable_capability_without_payloads(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "unsupported_camera", "observe", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        capabilities = {item["name"]: item for item in payload["capabilities"]}
+        self.assertEqual(capabilities["camera_snapshot"]["state"], "unavailable")
+        self.assertEqual(capabilities["camera_snapshot"]["detail_code"], "UNSUPPORTED_FEATURE")
+        self.assertNotIn("image_payload", stdout)
+        self.assertNotIn("base64", stdout)
+
     def test_human_output_is_compact(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["say", "hello"],

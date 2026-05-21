@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from stackchanctl.backends.mock import validate_common_request
 from stackchanctl.contract import (
+    CapabilityStatus,
     CommandMeta,
     CommandRequest,
     CommandResult,
@@ -421,6 +422,11 @@ class RclpyBridgeClient:
             device_state=response.state,
             face=response.face,
             last_error=_error_from_ros(response.last_error),
+            firmware_version=getattr(response, "firmware_version", ""),
+            capabilities=tuple(
+                _capability_from_ros(capability)
+                for capability in getattr(response, "capabilities", [])
+            ),
         )
 
     def set_face(
@@ -874,6 +880,17 @@ def _stamp_to_iso(stamp) -> str | None:
         return None
     value = datetime.fromtimestamp(sec + nanosec / 1_000_000_000, UTC)
     return value.replace(microsecond=nanosec // 1000).isoformat().replace("+00:00", "Z")
+
+
+def _capability_from_ros(capability) -> CapabilityStatus:
+    return CapabilityStatus(
+        name=getattr(capability, "name", ""),
+        state=getattr(capability, "state", ""),
+        detail_code=getattr(capability, "detail_code", ""),
+        active=bool(getattr(capability, "active", False)),
+        queued=int(getattr(capability, "queued", 0)),
+        last_update=_stamp_to_iso(getattr(capability, "last_update", None)),
+    )
 
 
 def _unsupported_events(device_id: str, feature: str) -> EventListResult:

@@ -105,6 +105,28 @@ class CommandResult:
 
 
 @dataclass(frozen=True)
+class CapabilityStatus:
+    name: str
+    state: str
+    detail_code: str = ""
+    active: bool = False
+    queued: int = 0
+    last_update: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.name,
+            "state": self.state,
+            "active": self.active,
+            "queued": self.queued,
+            "last_update": self.last_update,
+        }
+        if self.detail_code:
+            payload["detail_code"] = self.detail_code
+        return payload
+
+
+@dataclass(frozen=True)
 class DeviceStatus:
     device_id: str
     connected: bool
@@ -112,6 +134,8 @@ class DeviceStatus:
     face: str
     last_error: ErrorDetail | None = None
     meta: CommandMeta | None = None
+    firmware_version: str = ""
+    capabilities: tuple[CapabilityStatus, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +146,8 @@ class DeviceStatus:
             "device_state": self.device_state,
             "face": self.face,
             "last_error": None if self.last_error is None else self.last_error.to_dict(),
+            "firmware_version": self.firmware_version,
+            "capabilities": [capability.to_dict() for capability in self.capabilities],
         }
 
 

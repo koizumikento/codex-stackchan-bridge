@@ -1,9 +1,54 @@
 {
+  "capabilities": [
+    {
+      "active": false,
+      "last_update": null,
+      "name": "face",
+      "queued": 0,
+      "state": "available"
+    },
+    {
+      "active": false,
+      "last_update": null,
+      "name": "motion",
+      "queued": 0,
+      "state": "available"
+    },
+    {
+      "active": false,
+      "last_update": null,
+      "name": "led",
+      "queued": 0,
+      "state": "available"
+    },
+    {
+      "active": false,
+      "last_update": null,
+      "name": "audio_playback",
+      "queued": 0,
+      "state": "available"
+    },
+    {
+      "active": false,
+      "last_update": null,
+      "name": "audio_capture",
+      "queued": 0,
+      "state": "available"
+    },
+    {
+      "active": false,
+      "last_update": null,
+      "name": "camera_snapshot",
+      "queued": 0,
+      "state": "available"
+    }
+  ],
   "command_id": "cmd-test-0001",
   "connected": true,
   "device_id": "default",
   "device_state": "idle",
   "face": "neutral",
+  "firmware_version": "mock-firmware-0.1",
   "last_error": null,
   "metadata": {
     "device_id": "default",

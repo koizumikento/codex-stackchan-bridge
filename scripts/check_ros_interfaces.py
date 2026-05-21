@@ -8,6 +8,7 @@ MSGS = ROOT / "ros" / "stackchan_msgs"
 
 EXPECTED_INTERFACES = [
     "msg/AudioChunk.msg",
+    "msg/CapabilityStatus.msg",
     "msg/CommandMeta.msg",
     "msg/CompressedImagePayload.msg",
     "msg/HeadPose.msg",
@@ -121,6 +122,8 @@ SERVICE_FIELDS = {
         "string<=32 motion",
         "string<=36 last_command_id",
         "stackchan_msgs/Result last_error",
+        "string<=32 firmware_version",
+        "stackchan_msgs/CapabilityStatus[<=16] capabilities",
     ],
 }
 
@@ -139,6 +142,24 @@ def main() -> int:
     result = (MSGS / "msg" / "Result.msg").read_text()
     for field in RESULT_FIELDS:
         require(field in result, f"Result missing {field}")
+
+    capability = (MSGS / "msg" / "CapabilityStatus.msg").read_text()
+    for field in [
+        "string<=32 name",
+        "string<=16 state",
+        "string<=64 detail_code",
+        "bool active",
+        "uint8 queued",
+        "builtin_interfaces/Time last_update",
+    ]:
+        require(field in capability, f"CapabilityStatus missing {field}")
+
+    status = (MSGS / "msg" / "StackChanStatus.msg").read_text()
+    for field in [
+        "string<=32 firmware_version",
+        "stackchan_msgs/CapabilityStatus[<=16] capabilities",
+    ]:
+        require(field in status, f"StackChanStatus missing {field}")
 
     event = (MSGS / "msg" / "StackChanEvent.msg").read_text()
     for field in STACKCHAN_EVENT_FIELDS:

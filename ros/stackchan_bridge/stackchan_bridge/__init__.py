@@ -10,6 +10,7 @@ from stackchan_bridge.models import (
     STATE_COMPLETED,
     STATE_REJECTED,
     STATE_TIMEOUT,
+    CapabilitySnapshot,
     CommandMeta,
     CommandResponse,
     Result,
@@ -21,6 +22,7 @@ from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
 __all__ = [
     "CommandMeta",
     "CommandResponse",
+    "CapabilitySnapshot",
     "DeviceRecord",
     "DeviceRegistry",
     "PRIORITY_HIGH",

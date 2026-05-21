@@ -66,6 +66,30 @@ def _copy_status(response: object, status: object) -> None:
     response.motion = status.motion
     response.last_command_id = status.last_command_id
     _copy_result(response.last_error, status.last_error)
+    if hasattr(response, "firmware_version"):
+        response.firmware_version = getattr(status, "firmware_version", "")
+
+
+def _copy_status_with_type(response: object, status: object, capability_type: object) -> None:
+    _copy_status(response, status)
+    if hasattr(response, "capabilities"):
+        response.capabilities = [
+            _make_capability_status(capability_type, capability)
+            for capability in getattr(status, "capabilities", [])
+        ]
+
+
+def _make_capability_status(capability_type: object, capability: object) -> object:
+    message = capability_type()
+    message.name = getattr(capability, "name", "")
+    message.state = getattr(capability, "state", "")
+    message.detail_code = getattr(capability, "detail_code", "")
+    message.active = bool(getattr(capability, "active", False))
+    message.queued = int(getattr(capability, "queued", 0))
+    last_update = getattr(capability, "last_update", None)
+    if last_update is not None:
+        _copy_seconds_to_stamp(message.last_update, float(last_update))
+    return message
 
 
 def _reject_external_safety_priority(meta: CommandMeta, response: object) -> bool:
@@ -255,6 +279,7 @@ def main(args: list[str] | None = None) -> None:
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from stackchan_msgs.action import CaptureAudio, CaptureCamera, MoveHeadPose, PlayAudio, RunMotion, Say
         from stackchan_msgs.msg import AudioChunk as RosAudioChunk
+        from stackchan_msgs.msg import CapabilityStatus
         from stackchan_msgs.msg import HeadPose, LightRaw, PowerStatus, ProximityRaw, StackChanEvent, TouchState
         from stackchan_msgs.srv import (
             ClearEventCursor,
@@ -319,6 +344,7 @@ def main(args: list[str] | None = None) -> None:
             self._telemetry_subscriptions = []
             self._power_status_type = PowerStatus
             self._head_pose_type = HeadPose
+            self._capability_status_type = CapabilityStatus
             self._action_servers = []
             for device_id in configured_device_ids:
                 self._create_device_resources(device_id)
@@ -557,7 +583,11 @@ def main(args: list[str] | None = None) -> None:
                 meta.device_id,
                 command_id=meta.command_id,
             )
-            _copy_status(response, status_response.status)
+            _copy_status_with_type(
+                response,
+                status_response.status,
+                self._capability_status_type,
+            )
             return response
 
         def _handle_set_face(

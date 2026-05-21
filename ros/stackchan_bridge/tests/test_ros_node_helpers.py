@@ -9,6 +9,7 @@ from stackchan_bridge.ros_node import (
     _coerce_telemetry_device_id,
     _copy_power_status,
     _copy_head_pose,
+    _copy_status_with_type,
     _copy_event_record,
     _configured_device_records,
     _snapshot_from_power_status,
@@ -20,6 +21,7 @@ from stackchan_bridge.ros_node import (
     _reject_external_safety_priority,
     _relay_telemetry_message,
 )
+from stackchan_bridge.models import CapabilitySnapshot, Result, StatusSnapshot
 from stackchan_bridge.telemetry import HeadPoseSnapshot, PowerStatusSnapshot
 
 
@@ -27,6 +29,46 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RosNodeHelperTests(unittest.TestCase):
+    def test_status_copy_includes_capability_messages(self) -> None:
+        class CapabilityMessage:
+            def __init__(self) -> None:
+                self.name = ""
+                self.state = ""
+                self.detail_code = ""
+                self.active = False
+                self.queued = 0
+                self.last_update = SimpleNamespace(sec=0, nanosec=0)
+
+        response = SimpleNamespace(
+            last_error=SimpleNamespace(ok=False, state=0, error_code="", message="", recoverable=False),
+            firmware_version="",
+            capabilities=[],
+        )
+        status = StatusSnapshot(
+            device_id="default",
+            firmware_version="bridge-test",
+            last_error=Result.accepted(""),
+            capabilities=[
+                CapabilitySnapshot(
+                    "audio_playback",
+                    "degraded",
+                    detail_code="QUEUE_BACKPRESSURE",
+                    active=True,
+                    queued=2,
+                    last_update=1778889601.25,
+                )
+            ],
+        )
+
+        _copy_status_with_type(response, status, CapabilityMessage)
+
+        self.assertEqual(response.firmware_version, "bridge-test")
+        self.assertEqual(response.capabilities[0].name, "audio_playback")
+        self.assertEqual(response.capabilities[0].state, "degraded")
+        self.assertEqual(response.capabilities[0].queued, 2)
+        self.assertEqual(response.capabilities[0].last_update.sec, 1778889601)
+        self.assertEqual(response.capabilities[0].last_update.nanosec, 250000000)
+
     def test_meta_falls_back_to_namespace_device_id(self) -> None:
         stamp = SimpleNamespace(sec=1778889601, nanosec=250000000)
         meta = SimpleNamespace(

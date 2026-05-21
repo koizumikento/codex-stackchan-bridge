@@ -25,6 +25,7 @@ from stackchanctl.backends.bridge import (  # noqa: E402
 from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
 from stackchanctl.contract import (  # noqa: E402
+    CapabilityStatus,
     DeviceStatus,
     ErrorDetail,
     EventListResult,
@@ -60,6 +61,15 @@ class FakeBridgeClient:
             connected=True,
             device_state="idle",
             face="neutral",
+            firmware_version="bridge-test",
+            capabilities=(
+                CapabilityStatus("face", "available"),
+                CapabilityStatus(
+                    "camera_snapshot",
+                    "unavailable",
+                    detail_code="UNSUPPORTED_FEATURE",
+                ),
+            ),
         )
 
     def set_face(self, meta, name: str, timeout: float) -> BridgeCommandResponse:
@@ -277,6 +287,10 @@ class BridgeBackendTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["device_id"], "default")
         self.assertEqual(payload["device_state"], "idle")
+        self.assertEqual(payload["firmware_version"], "bridge-test")
+        capabilities = {item["name"]: item for item in payload["capabilities"]}
+        self.assertEqual(capabilities["face"]["state"], "available")
+        self.assertEqual(capabilities["camera_snapshot"]["detail_code"], "UNSUPPORTED_FEATURE")
         self.assertEqual(payload["command_id"], "cmd-test-0001")
         self.assertEqual(payload["metadata"]["source"], "human_cli")
         self.assertEqual(

@@ -41,6 +41,11 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(status.device_id, "default")
         self.assertEqual(status.face, "neutral")
         self.assertEqual(status.last_error.state, STATE_ACCEPTED)
+        capabilities = {capability.name: capability for capability in status.capabilities}
+        self.assertEqual(capabilities["face"].state, "available")
+        self.assertEqual(capabilities["motion"].state, "available")
+        self.assertEqual(capabilities["camera_snapshot"].state, "unavailable")
+        self.assertEqual(capabilities["camera_snapshot"].detail_code, "UNSUPPORTED_FEATURE")
 
     def test_face_set_records_command_id_and_face(self) -> None:
         bridge = facade()

@@ -336,6 +336,9 @@ class McpStdioTests(unittest.TestCase):
         structured = responses[0]["result"]["structuredContent"]
         self.assertEqual(structured["device_id"], "default")
         self.assertEqual(structured["device_state"], "idle")
+        self.assertEqual(structured["firmware_version"], "mock-firmware-0.1")
+        capabilities = {item["name"]: item for item in structured["capabilities"]}
+        self.assertEqual(capabilities["audio_playback"]["state"], "available")
 
     def test_events_next_tool_returns_event_shape(self) -> None:
         code, responses, stderr = run_mcp(

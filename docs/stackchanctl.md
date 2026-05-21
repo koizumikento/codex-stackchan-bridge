@@ -394,6 +394,25 @@ Default output is compact and human-readable. With `--json`, the output uses thi
 }
 ```
 
+`observe --json` includes bounded diagnostic capability fields such as:
+
+```json
+{
+  "capabilities": [
+    {"name": "face", "state": "available"},
+    {"name": "motion", "state": "unavailable", "detail_code": "CALIBRATION_INVALID"},
+    {"name": "audio_playback", "state": "available", "queued": 1, "playing": true},
+    {"name": "camera_snapshot", "state": "degraded", "detail_code": "CAMERA_INIT_FAILED"}
+  ],
+  "firmware_version": "stackchan-microros-0.1"
+}
+```
+
+These fields are additive and diagnostic. They do not replace explicit commands
+such as `power status`, `motion status`, `audio play`, `audio capture`, `camera
+capture`, or event/transcript commands. `observe` stays low-rate and
+metadata-only.
+
 ### Event commands
 
 Event commands read bridge-normalized observations from StackChan. They are not
@@ -522,6 +541,13 @@ The current bridge backend rejects audio play/capture with
 still reports the baseline metadata contract and never includes PCM bytes. The
 mock backend keeps deterministic responses for CLI development.
 
+Audio command results should distinguish transport/session acceptance from
+playback or capture completion. For example, a future `audio play --json` result
+may report accepted metadata first, while final completion, underrun, queue
+depth, and `playing` state come from action feedback, status, or bounded events.
+The CLI should not block unrelated commands while waiting for long speaker
+playback unless the user explicitly requests a wait mode.
+
 ### Camera commands
 
 Camera support should start with snapshots rather than continuous streaming.
@@ -545,6 +571,12 @@ The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
 until firmware-confirmed device transport exists. CLI JSON still reports the
 baseline QVGA JPEG metadata contract and never includes JPEG bytes. The mock
 backend keeps deterministic camera validation behavior for CLI development.
+
+Camera command results should distinguish request acceptance from image
+availability. A future implementation can accept a capture goal, then return
+metadata only after frame acquisition, JPEG encode, size validation, and output
+write complete. If any step fails, the result remains structured and should not
+fall back to embedding image bytes in JSON.
 
 ### NFC commands
 

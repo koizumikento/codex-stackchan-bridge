@@ -183,6 +183,61 @@ Expected states:
 - `degraded`: usable locally, but ROS connectivity is missing or partial.
 - `fault`: a safety or hardware error needs to be reported.
 
+## Capability status and degraded operation
+
+Firmware should treat hardware features as independently available capabilities.
+This keeps one failed adapter from hiding the rest of the device.
+
+Baseline capability names:
+
+- `face`
+- `motion`
+- `led`
+- `audio_playback`
+- `audio_capture`
+- `camera_snapshot`
+- `nfc_events`
+- `imu_events`
+- `imu_raw`
+- `touch`
+- `proximity`
+- `light`
+- `power`
+- `remote_ir`
+
+Each capability should have an internal status:
+
+- `available`: initialized and ready enough to accept the normal command or
+  publish the normal observation.
+- `unavailable`: hardware, driver, or calibration is missing; the rest of the
+  firmware may continue.
+- `degraded`: usable with reduced behavior, such as audio playback available
+  while microphone capture is not.
+- `fault`: a safety or hardware error requires explicit recovery before use.
+
+Capability status is diagnostic state, not command authority. A command handler
+must still validate safety, calibration, priority, resource availability, and
+payload bounds at the moment it runs.
+
+Degraded operation examples:
+
+- If servo initialization fails, `motion` and explicit pose commands return
+  `UNSUPPORTED_FEATURE`, `CALIBRATION_INVALID`, or a more specific structured
+  error. Face, LED, audio, camera, and non-motion observations may continue.
+- If the camera fails to initialize, camera snapshot commands return
+  `UNSUPPORTED_FEATURE` or `CAMERA_CAPTURE_FAILED`; motion and audio should not
+  enter fault solely because camera is unavailable.
+- If microphone capture is unavailable, audio playback can still be available.
+  Same-direction concurrency rules still apply to whichever direction is
+  available.
+- If micro-ROS transport disconnects, firmware enters `degraded` transport
+  state while local safety behavior remains active. Individual hardware
+  capability statuses should not be erased by the transport outage.
+
+The bridge may aggregate capability status into `/stackchan/<device_id>/status`
+and `stackchanctl observe`, but raw sensor values, PCM bytes, image payloads,
+NFC identifiers, and IR/protocol dumps must stay on their explicit interfaces.
+
 ## Command responsibilities
 
 ### Face
@@ -302,6 +357,12 @@ Baseline audio path:
   Same-direction concurrency is rejected with `FIRMWARE_BUSY`.
 - Audio queues and callbacks must be bounded so audio work cannot block safety,
   fault handling, or motion-neutral work.
+- Playback acceptance, payload/chunk receipt, playback start, and playback
+  completion are separate states. Receiving all chunks is not the same thing as
+  successful speaker playback.
+- Firmware should publish or return enough metadata for the bridge to distinguish
+  queued, playing, completed, underrun, and failed playback without logging PCM
+  bytes.
 
 Output-oriented responsibilities:
 
@@ -339,6 +400,10 @@ Baseline responsibilities:
 - avoid blocking motion and safety handling while camera capture is active
 - enforce `quality=1..95`, QVGA JPEG, and 96 KiB max payload constants
 - discard oversized frames rather than publishing partial or over-limit images
+- distinguish capture request acceptance from image availability. A camera
+  action may be accepted and still fail later with `CAMERA_CAPTURE_FAILED` if
+  initialization, frame acquisition, JPEG encoding, timeout, or size validation
+  fails.
 
 The firmware should not own high-level vision inference. Object detection, face detection, or visual reasoning should run on the PC side unless a very small local heuristic is explicitly needed.
 

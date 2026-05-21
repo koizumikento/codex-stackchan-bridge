@@ -7,3 +7,5 @@ string<=32 face
 string<=32 motion
 string<=36 last_command_id
 stackchan_msgs/Result last_error
+string<=32 firmware_version
+stackchan_msgs/CapabilityStatus[<=16] capabilities
