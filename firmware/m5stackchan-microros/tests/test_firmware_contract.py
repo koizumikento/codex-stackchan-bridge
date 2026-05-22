@@ -430,6 +430,36 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("head pose telemetry device_id does not match publisher namespace", publishers)
         self.assertIn("TelemetryPublishScheduler", publishers)
 
+    def test_runtime_touch_and_power_publishers_use_real_k151_adapters(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("m5::TouchSensor_Class stackchan_touch_sensor", main)
+        self.assertIn("m5::INA226_Class stackchan_power_monitor(0x41)", main)
+        self.assertIn("stackchan_touch_sensor.begin()", main)
+        self.assertIn("stackchan_power_monitor.config(config)", main)
+        self.assertIn("stackchan_power_monitor.begin()", main)
+        self.assertIn("read_touch_state_telemetry", main)
+        self.assertIn("stackchan_touch_sensor.update()", main)
+        self.assertIn("stackchan_touch_sensor.getIntensities()", main)
+        self.assertIn("read_power_status_telemetry", main)
+        self.assertIn("M5.Power.getBatteryLevel()", main)
+        self.assertIn("stackchan_power_monitor.getBusVoltage()", main)
+        self.assertIn("stackchan_power_monitor.getShuntCurrent()", main)
+        self.assertIn("stackchan_power_monitor.getPower()", main)
+        self.assertIn("kLtr553Address = 0x23", main)
+        self.assertIn("initialize_ltr553_sensor", main)
+        self.assertIn("read_proximity_raw_telemetry", main)
+        self.assertIn("read_light_raw_telemetry", main)
+        self.assertIn("device_publishers.publish_proximity_raw(telemetry)", main)
+        self.assertIn("device_publishers.publish_light_raw(telemetry)", main)
+        self.assertIn("proximity_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("light_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("device_publishers.publish_touch_state(telemetry)", main)
+        self.assertIn("device_publishers.publish_power_status(telemetry)", main)
+        self.assertIn("touch_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("power_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertNotIn("publish_synthetic_telemetry", main)
+
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
 

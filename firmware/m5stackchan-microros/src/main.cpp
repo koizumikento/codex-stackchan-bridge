@@ -1,8 +1,12 @@
 #include <Arduino.h>
 #include <M5Unified.hpp>
 #include <Preferences.h>
+#include <Wire.h>
 #include <drivers/FTServo_Arduino/src/SCSCL.h>
 #include <drivers/PY32IOExpander/PY32IOExpander.hpp>
+#include <utility/power/INA226_Class.hpp>
+#include <utils/touch_sensor/touch_sensor.h>
+#include <math.h>
 #include <micro_ros_platformio.h>
 #include <rcl/error_handling.h>
 #include <rcl/publisher.h>
@@ -15,10 +19,15 @@
 #include <rclc/service.h>
 #include <rmw/qos_profiles.h>
 #include <rmw_microros/ping.h>
+#include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rosidl_runtime_c/string_functions.h>
 #include <stackchan_msgs/msg/head_pose.h>
+#include <stackchan_msgs/msg/light_raw.h>
+#include <stackchan_msgs/msg/power_status.h>
+#include <stackchan_msgs/msg/proximity_raw.h>
 #include <stackchan_msgs/msg/stack_chan_event.h>
 #include <stackchan_msgs/msg/stack_chan_status.h>
+#include <stackchan_msgs/msg/touch_state.h>
 #include <stackchan_msgs/srv/set_face.h>
 #include <stackchan_msgs/srv/set_head_pose.h>
 #include <stackchan_msgs/srv/set_motion.h>
@@ -79,8 +88,15 @@ stackchan::CalibrationStore calibration_store;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
 stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
 stackchan::DevicePublisherRegistry device_publishers;
+stackchan::TelemetryPublishScheduler telemetry_publish_scheduler;
+stackchan::TouchEventEstimator touch_event_estimator;
+stackchan::ProximityEventEstimator proximity_event_estimator;
+stackchan::LightEventEstimator light_event_estimator;
+stackchan::PowerEventEstimator power_event_estimator;
 SCSCL servo_bus;
 m5::PY32IOExpander_Class io_expander;
+m5::TouchSensor_Class stackchan_touch_sensor;
+m5::INA226_Class stackchan_power_monitor(0x41);
 stackchan::Result calibration_load_result =
     stackchan::Result::rejected("CALIBRATION_INVALID", "calibration not loaded", true);
 stackchan::Result calibration_maintenance_result =
@@ -104,6 +120,18 @@ constexpr int kServoUartBaud = 1000000;
 constexpr int kServoTxPin = 6;
 constexpr int kServoRxPin = 7;
 constexpr unsigned long kIoExpanderInitTimeoutMs = 1200;
+constexpr uint8_t kLtr553Address = 0x23;
+constexpr uint8_t kLtr553AlsContr = 0x80;
+constexpr uint8_t kLtr553PsContr = 0x81;
+constexpr uint8_t kLtr553PsMeasRate = 0x84;
+constexpr uint8_t kLtr553AlsMeasRate = 0x85;
+constexpr uint8_t kLtr553PartId = 0x86;
+constexpr uint8_t kLtr553ManufacturerId = 0x87;
+constexpr uint8_t kLtr553AlsDataCh1Low = 0x88;
+constexpr uint8_t kLtr553PsDataLow = 0x8D;
+constexpr uint8_t kLtr553ExpectedManufacturerId = 0x05;
+constexpr float kLtr553PsFullScale = 2047.0f;
+constexpr float kLtr553AlsIntegrationFactor = 2.0f;
 enum class MotionSchedulerPhase {
   Idle,
   MoveTarget,
@@ -142,15 +170,23 @@ rcl_allocator_t microros_allocator;
 rclc_support_t microros_support;
 rcl_node_t microros_node;
 rcl_publisher_t event_ros_publisher;
+rcl_publisher_t light_raw_ros_publisher;
 rcl_publisher_t motion_pose_ros_publisher;
+rcl_publisher_t power_status_ros_publisher;
+rcl_publisher_t proximity_raw_ros_publisher;
 rcl_publisher_t status_ros_publisher;
+rcl_publisher_t touch_state_ros_publisher;
 rcl_service_t face_set_service;
 rcl_service_t head_pose_set_service;
 rcl_service_t motion_set_service;
 rclc_executor_t microros_executor;
 stackchan_msgs__msg__StackChanEvent event_ros_message;
 stackchan_msgs__msg__HeadPose motion_pose_ros_message;
+stackchan_msgs__msg__LightRaw light_raw_ros_message;
+stackchan_msgs__msg__PowerStatus power_status_ros_message;
+stackchan_msgs__msg__ProximityRaw proximity_raw_ros_message;
 stackchan_msgs__msg__StackChanStatus status_ros_message;
+stackchan_msgs__msg__TouchState touch_state_ros_message;
 stackchan_msgs__srv__SetFace_Request face_set_request;
 stackchan_msgs__srv__SetFace_Response face_set_response;
 stackchan_msgs__srv__SetHeadPose_Request head_pose_set_request;
@@ -162,6 +198,9 @@ char face_set_service_name[96] = "";
 char head_pose_set_service_name[96] = "";
 char motion_set_service_name[96] = "";
 bool microros_executor_initialized = false;
+bool stackchan_touch_sensor_initialized = false;
+bool stackchan_power_monitor_initialized = false;
+bool ltr553_sensor_initialized = false;
 
 void publish_status_heartbeat();
 stackchan::Result validate_motion_servo_target(
@@ -360,6 +399,212 @@ stackchan::Result initialize_servo_adapter() {
   }
 
   return stackchan::Result::accepted("servo adapter initialized");
+}
+
+bool ltr553_write_register(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(kLtr553Address);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool ltr553_read_register(uint8_t reg, uint8_t* value) {
+  if (value == nullptr) {
+    return false;
+  }
+  Wire.beginTransmission(kLtr553Address);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(kLtr553Address, static_cast<uint8_t>(1)) != 1) {
+    return false;
+  }
+  *value = Wire.read();
+  return true;
+}
+
+bool ltr553_read_block(uint8_t start_reg, uint8_t* values, size_t length) {
+  if (values == nullptr || length == 0 || length > 8) {
+    return false;
+  }
+  Wire.beginTransmission(kLtr553Address);
+  Wire.write(start_reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(kLtr553Address, static_cast<uint8_t>(length)) != length) {
+    return false;
+  }
+  for (size_t index = 0; index < length; ++index) {
+    values[index] = Wire.read();
+  }
+  return true;
+}
+
+float calculate_ltr553_lux(uint16_t ch0, uint16_t ch1) {
+  const uint32_t total = static_cast<uint32_t>(ch0) + ch1;
+  if (total == 0) {
+    return 0.0f;
+  }
+  const float ratio = static_cast<float>(ch1) / static_cast<float>(total);
+  float lux = 0.0f;
+  if (ratio < 0.45f) {
+    lux = 1.7743f * static_cast<float>(ch0) + 1.1059f * static_cast<float>(ch1);
+  } else if (ratio < 0.64f) {
+    lux = 4.2785f * static_cast<float>(ch0) - 1.9548f * static_cast<float>(ch1);
+  } else if (ratio < 0.85f) {
+    lux = 0.5926f * static_cast<float>(ch0) + 0.1185f * static_cast<float>(ch1);
+  }
+  lux /= kLtr553AlsIntegrationFactor;
+  return lux < 0.0f ? 0.0f : lux;
+}
+
+bool initialize_ltr553_sensor() {
+  uint8_t part_id = 0;
+  uint8_t manufacturer_id = 0;
+  if (!ltr553_read_register(kLtr553PartId, &part_id) ||
+      !ltr553_read_register(kLtr553ManufacturerId, &manufacturer_id)) {
+    return false;
+  }
+  if (manufacturer_id != kLtr553ExpectedManufacturerId) {
+    return false;
+  }
+
+  bool ok = true;
+  ok = ltr553_write_register(kLtr553AlsContr, 0x00) && ok;
+  ok = ltr553_write_register(kLtr553PsContr, 0x00) && ok;
+  ok = ltr553_write_register(kLtr553PsMeasRate, 0x02) && ok;
+  ok = ltr553_write_register(kLtr553AlsMeasRate, 0x12) && ok;
+  ok = ltr553_write_register(kLtr553AlsContr, 0x01) && ok;
+  ok = ltr553_write_register(kLtr553PsContr, 0x03) && ok;
+  (void)part_id;
+  return ok;
+}
+
+void initialize_sensor_adapters() {
+  stackchan_touch_sensor.begin();
+  stackchan_touch_sensor_initialized = true;
+
+  m5::INA226_Class::config_t config;
+  config.shunt_res = 0.01f;
+  config.max_expected_current = 8.19f;
+  stackchan_power_monitor.config(config);
+  stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
+  ltr553_sensor_initialized = initialize_ltr553_sensor();
+}
+
+stackchan::TouchStateTelemetry read_touch_state_telemetry(uint32_t now_ms) {
+  stackchan::TouchStateTelemetry telemetry{};
+  copy_bounded(telemetry.device_id, sizeof(telemetry.device_id), STACKCHAN_DEVICE_ID);
+  telemetry.stamp_ms = now_ms;
+  copy_bounded(telemetry.surface, sizeof(telemetry.surface), "stackchan_head");
+
+  if (!stackchan_touch_sensor_initialized) {
+    return telemetry;
+  }
+
+  stackchan_touch_sensor.update();
+  const auto& intensities = stackchan_touch_sensor.getIntensities();
+  telemetry.zone_count = stackchan::kTouchMaxZones;
+  for (uint8_t index = 0; index < stackchan::kTouchMaxZones; ++index) {
+    const uint8_t intensity = intensities[index];
+    telemetry.intensities[index] = intensity;
+    if (intensity > 0) {
+      telemetry.zone_mask |= static_cast<uint8_t>(1U << index);
+    }
+  }
+  return telemetry;
+}
+
+stackchan::ProximityRawTelemetry read_proximity_raw_telemetry(uint32_t now_ms) {
+  stackchan::ProximityRawTelemetry telemetry{};
+  copy_bounded(telemetry.device_id, sizeof(telemetry.device_id), STACKCHAN_DEVICE_ID);
+  telemetry.stamp_ms = now_ms;
+  telemetry.sensor_index = 0;
+  telemetry.distance_m = NAN;
+
+  if (!ltr553_sensor_initialized) {
+    return telemetry;
+  }
+
+  uint8_t data[2] = {0, 0};
+  if (!ltr553_read_block(kLtr553PsDataLow, data, sizeof(data))) {
+    return telemetry;
+  }
+  const uint16_t raw = static_cast<uint16_t>(((data[1] & 0x07u) << 8) | data[0]);
+  telemetry.raw = raw;
+  telemetry.signal = static_cast<float>(raw) / kLtr553PsFullScale;
+  telemetry.saturated = (data[1] & 0x80u) != 0;
+  return telemetry;
+}
+
+stackchan::LightRawTelemetry read_light_raw_telemetry(uint32_t now_ms) {
+  stackchan::LightRawTelemetry telemetry{};
+  copy_bounded(telemetry.device_id, sizeof(telemetry.device_id), STACKCHAN_DEVICE_ID);
+  telemetry.stamp_ms = now_ms;
+  telemetry.sensor_index = 0;
+
+  if (!ltr553_sensor_initialized) {
+    return telemetry;
+  }
+
+  uint8_t data[4] = {0, 0, 0, 0};
+  if (!ltr553_read_block(kLtr553AlsDataCh1Low, data, sizeof(data))) {
+    return telemetry;
+  }
+  const uint16_t ch1 = static_cast<uint16_t>((data[1] << 8) | data[0]);
+  const uint16_t ch0 = static_cast<uint16_t>((data[3] << 8) | data[2]);
+  telemetry.raw = ch0;
+  telemetry.illuminance_lux = calculate_ltr553_lux(ch0, ch1);
+  telemetry.saturated = ch0 == 0xFFFFu || ch1 == 0xFFFFu;
+  return telemetry;
+}
+
+stackchan::PowerStatusTelemetry read_power_status_telemetry(uint32_t now_ms) {
+  stackchan::PowerStatusTelemetry telemetry{};
+  copy_bounded(telemetry.device_id, sizeof(telemetry.device_id), STACKCHAN_DEVICE_ID);
+  telemetry.stamp_ms = now_ms;
+  telemetry.power_source = stackchan::PowerSource::Unknown;
+
+  const int32_t battery_level = M5.Power.getBatteryLevel();
+  if (battery_level >= 0 && battery_level <= 100) {
+    telemetry.percentage = static_cast<float>(battery_level);
+  }
+
+  const auto charging_state = M5.Power.isCharging();
+  telemetry.charging = charging_state == m5::Power_Class::is_charging;
+
+  if (stackchan_power_monitor_initialized) {
+    const float voltage_v = stackchan_power_monitor.getBusVoltage();
+    const float current_a = stackchan_power_monitor.getShuntCurrent();
+    const float power_w = stackchan_power_monitor.getPower();
+    telemetry.voltage_v = voltage_v;
+    telemetry.current_ma = current_a * 1000.0f;
+    telemetry.power_mw = power_w * 1000.0f;
+    telemetry.powered = voltage_v > 0.0f;
+  } else {
+    const int16_t battery_mv = M5.Power.getBatteryVoltage();
+    if (battery_mv > 0) {
+      telemetry.voltage_v = static_cast<float>(battery_mv) / 1000.0f;
+      telemetry.powered = true;
+    }
+    const int32_t battery_ma = M5.Power.getBatteryCurrent();
+    telemetry.current_ma = static_cast<float>(battery_ma);
+    telemetry.power_mw = telemetry.voltage_v * telemetry.current_ma;
+  }
+
+  const int16_t vbus_mv = M5.Power.getVBUSVoltage();
+  if (vbus_mv > 0 || telemetry.charging) {
+    telemetry.power_source = stackchan::PowerSource::Usb;
+  } else if (telemetry.powered) {
+    telemetry.power_source = stackchan::PowerSource::Battery;
+  }
+  telemetry.low_battery =
+      telemetry.voltage_v > 0.0f && telemetry.voltage_v <= stackchan::kBatteryLowVoltageV;
+  telemetry.brownout_risk =
+      telemetry.voltage_v > 0.0f && telemetry.voltage_v <= stackchan::kBrownoutRiskVoltageV;
+  return telemetry;
 }
 
 stackchan::Result move_servo_pair_to(int target_x_deg, int target_y_deg) {
@@ -883,6 +1128,93 @@ bool convert_head_pose_message(
          assign_ros_string(&destination->frame, source.frame.data);
 }
 
+bool assign_uint8_sequence(
+    rosidl_runtime_c__uint8__Sequence* destination,
+    const stackchan::BoundedSequence<uint8_t, stackchan::kRosTouchIntensityCapacity>& source) {
+  if (destination == nullptr ||
+      source.size > stackchan::kRosTouchIntensityCapacity) {
+    return false;
+  }
+  if (destination->capacity < source.size) {
+    rosidl_runtime_c__uint8__Sequence__fini(destination);
+    if (!rosidl_runtime_c__uint8__Sequence__init(destination, source.size)) {
+      return false;
+    }
+  }
+  destination->size = source.size;
+  for (size_t index = 0; index < source.size; ++index) {
+    destination->data[index] = source.data[index];
+  }
+  return true;
+}
+
+bool convert_touch_state_message(
+    const stackchan::TouchStateMsg& source,
+    stackchan_msgs__msg__TouchState* destination) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->stamp.sec = source.stamp.sec;
+  destination->stamp.nanosec = source.stamp.nanosec;
+  destination->zone_mask = source.zone_mask;
+  destination->zone_count = source.zone_count;
+  return assign_ros_string(&destination->device_id, source.device_id.data) &&
+         assign_uint8_sequence(&destination->intensities, source.intensities) &&
+         assign_ros_string(&destination->surface, source.surface.data);
+}
+
+bool convert_proximity_raw_message(
+    const stackchan::ProximityRawMsg& source,
+    stackchan_msgs__msg__ProximityRaw* destination) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->stamp.sec = source.stamp.sec;
+  destination->stamp.nanosec = source.stamp.nanosec;
+  destination->sensor_index = source.sensor_index;
+  destination->distance_m = source.distance_m;
+  destination->signal = source.signal;
+  destination->raw = source.raw;
+  destination->saturated = source.saturated;
+  return assign_ros_string(&destination->device_id, source.device_id.data);
+}
+
+bool convert_light_raw_message(
+    const stackchan::LightRawMsg& source,
+    stackchan_msgs__msg__LightRaw* destination) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->stamp.sec = source.stamp.sec;
+  destination->stamp.nanosec = source.stamp.nanosec;
+  destination->sensor_index = source.sensor_index;
+  destination->illuminance_lux = source.illuminance_lux;
+  destination->raw = source.raw;
+  destination->saturated = source.saturated;
+  return assign_ros_string(&destination->device_id, source.device_id.data);
+}
+
+bool convert_power_status_message(
+    const stackchan::PowerStatusMsg& source,
+    stackchan_msgs__msg__PowerStatus* destination) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->stamp.sec = source.stamp.sec;
+  destination->stamp.nanosec = source.stamp.nanosec;
+  destination->voltage_v = source.voltage_v;
+  destination->current_ma = source.current_ma;
+  destination->power_mw = source.power_mw;
+  destination->percentage = source.percentage;
+  destination->power_source = source.power_source;
+  destination->charging = source.charging;
+  destination->powered = source.powered;
+  destination->low_battery = source.low_battery;
+  destination->brownout_risk = source.brownout_risk;
+  return assign_ros_string(&destination->device_id, source.device_id.data) &&
+         assign_ros_string(&destination->fault_code, source.fault_code.data);
+}
+
 stackchan::Priority priority_from_ros(uint8_t priority) {
   switch (priority) {
     case 0:
@@ -940,15 +1272,23 @@ bool initialize_microros_entities() {
   memset(&microros_support, 0, sizeof(microros_support));
   microros_node = rcl_get_zero_initialized_node();
   event_ros_publisher = rcl_get_zero_initialized_publisher();
+  light_raw_ros_publisher = rcl_get_zero_initialized_publisher();
   motion_pose_ros_publisher = rcl_get_zero_initialized_publisher();
+  power_status_ros_publisher = rcl_get_zero_initialized_publisher();
+  proximity_raw_ros_publisher = rcl_get_zero_initialized_publisher();
   status_ros_publisher = rcl_get_zero_initialized_publisher();
+  touch_state_ros_publisher = rcl_get_zero_initialized_publisher();
   face_set_service = rcl_get_zero_initialized_service();
   head_pose_set_service = rcl_get_zero_initialized_service();
   motion_set_service = rcl_get_zero_initialized_service();
   microros_executor = rclc_executor_get_zero_initialized_executor();
   memset(&event_ros_message, 0, sizeof(event_ros_message));
+  memset(&light_raw_ros_message, 0, sizeof(light_raw_ros_message));
   memset(&motion_pose_ros_message, 0, sizeof(motion_pose_ros_message));
+  memset(&power_status_ros_message, 0, sizeof(power_status_ros_message));
+  memset(&proximity_raw_ros_message, 0, sizeof(proximity_raw_ros_message));
   memset(&status_ros_message, 0, sizeof(status_ros_message));
+  memset(&touch_state_ros_message, 0, sizeof(touch_state_ros_message));
   memset(&face_set_request, 0, sizeof(face_set_request));
   memset(&face_set_response, 0, sizeof(face_set_response));
   memset(&head_pose_set_request, 0, sizeof(head_pose_set_request));
@@ -1004,6 +1344,50 @@ bool initialize_microros_entities() {
               "motion_pose_publisher_init")) {
     return false;
   }
+  rmw_qos_profile_t touch_qos =
+      qos_profile_for(stackchan::DevicePublisherTopic::TouchState);
+  if (!rcl_ok(rclc_publisher_init(
+                  &touch_state_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, TouchState),
+                  device_publishers.topic_name(stackchan::DevicePublisherTopic::TouchState),
+                  &touch_qos),
+              "touch_state_publisher_init")) {
+    return false;
+  }
+  rmw_qos_profile_t proximity_qos =
+      qos_profile_for(stackchan::DevicePublisherTopic::ProximityRaw);
+  if (!rcl_ok(rclc_publisher_init(
+                  &proximity_raw_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, ProximityRaw),
+                  device_publishers.topic_name(stackchan::DevicePublisherTopic::ProximityRaw),
+                  &proximity_qos),
+              "proximity_raw_publisher_init")) {
+    return false;
+  }
+  rmw_qos_profile_t light_qos =
+      qos_profile_for(stackchan::DevicePublisherTopic::LightRaw);
+  if (!rcl_ok(rclc_publisher_init(
+                  &light_raw_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, LightRaw),
+                  device_publishers.topic_name(stackchan::DevicePublisherTopic::LightRaw),
+                  &light_qos),
+              "light_raw_publisher_init")) {
+    return false;
+  }
+  rmw_qos_profile_t power_qos =
+      qos_profile_for(stackchan::DevicePublisherTopic::PowerStatus);
+  if (!rcl_ok(rclc_publisher_init(
+                  &power_status_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, PowerStatus),
+                  device_publishers.topic_name(stackchan::DevicePublisherTopic::PowerStatus),
+                  &power_qos),
+              "power_status_publisher_init")) {
+    return false;
+  }
   build_face_set_service_name();
   if (!rcl_ok(rclc_service_init_default(
                   &face_set_service,
@@ -1046,8 +1430,44 @@ bool initialize_microros_entities() {
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
+  if (!stackchan_msgs__msg__TouchState__init(&touch_state_ros_message)) {
+    Serial.println("stackchan micro_ros_step=touch_state_message_init result=false");
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__ProximityRaw__init(&proximity_raw_ros_message)) {
+    Serial.println("stackchan micro_ros_step=proximity_raw_message_init result=false");
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__LightRaw__init(&light_raw_ros_message)) {
+    Serial.println("stackchan micro_ros_step=light_raw_message_init result=false");
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__PowerStatus__init(&power_status_ros_message)) {
+    Serial.println("stackchan micro_ros_step=power_status_message_init result=false");
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
   if (!stackchan_msgs__srv__SetFace_Request__init(&face_set_request)) {
     Serial.println("stackchan micro_ros_step=face_set_request_init result=false");
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
@@ -1221,12 +1641,20 @@ void destroy_microros_entities() {
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     rcl_ret_t fini_result = rcl_publisher_fini(&event_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&light_raw_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&motion_pose_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&power_status_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&proximity_raw_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&status_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&touch_state_ros_publisher, &microros_node);
     fini_result = rcl_service_fini(&face_set_service, &microros_node);
     fini_result = rcl_service_fini(&head_pose_set_service, &microros_node);
     fini_result = rcl_service_fini(&motion_set_service, &microros_node);
@@ -1301,6 +1729,42 @@ bool firmware_publish_callback(
     }
     ros_message = &motion_pose_ros_message;
     publisher = &motion_pose_ros_publisher;
+  } else if (topic == stackchan::DevicePublisherTopic::TouchState) {
+    const auto* touch_message =
+        static_cast<const stackchan::TouchStateMsg*>(message);
+    if (!convert_touch_state_message(*touch_message, &touch_state_ros_message)) {
+      ++microros_publish_failed_count;
+      return false;
+    }
+    ros_message = &touch_state_ros_message;
+    publisher = &touch_state_ros_publisher;
+  } else if (topic == stackchan::DevicePublisherTopic::ProximityRaw) {
+    const auto* proximity_message =
+        static_cast<const stackchan::ProximityRawMsg*>(message);
+    if (!convert_proximity_raw_message(*proximity_message, &proximity_raw_ros_message)) {
+      ++microros_publish_failed_count;
+      return false;
+    }
+    ros_message = &proximity_raw_ros_message;
+    publisher = &proximity_raw_ros_publisher;
+  } else if (topic == stackchan::DevicePublisherTopic::LightRaw) {
+    const auto* light_message =
+        static_cast<const stackchan::LightRawMsg*>(message);
+    if (!convert_light_raw_message(*light_message, &light_raw_ros_message)) {
+      ++microros_publish_failed_count;
+      return false;
+    }
+    ros_message = &light_raw_ros_message;
+    publisher = &light_raw_ros_publisher;
+  } else if (topic == stackchan::DevicePublisherTopic::PowerStatus) {
+    const auto* power_message =
+        static_cast<const stackchan::PowerStatusMsg*>(message);
+    if (!convert_power_status_message(*power_message, &power_status_ros_message)) {
+      ++microros_publish_failed_count;
+      return false;
+    }
+    ros_message = &power_status_ros_message;
+    publisher = &power_status_ros_publisher;
   } else {
     Serial.print("stackchan firmware_publish topic=");
     Serial.print(device_publishers.topic_name(topic));
@@ -1808,6 +2272,77 @@ void publish_status_heartbeat() {
   }
 }
 
+void publish_runtime_telemetry(uint32_t now_ms) {
+  if (!microros_connected || !microros_entities_initialized) {
+    return;
+  }
+
+  if (telemetry_publish_scheduler.should_publish_touch(now_ms)) {
+    const stackchan::TouchStateTelemetry telemetry = read_touch_state_telemetry(now_ms);
+    const stackchan::Result publish_result =
+        device_publishers.publish_touch_state(telemetry);
+    if (!publish_result.ok) {
+      last_error = publish_result;
+      update_agent_connection(false);
+      return;
+    }
+    const stackchan::Result event_result =
+        touch_event_estimator.update(telemetry, event_publisher);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+
+  if (telemetry_publish_scheduler.should_publish_proximity(now_ms)) {
+    const stackchan::ProximityRawTelemetry telemetry =
+        read_proximity_raw_telemetry(now_ms);
+    const stackchan::Result publish_result =
+        device_publishers.publish_proximity_raw(telemetry);
+    if (!publish_result.ok) {
+      last_error = publish_result;
+      update_agent_connection(false);
+      return;
+    }
+    const stackchan::Result event_result =
+        proximity_event_estimator.update(telemetry, event_publisher);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+
+  if (telemetry_publish_scheduler.should_publish_light(now_ms)) {
+    const stackchan::LightRawTelemetry telemetry = read_light_raw_telemetry(now_ms);
+    const stackchan::Result publish_result =
+        device_publishers.publish_light_raw(telemetry);
+    if (!publish_result.ok) {
+      last_error = publish_result;
+      update_agent_connection(false);
+      return;
+    }
+    const stackchan::Result event_result =
+        light_event_estimator.update(telemetry, event_publisher);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+
+  if (telemetry_publish_scheduler.should_publish_power(now_ms)) {
+    const stackchan::PowerStatusTelemetry telemetry = read_power_status_telemetry(now_ms);
+    const stackchan::Result publish_result =
+        device_publishers.publish_power_status(telemetry);
+    if (!publish_result.ok) {
+      last_error = publish_result;
+      update_agent_connection(false);
+      return;
+    }
+    const stackchan::Result event_result =
+        power_event_estimator.update(telemetry, event_publisher);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -1817,6 +2352,13 @@ void setup() {
   Serial.print(servo_adapter_init_result.ok ? "true" : "false");
   Serial.print(" error_code=");
   Serial.println(servo_adapter_init_result.error_code);
+  initialize_sensor_adapters();
+  Serial.print("stackchan touch_sensor_init ok=");
+  Serial.println(stackchan_touch_sensor_initialized ? "true" : "false");
+  Serial.print("stackchan power_monitor_init ok=");
+  Serial.println(stackchan_power_monitor_initialized ? "true" : "false");
+  Serial.print("stackchan ltr553_sensor_init ok=");
+  Serial.println(ltr553_sensor_initialized ? "true" : "false");
   calibration_maintenance_result = apply_calibration_maintenance_action();
   Serial.print("stackchan calibration_maintenance ok=");
   Serial.print(calibration_maintenance_result.ok ? "true" : "false");
@@ -1859,5 +2401,6 @@ void loop() {
   spin_command_executor();
   queue_bringup_event_if_ready(now);
   drain_device_events();
+  publish_runtime_telemetry(static_cast<uint32_t>(now));
   delay(10);
 }

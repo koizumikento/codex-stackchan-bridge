@@ -529,6 +529,12 @@ Official StackChan K151 observability also includes:
 - INA226 battery monitor and AXP2101 power-management telemetry on
   `/stackchan/<device_id>/device/power/status`
 
+The current K151 bring-up firmware publishes the Si12T touch state, LTR-553
+proximity/light readings, and INA226/AXP2101 power status through those
+device-owned resources. The bridge republishes the corresponding public
+resources under `/stackchan/<device_id>/...` and serves the latest public power
+sample through `/stackchan/<device_id>/cmd/power/status`.
+
 Firmware should publish the numeric telemetry at low rates and queue the
 corresponding high-level events without blocking safety, motion-neutral, or
 fault handling. Sensor publishers must be bounded and best-effort where

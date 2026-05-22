@@ -214,6 +214,24 @@ hardware bring-up issue complete.
   The sweep starts Agent, bridge, and CLI probes in one container, then records
   `observe`, `power status`, device and public sensor topics, event output, and
   normal log redaction markers.
+- For IMU/NFC/IR hardware event fixtures, add a manual stimulus window:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 20
+  ```
+
+  During the printed stimulus window:
+
+  | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |
+  | --- | --- | --- | --- |
+  | IMU high-level events | Pick up, place down, tilt, face up/down, and shake within safe servo limits. | `picked_up`, `placed_down`, `tilted`, `face_up`, `face_down`, `shaken` | No raw accelerometer/gyroscope samples in `observe` or normal events. |
+  | NFC | Present one tag, remove it, then try a read-failure case such as quick removal. | `nfc_detected`, `nfc_removed`, `nfc_read_failed` | Public events/logs must not expose tag IDs, UIDs, or raw tag payloads. |
+  | IR/remote | Press and release a known remote button near the receiver. | `remote_button_pressed`, `remote_button_released`, `remote_command_received` | Public events/logs must not expose raw IR codes, protocol dumps, or remote IDs. |
+
+  The runner emits `STACKCHAN_EVENT_STIMULUS_{IMU,NFC,IR}_STATUS=PASS` when a
+  matching event is observed and `UNAVAILABLE` when the current firmware does
+  not publish that event family during the window. Keep `UNAVAILABLE` as a
+  recorded fixture result until the corresponding firmware adapter exists.
 - Confirm liveness behavior by stopping the host serial TCP bridge or the
   micro-ROS Agent after `connected: true`; within the configured timeout,
   `stackchanctl --backend bridge observe --json` should return
@@ -277,12 +295,61 @@ Observed results:
 
 Follow-up classification:
 
-- MVP follow-up: implement firmware-owned real telemetry publishers for power,
-  touch, proximity, and light, then repeat the sweep to capture sample cadence,
-  stale behavior, saturation/noise examples, and public relay behavior.
+- Completed MVP follow-up: firmware-owned real telemetry publishers for power,
+  touch, proximity, and light were implemented and repeated below.
 - Post-MVP: add explicit firmware event adapters and hardware fixtures for IMU,
   NFC, and IR/remote stimuli before treating those redaction paths as
   hardware-validated.
+
+2026-05-22, device `default`, COM3 through Windows serial TCP bridge, firmware
+version `bringup` after K151 telemetry adapters, command:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8
+```
+
+Observed results:
+
+- `observe`: pass. `STACKCHAN_SENSOR_SWEEP_OBSERVE_EXIT=0`,
+  `connected: true`, `device_state: ready`, and
+  `STACKCHAN_SENSOR_SWEEP_OBSERVE_RAW_TELEMETRY_SEEN=0`. Raw touch,
+  proximity, light, power, NFC, IR, audio, camera, and PCM payloads did not
+  appear in normal observe output.
+- ROS graph: bridge/public and firmware/device resources were present for
+  `/stackchan/default/{device/,}touch/state`,
+  `/stackchan/default/{device/,}proximity/raw`,
+  `/stackchan/default/{device/,}light/raw`, and
+  `/stackchan/default/{device/,}power/status`.
+- Topic samples: pass for all K151 low-rate telemetry resources. Device and
+  public topic probes returned samples for touch, proximity, light, and power:
+  `STACKCHAN_SENSOR_SWEEP_TOPIC_{device,public}_{touch,proximity,light,power}_SAMPLE_SEEN=1`.
+- Touch sample: `zone_count=3`, `zone_mask=0`, and intensities `[0, 0, 0]`
+  with surface `stackchan_head` while untouched.
+- Proximity sample: `sensor_index=0`, `raw=0`, `signal=0.0`,
+  `distance_m=.nan`, and `saturated=false` in the sweep environment.
+- Light sample: `sensor_index=0`, `raw=0`, `illuminance_lux=0.0`, and
+  `saturated=false` in the sweep environment.
+- Power sample: USB-powered and charging with `voltage_v=4.181250095367432`,
+  current around `-6.5` to `-7.0` mA, `percentage=100.0`,
+  `low_battery=false`, and `brownout_risk=false`.
+- `power status`: pass. `STACKCHAN_SENSOR_SWEEP_POWER_STATUS_EXIT=0` and
+  `ok=true`; the bridge returned non-stale power status sourced from the public
+  telemetry relay.
+- Events: pass for normal event redaction. `stackchanctl events list` returned
+  bridge `device_connected`, firmware `firmware_ready`, and bounded light event
+  `dark_detected` with empty payload. `STACKCHAN_SENSOR_SWEEP_EVENTS_EXIT=0`
+  and `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0`.
+- Event stimulus fixture markers: `STACKCHAN_EVENT_STIMULUS_IMU_STATUS=UNAVAILABLE`,
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=UNAVAILABLE`, and
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=UNAVAILABLE`. The current firmware did
+  not publish IMU high-level, NFC, or IR event families during the sweep.
+- Normal logs: pass for sensitive payload search.
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0` for NFC tag IDs, IR
+  raw/remote codes, PCM, image/JPEG/base64 payloads, speech text, and
+  transcript text.
+- NFC, IR/remote, IMU high-level events, audio payload, and camera payload
+  hardware stimuli remain unavailable in this sweep because those real hardware
+  event adapters are not yet part of the K151 bring-up firmware.
 
 ## Cleanup
 

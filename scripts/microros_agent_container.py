@@ -88,6 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
     tcp_pty_sweep.add_argument("--verbose", type=int, default=4)
     tcp_pty_sweep.add_argument("--timeout", type=int, default=6)
     tcp_pty_sweep.add_argument(
+        "--stimulus-window-seconds",
+        type=int,
+        default=0,
+        help=(
+            "Optional manual stimulus window before event classification. Use it "
+            "to pick up/tilt/shake the device, present/remove NFC tags, or press "
+            "IR remote buttons while the Agent and bridge are connected."
+        ),
+    )
+    tcp_pty_sweep.add_argument(
         "--skip-build",
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
@@ -325,6 +335,23 @@ run_topic_once() {{
   fi
 }}
 
+run_power_status() {{
+  echo "--- stackchanctl power status ---"
+  power_output=""
+  power_result=1
+  for i in $(seq 1 8); do
+    power_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} power status --json 2>&1)
+    power_result=$?
+    [ "$power_result" -eq 0 ] && break
+    sleep 1
+  done
+  printf '%s\n' "$power_output"
+  echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_EXIT=$power_result"
+  printf '%s\n' "$power_output" | grep -q '"code":'
+  power_error_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_STRUCTURED_ERROR_SEEN=$([ "$power_error_result" -eq 0 ] && echo 1 || echo 0)"
+}}
+
 echo "--- stackchanctl observe ---"
 observe_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json 2>&1)
 observe_result=$?
@@ -336,19 +363,16 @@ observe_raw_result=$?
 echo "STACKCHAN_SENSOR_SWEEP_OBSERVE_RAW_TELEMETRY_SEEN=$([ "$observe_raw_result" -eq 0 ] && echo 1 || echo 0)"
 [ "$observe_raw_result" -ne 0 ] || result=1
 
-echo "--- stackchanctl power status ---"
-power_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} power status --json 2>&1)
-power_result=$?
-printf '%s\n' "$power_output"
-echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_EXIT=$power_result"
-printf '%s\n' "$power_output" | grep -q '"code":'
-power_error_result=$?
-echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_STRUCTURED_ERROR_SEEN=$([ "$power_error_result" -eq 0 ] && echo 1 || echo 0)"
-
 echo "--- stackchan topics ---"
 ros2 topic list -t | grep stackchan || true
 echo "--- stackchan services ---"
 ros2 service list -t | grep stackchan || true
+
+if [ "{max(0, int(args.stimulus_window_seconds))}" -gt 0 ]; then
+  echo "--- manual hardware stimulus window ({max(0, int(args.stimulus_window_seconds))}s) ---"
+  echo "Apply IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
+  sleep {max(0, int(args.stimulus_window_seconds))}
+fi
 
 run_topic_once "device_touch" "/stackchan/default/device/touch/state" "stackchan_msgs/msg/TouchState"
 run_topic_once "public_touch" "/stackchan/default/touch/state" "stackchan_msgs/msg/TouchState"
@@ -358,6 +382,7 @@ run_topic_once "device_light" "/stackchan/default/device/light/raw" "stackchan_m
 run_topic_once "public_light" "/stackchan/default/light/raw" "stackchan_msgs/msg/LightRaw"
 run_topic_once "device_power" "/stackchan/default/device/power/status" "stackchan_msgs/msg/PowerStatus"
 run_topic_once "public_power" "/stackchan/default/power/status" "stackchan_msgs/msg/PowerStatus"
+run_power_status
 run_topic_once "device_events" "/stackchan/default/device/events" "stackchan_msgs/msg/StackChanEvent"
 run_topic_once "public_events" "/stackchan/default/events" "stackchan_msgs/msg/StackChanEvent"
 
@@ -367,6 +392,23 @@ events_result=$?
 printf '%s\n' "$events_output"
 echo "STACKCHAN_SENSOR_SWEEP_EVENTS_EXIT=$events_result"
 [ "$events_result" -eq 0 ] || result=1
+
+classify_event_stimulus() {{
+  slug="$1"
+  pattern="$2"
+  if printf '%s\n' "$events_output" | grep -Eq "$pattern"; then
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=PASS"
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=1"
+  else
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=UNAVAILABLE"
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=0"
+  fi
+}}
+
+classify_event_stimulus "IMU" '"picked_up"|"placed_down"|"shaken"|"tilted"|"face_up"|"face_down"'
+classify_event_stimulus "NFC" '"nfc_detected"|"nfc_removed"|"nfc_read_failed"'
+classify_event_stimulus "IR" '"remote_button_pressed"|"remote_button_released"|"remote_button_held"|"remote_command_received"|"ir_transmit_started"|"ir_transmit_finished"|"ir_transmit_failed"'
+
 printf '%s\n' "$events_output" | grep -Eq 'nfc_tag_id|tag_id|uid|ir_code|raw_ir|raw_remote|remote_code|pcm|image|jpeg|base64|speech_text|transcript_text'
 events_sensitive_result=$?
 echo "STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=$([ "$events_sensitive_result" -eq 0 ] && echo 1 || echo 0)"
