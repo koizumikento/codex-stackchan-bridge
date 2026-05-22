@@ -96,14 +96,14 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(missing.result.error_code, "DEVICE_NOT_FOUND")
         self.assertEqual(safety.result.error_code, "INVALID_PRIORITY")
 
-    def test_head_pose_accepts_home_frame_absolute_angles(self) -> None:
+    def test_head_pose_validates_and_accepts_for_firmware_routing(self) -> None:
         bridge = facade()
 
         response = bridge.move_head_pose(meta(), 30.0, 20.0, 500, 0)
 
         self.assertTrue(response.result.ok)
-        self.assertEqual(response.result.state, STATE_COMPLETED)
-        self.assertEqual(bridge.get_status("default").status.motion, "pose")
+        self.assertEqual(response.result.state, STATE_ACCEPTED)
+        self.assertNotEqual(bridge.get_status("default").status.motion, "pose")
 
     def test_head_pose_rejects_out_of_range_without_clamping(self) -> None:
         response = facade().move_head_pose(meta(), 129.0, 20.0, 500, 0)
@@ -118,13 +118,14 @@ class FacadeTests(unittest.TestCase):
         self.assertFalse(response.result.ok)
         self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
 
-    def test_head_home_keeps_firmware_owned_semantics(self) -> None:
+    def test_head_home_validates_and_accepts_for_firmware_routing(self) -> None:
         bridge = facade()
 
         response = bridge.home_head_pose(meta(), 500, 0)
 
         self.assertTrue(response.result.ok)
-        self.assertEqual(bridge.get_status("default").status.motion, "home")
+        self.assertEqual(response.result.state, STATE_ACCEPTED)
+        self.assertNotEqual(bridge.get_status("default").status.motion, "home")
 
     def test_say_accepts_without_claiming_completion(self) -> None:
         bridge = facade()

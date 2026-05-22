@@ -321,10 +321,14 @@ Rules:
 - Out-of-range explicit pose values are rejected, not clamped.
 - `motion home` uses firmware-owned home behavior. It is not sent to firmware
   as an external `pose(0,0)` target.
+- On the bridge backend, `motion pose` and `motion home` validate obvious
+  bounds, then route through firmware-owned pose/home validation. They must not
+  be reported as physical actuation success based on bridge-only synthetic
+  telemetry.
 - Raw servo ticks, PWM, torque, relative movement, continuous rotation, and
   home calibration are not normal CLI/MCP control surfaces.
 
-Example JSON:
+Example JSON for a successful bridge-backed pose command:
 
 ```json
 {
@@ -617,11 +621,37 @@ Normal CLI/MCP/Codex surfaces must not expose raw servo ticks, PWM, torque,
 relative movement, continuous rotation, calibration writes, NVS import/export,
 reset-to-default calibration, or maintenance unlocks.
 
-If a maintenance surface is introduced, it must live under an explicit command
-group such as `stackchanctl maintenance ...`, require a documented local
-unlock/confirmation flow, have mock coverage, and still be unable to bypass
+The human-only maintenance surface starts with:
+
+```bash
+stackchanctl maintenance calibration status --json
+stackchanctl maintenance calibration capture-neutral --confirm --json
+stackchanctl maintenance calibration reset --confirm --json
+```
+
+It is opt-in for a local operator and is rejected when `source` is
+`codex_skill`, `mcp_agent`, or any value other than `human_cli`.
+`capture-neutral` and `reset` require `--confirm`; status is read-only. JSON
+uses explicit command types such as `maintenance.calibration.status`,
+`maintenance.calibration.capture-neutral`, and `maintenance.calibration.reset`.
+
+The maintenance surface is not part of the Codex skill or MCP tool set. It must
+not be reachable through routine `face`, `motion`, `led`, `observe`, or MCP
+calls. The mock backend returns deterministic maintenance-shaped results for
+CLI tests. The bridge backend returns `UNSUPPORTED_FEATURE` until a
+firmware-owned maintenance service exists, so write/reset cannot bypass
 firmware hard limits. Firmware NVS is the only calibration safety store; CLI
-config must not store hardware safety values.
+config must not store hardware safety values. For early K151 bring-up, a
+firmware-local maintenance seed path is acceptable when it is documented in
+`docs/hardware-validation.md` and keeps normal bridge facade resources under
+`/stackchan/<device_id>/cmd/...` read-only with respect to calibration.
+
+Calibration write commands, if added, must write only a validated
+firmware-owned calibration record. They must not accept raw servo ticks, PWM,
+torque, relative movement, continuous rotation, arbitrary NVS blobs, or CLI
+config-derived safety limits. They must also provide or document a reset-to-
+invalid path so hardware validation can prove `CALIBRATION_INVALID` remains
+the default safety behavior for missing or corrupt calibration.
 
 ## Backend model
 

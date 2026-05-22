@@ -28,7 +28,9 @@ EXPECTED_INTERFACES = [
     "srv/ListEvents.srv",
     "srv/NextEvent.srv",
     "srv/SetFace.srv",
+    "srv/SetHeadPose.srv",
     "srv/SetLed.srv",
+    "srv/SetMotion.srv",
     "action/CaptureAudio.action",
     "action/CaptureCamera.action",
     "action/MoveHeadPose.action",
@@ -124,6 +126,23 @@ SERVICE_FIELDS = {
         "stackchan_msgs/Result last_error",
         "string<=32 firmware_version",
         "stackchan_msgs/CapabilityStatus[<=16] capabilities",
+    ],
+    "SetMotion.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "string<=32 name",
+        "float32 intensity",
+        "uint32 duration_ms",
+        "stackchan_msgs/Result result",
+    ],
+    "SetHeadPose.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "bool home",
+        "float32 pan_deg",
+        "float32 tilt_deg",
+        "uint16 speed",
+        "uint32 duration_ms",
+        "stackchan_msgs/Result result",
+        "stackchan_msgs/HeadPose pose",
     ],
 }
 

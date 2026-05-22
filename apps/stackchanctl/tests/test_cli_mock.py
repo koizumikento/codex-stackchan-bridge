@@ -167,6 +167,70 @@ class MockCliTests(unittest.TestCase):
         payload = json.loads(stderr)
         self.assertEqual(payload["error"]["code"], "CALIBRATION_INVALID")
 
+    def test_maintenance_calibration_status_is_human_only_json(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["maintenance", "calibration", "status", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "maintenance.calibration.status")
+        self.assertEqual(payload["command"]["store"], "firmware_nvs")
+        self.assertFalse(payload["command"]["write"])
+        self.assertEqual(payload["metadata"]["source"], "human_cli")
+
+    def test_maintenance_calibration_capture_neutral_requires_confirmation(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["maintenance", "calibration", "capture-neutral", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("maintenance calibration write/reset commands require --confirm", stderr)
+
+    def test_maintenance_calibration_capture_neutral_confirmed(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["maintenance", "calibration", "capture-neutral", "--confirm", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "maintenance.calibration.capture-neutral")
+        self.assertTrue(payload["command"]["confirmed"])
+        self.assertTrue(payload["command"]["write"])
+
+    def test_maintenance_calibration_reset_confirmed_resets_to_invalid(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["maintenance", "calibration", "reset", "--confirm", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "maintenance.calibration.reset")
+        self.assertEqual(payload["command"]["reset_to"], "invalid")
+        self.assertFalse(payload["command"]["calibration_valid"])
+
+    def test_maintenance_calibration_rejects_codex_skill_source(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--source",
+                "codex_skill",
+                "maintenance",
+                "calibration",
+                "status",
+                "--json",
+            ],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("maintenance calibration commands require source=human_cli", stderr)
+
     def test_non_finite_motion_pose_is_rejected_by_parser(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["motion", "pose", "--pan-deg", "NaN", "--tilt-deg", "20", "--json"],

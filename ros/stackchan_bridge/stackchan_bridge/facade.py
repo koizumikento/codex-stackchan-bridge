@@ -77,6 +77,10 @@ class StackChanBridgeFacade:
 
         return StatusResponse(device_id=device_id, command_id=command_id, status=status)
 
+    def update_status(self, status: StatusSnapshot) -> None:
+        self._status[status.device_id] = status
+        self.registry.set_connected(status.device_id, status.connected)
+
     def set_face(
         self, meta: CommandMeta, name: str, duration_ms: int = 0
     ) -> CommandResponse:
@@ -174,11 +178,11 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_completed(meta, motion="pose")
+        status = self._mark_accepted(meta)
         log_structured(
             self.logger,
             logging.INFO,
-            "motion_pose_accepted",
+            "motion_pose_forwarding",
             device_id=meta.device_id,
             command_id=meta.command_id,
             source=meta.source,
@@ -203,11 +207,11 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_completed(meta, motion="home")
+        status = self._mark_accepted(meta)
         log_structured(
             self.logger,
             logging.INFO,
-            "motion_home_accepted",
+            "motion_home_forwarding",
             device_id=meta.device_id,
             command_id=meta.command_id,
             source=meta.source,

@@ -245,6 +245,8 @@ class McpStdioTests(unittest.TestCase):
         )
         for tool in responses[1]["result"]["tools"]:
             self.assertEqual(tool["inputSchema"]["properties"]["priority"]["enum"], ["LOW", "NORMAL", "HIGH"])
+            self.assertNotIn("maintenance", tool["name"])
+            self.assertNotIn("calibration", tool["name"])
         schemas = {tool["name"]: tool["inputSchema"] for tool in responses[1]["result"]["tools"]}
         self.assertEqual(
             schemas["motion_pose"]["properties"]["duration_ms"]["anyOf"],

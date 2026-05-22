@@ -203,6 +203,16 @@ def build_parser() -> argparse.ArgumentParser:
     speech_transcript = speech_subparsers.add_parser("transcript")
     speech_transcript.add_argument("utterance_id")
 
+    maintenance = subparsers.add_parser("maintenance")
+    maintenance_subparsers = maintenance.add_subparsers(dest="maintenance_command", required=True)
+    calibration = maintenance_subparsers.add_parser("calibration")
+    calibration_subparsers = calibration.add_subparsers(dest="calibration_command", required=True)
+    calibration_subparsers.add_parser("status")
+    capture_neutral = calibration_subparsers.add_parser("capture-neutral")
+    capture_neutral.add_argument("--confirm", action="store_true")
+    reset = calibration_subparsers.add_parser("reset")
+    reset.add_argument("--confirm", action="store_true")
+
     subparsers.add_parser("observe")
 
     return parser
@@ -235,6 +245,10 @@ def build_request(
         command_type = CommandType(f"speech-{args.speech_command}")
     elif args.command == "power":
         command_type = CommandType(f"power-{args.power_command}")
+    elif args.command == "maintenance":
+        if args.maintenance_command != "calibration":
+            raise ValueError("unsupported maintenance command")
+        command_type = CommandType(f"maintenance-calibration-{args.calibration_command}")
     elif args.command == "motion":
         motion_kind = args.motion_args[0]
         if motion_kind == "pose":
@@ -325,6 +339,22 @@ def build_request(
         command_args = {"utterance_id": args.utterance_id.strip()}
     elif command_type is CommandType.POWER_STATUS:
         command_args = {}
+    elif command_type in {
+        CommandType.MAINTENANCE_CALIBRATION_STATUS,
+        CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL,
+        CommandType.MAINTENANCE_CALIBRATION_RESET,
+    }:
+        if source != "human_cli":
+            raise ValueError("maintenance calibration commands require source=human_cli")
+        confirmed = bool(getattr(args, "confirm", False))
+        if command_type in {
+            CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL,
+            CommandType.MAINTENANCE_CALIBRATION_RESET,
+        } and not confirmed:
+            raise ValueError(
+                "maintenance calibration write/reset commands require --confirm"
+            )
+        command_args = {"confirmed": confirmed}
     else:
         command_args = {}
 

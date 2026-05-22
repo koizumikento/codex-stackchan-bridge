@@ -9,6 +9,10 @@ namespace {
 bool callback_seen = false;
 stackchan::DevicePublisherTopic callback_topic =
     stackchan::DevicePublisherTopic::Count;
+char callback_event_name[stackchan::kEventNameMaxLength + 1] = "";
+char callback_payload_json[stackchan::kEventPayloadJsonMaxLength + 1] = "";
+char callback_status_state[stackchan::kRosSurfaceMaxLength + 1] = "";
+bool callback_status_connected = false;
 
 bool capture_publish(
     stackchan::DevicePublisherTopic topic,
@@ -16,6 +20,30 @@ bool capture_publish(
     void*) {
   callback_seen = message != nullptr;
   callback_topic = topic;
+  callback_event_name[0] = '\0';
+  callback_payload_json[0] = '\0';
+  callback_status_state[0] = '\0';
+  callback_status_connected = false;
+  if (topic == stackchan::DevicePublisherTopic::Events && message != nullptr) {
+    const auto* event_message =
+        static_cast<const stackchan::StackChanEventMsg*>(message);
+    stackchan::copy_event_string(
+        callback_event_name,
+        sizeof(callback_event_name),
+        event_message->event_name.data);
+    stackchan::copy_event_string(
+        callback_payload_json,
+        sizeof(callback_payload_json),
+        event_message->payload_json.data);
+  } else if (topic == stackchan::DevicePublisherTopic::Status && message != nullptr) {
+    const auto* status_message =
+        static_cast<const stackchan::StackChanStatusMsg*>(message);
+    callback_status_connected = status_message->connected;
+    stackchan::copy_event_string(
+        callback_status_state,
+        sizeof(callback_status_state),
+        status_message->state.data);
+  }
   return true;
 }
 
@@ -49,6 +77,13 @@ void test_device_topic_names_and_validation() {
   assert(strcmp(topic, "/stackchan/default/device/events") == 0);
 
   assert(stackchan::build_device_topic_name(
+      "default",
+      stackchan::DevicePublisherTopic::Status,
+      topic,
+      sizeof(topic)));
+  assert(strcmp(topic, "/stackchan/default/device/status") == 0);
+
+  assert(stackchan::build_device_topic_name(
       "desk",
       stackchan::DevicePublisherTopic::ProximityRaw,
       topic,
@@ -80,6 +115,10 @@ void test_qos_contract() {
       stackchan::RosReliability::Reliable,
       32);
   assert_qos(
+      stackchan::DevicePublisherTopic::Status,
+      stackchan::RosReliability::Reliable,
+      2);
+  assert_qos(
       stackchan::DevicePublisherTopic::TouchState,
       stackchan::RosReliability::Reliable,
       4);
@@ -99,6 +138,42 @@ void test_qos_contract() {
       stackchan::DevicePublisherTopic::MotionPose,
       stackchan::RosReliability::Reliable,
       2);
+}
+
+void test_status_conversion_and_publish_callback() {
+  stackchan::StackChanStatusTelemetry status{
+      "desk",
+      true,
+      "ready",
+      "neutral",
+      "idle",
+      "cmd-0001",
+      stackchan::Result::accepted("ok"),
+      "bringup"};
+  stackchan::StackChanStatusMsg status_msg{};
+
+  assert(stackchan::fill_stackchan_status_message("desk", status, &status_msg).ok);
+  assert(strcmp(status_msg.device_id.data, "desk") == 0);
+  assert(status_msg.connected);
+  assert(strcmp(status_msg.state.data, "ready") == 0);
+  assert(strcmp(status_msg.face.data, "neutral") == 0);
+  assert(strcmp(status_msg.motion.data, "idle") == 0);
+  assert(strcmp(status_msg.last_command_id.data, "cmd-0001") == 0);
+  assert(status_msg.last_error.ok);
+  assert(status_msg.last_error.state == 1);
+  assert(strcmp(status_msg.firmware_version.data, "bringup") == 0);
+
+  stackchan::DevicePublisherRegistry registry;
+  assert(registry.initialize("desk").ok);
+  registry.set_publish_callback(capture_publish);
+  assert(registry.publish_status(status).ok);
+  assert(callback_seen);
+  assert(callback_topic == stackchan::DevicePublisherTopic::Status);
+  assert(callback_status_connected);
+  assert(strcmp(callback_status_state, "ready") == 0);
+
+  status.device_id = "other";
+  assert(!registry.publish_status(status).ok);
 }
 
 void test_event_conversion_and_publish_callback() {
@@ -181,6 +256,29 @@ void test_event_publisher_drain_through_registry() {
   assert(!result.ok);
   assert(strcmp(result.error_code, "TRANSPORT_DISCONNECTED") == 0);
   assert(disconnected.queued_count() == 1);
+}
+
+void test_firmware_ready_event_drain_through_registry() {
+  stackchan::DevicePublisherRegistry registry;
+  assert(registry.initialize("desk").ok);
+  registry.set_publish_callback(capture_publish);
+
+  stackchan::EventPublisher events("desk");
+  events.set_callback(capture_event_publish, &registry);
+
+  callback_seen = false;
+  assert(events.publish(
+      stackchan::DeviceEventKind::FirmwareReady,
+      9000,
+      "",
+      "{\"transport\":\"serial\",\"agent\":\"micro_ros\"}").ok);
+  assert(events.queued_count() == 1);
+  assert(events.drain(1).ok);
+  assert(callback_seen);
+  assert(callback_topic == stackchan::DevicePublisherTopic::Events);
+  assert(strcmp(callback_event_name, "firmware_ready") == 0);
+  assert(strstr(callback_payload_json, "\"transport\":\"serial\"") != nullptr);
+  assert(events.queued_count() == 0);
 }
 
 void test_touch_conversion_bounds_storage() {
@@ -335,8 +433,10 @@ void test_head_pose_and_scheduler() {
 int main() {
   test_device_topic_names_and_validation();
   test_qos_contract();
+  test_status_conversion_and_publish_callback();
   test_event_conversion_and_publish_callback();
   test_event_publisher_drain_through_registry();
+  test_firmware_ready_event_drain_through_registry();
   test_touch_conversion_bounds_storage();
   test_sensor_and_power_conversions();
   test_head_pose_and_scheduler();

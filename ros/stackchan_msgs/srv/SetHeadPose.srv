@@ -1,0 +1,9 @@
+stackchan_msgs/CommandMeta meta
+bool home
+float32 pan_deg
+float32 tilt_deg
+uint16 speed
+uint32 duration_ms
+---
+stackchan_msgs/Result result
+stackchan_msgs/HeadPose pose

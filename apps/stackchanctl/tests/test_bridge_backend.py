@@ -372,6 +372,30 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(client.home_head_pose_args, ("default", 500, 0, False, 5.0))
         self.assertIsNone(client.move_head_pose_args)
 
+    def test_bridge_maintenance_calibration_is_unsupported_until_firmware_service_exists(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "maintenance",
+                "calibration",
+                "reset",
+                "--confirm",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["command"]["type"], "maintenance.calibration.reset")
+        self.assertEqual(payload["error"]["code"], "UNSUPPORTED_FEATURE")
+        self.assertTrue(payload["error"]["recoverable"])
+        self.assertIsNone(client.move_head_pose_args)
+        self.assertIsNone(client.home_head_pose_args)
+
     def test_bridge_say_wait_can_complete(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["--backend", "bridge", "say", "hello", "--wait", "--json"],

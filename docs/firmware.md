@@ -113,10 +113,15 @@ Calibration NVS rules:
 
 - Store a calibration schema version.
 - Store a checksum/CRC or equivalent corruption marker.
+- Read the NVS record during firmware setup and validate it before marking the
+  calibration store valid. Missing records, corrupt records, unsupported schema
+  versions, unsafe values, and checksum mismatches leave the store invalid.
 - Use atomic write or rollback behavior so power loss cannot leave accepted
   partial calibration.
 - Store servo neutral offsets and safe per-device corrections.
-- Provide a reset-to-default calibration path.
+- Provide a reset/erase-to-invalid calibration path. Reset removes or
+  invalidates the calibration record; it must not install a valid default
+  calibration.
 - Export/import may be added through explicit maintenance tooling, not normal command paths.
 - Missing, corrupted, or schema-mismatched calibration is `CALIBRATION_INVALID`.
   All servo-actuating motion, pose, home, and status operations must reject it
@@ -136,8 +141,32 @@ Current MVP scaffold:
   Until setup loads a valid NVS record, servo-actuating commands remain gated by
   `CALIBRATION_INVALID`.
 - The CLI and MCP surfaces intentionally do not expose calibration writes,
-  import/export, or reset-to-default operations. Those belong to a later
-  explicit maintenance mode.
+  import/export, or reset operations. Those belong to a later explicit
+  maintenance mode.
+
+Maintenance calibration contract:
+
+- Normal command resources under `/stackchan/<device_id>/cmd/...` must not write
+  calibration, unlock maintenance mode, export/import NVS, or expose raw servo
+  controls. They may only observe the resulting calibrated or invalid state
+  through structured results such as `CALIBRATION_INVALID`.
+- Initial K151 bring-up may use a firmware-local maintenance seed path, such as
+  an explicit local serial maintenance command or build-time maintenance mode,
+  but that path must be documented, require an explicit operator confirmation,
+  and be disabled or unreachable from normal Codex/MCP flows.
+- A maintenance write must validate the complete `CalibrationRecord` with the
+  firmware validator before committing it to NVS. Validation includes schema,
+  checksum, firmware hard limits, and bounded correction values.
+- A maintenance write must not accept CLI config values as safety authority.
+  CLI config may select device/backend/output behavior only; firmware NVS is
+  the only per-device calibration safety store.
+- A reset or erase path must be available before real-servo validation so the
+  invalid-calibration regression can be rechecked after a valid calibration
+  smoke.
+- Servo-actuating commands may count as validated only after both cases have
+  been observed on the target hardware: invalid NVS rejects with
+  `CALIBRATION_INVALID`, and valid NVS allows the command to proceed to the
+  servo-read and motion safety stages.
 
 Device identity is mapped in bridge configuration. Firmware may report hardware identity for diagnostics, but bridge configuration owns the `device_id` binding.
 
@@ -255,6 +284,13 @@ Baseline expressions:
 
 The PC side can request an expression, but the firmware decides the exact rendering.
 
+Current K151 bring-up firmware renders the baseline expressions directly on
+the CoreS3 display using firmware-owned `M5.Display` drawing primitives. The
+renderer is intentionally static for now: accepting a face command updates the
+display, updates the firmware status face field, and publishes a status
+heartbeat immediately. Animation timing and richer expression assets can be
+added behind the same named-expression contract later.
+
 Face commands should be idempotent. Repeating `happy` should not create a queue of animations unless the command explicitly asks for an animation.
 For face commands, `duration_ms=0` means persistent until replaced by another
 command, safety/fault handling, or device reset. Face animations must be
@@ -287,15 +323,33 @@ Suggested internal motion model:
 - Validate requested motion name.
 - Resolve it to a bounded trajectory.
 - Clamp each target to device limits.
-- Execute with timing limits.
+- Enqueue the plan and execute servo target/neutral steps from the firmware
+  loop, not from the micro-ROS service callback.
 - Publish completion or error state.
+
+Current K151 bring-up firmware keeps one active named-motion job at a time.
+The service callback validates calibration, cached servo health, priority, and
+busy/fault state, then returns `ACCEPTED` after enqueueing the plan. The loop
+advances target hold and neutral recovery steps before heartbeat publishing,
+event drain, or command executor work, preserving the safety and motion-neutral
+priority order. Connected transport liveness is inferred from heartbeat publish
+failures rather than active `rmw_uros_ping_agent()` probes, because connected
+ping probes can churn the micro-ROS session on the K151 serial path. If a
+servo safety step fails,
+firmware attempts an explicit neutral/home recovery and latches `fault` while
+preserving the original structured error. Combined home-plus-motion targets are
+revalidated against firmware degree limits before scheduling.
 
 Explicit head pose control is a separate safety path from named motion. It uses
 home-frame absolute `pan_deg` and `tilt_deg` values, not StackChan-BSP `X/Y` as
-a planar coordinate system. Firmware converts explicit pose degrees to BSP
-units with `deg * 10` and calls `M5StackChan.Motion.move(...)`. `motion home`
-is carried as a separate home mode and calls `goHome(...)`; it must not be
-collapsed into an external `pose(0,0)` command before firmware planning.
+a planar coordinate system. During K151 bring-up, the bridge keeps the public
+`/stackchan/<device_id>/cmd/motion/pose` action and forwards validated requests
+to the firmware-owned `/stackchan/<device_id>/device/motion/pose/set` service.
+Firmware combines the requested home-frame pose with the NVS calibration home,
+validates the resulting servo target against hard limits, writes the servo pair,
+and publishes confirmed home-frame pose telemetry. `motion home` is carried as
+a separate home mode; it must not be collapsed into an external `pose(0,0)`
+command before firmware planning.
 
 Explicit pose safety rules:
 
@@ -532,7 +586,9 @@ error instead of blocking sensor or fault handling.
 
 ## State publishing
 
-The firmware should publish health and state information such as:
+The firmware publishes a 1 Hz health heartbeat on
+`/stackchan/<device_id>/device/status` while its micro-ROS Agent session is
+healthy. The message mirrors `stackchan_msgs/StackChanStatus` and carries:
 
 - connection heartbeat
 - current face
@@ -540,7 +596,11 @@ The firmware should publish health and state information such as:
 - last accepted command id
 - last error code
 
-The exact ROS 2 interface belongs in [ros-interface.md](ros-interface.md).
+The bridge treats this topic as the liveness source for dynamic
+connected/disconnected status. If the Agent is unavailable, firmware stays in
+degraded mode, reconnects locally, and emits only serial diagnostics until ROS
+publishers are available again. The exact ROS 2 interface belongs in
+[ros-interface.md](ros-interface.md).
 
 ## Safety policy
 
@@ -621,6 +681,10 @@ framework = arduino
 
 board_microros_transport = serial
 board_microros_distro = jazzy
+board_microros_user_meta = ${PROJECT_DIR}/microros_stackchan.meta
+microros_transport = serial
+microros_distro = jazzy
+microros_user_meta = ${PROJECT_DIR}/microros_stackchan.meta
 
 lib_deps =
     https://github.com/m5stack/StackChan-BSP.git#1.1.0
@@ -632,6 +696,11 @@ Pinning rules:
 - Pin `StackChan-BSP` to the Git tag `1.1.0` initially.
 - Use `micro_ros_platformio` for PlatformIO integration, pinned to a verified `main` commit SHA rather than a moving branch.
 - Use ROS 2 Jazzy as the initial micro-ROS distro because it is the current LTS direction.
+- Keep `microros_stackchan.meta` aligned with firmware entity counts. The
+  bring-up firmware needs at least three micro-ROS services for
+  `/stackchan/<device_id>/device/face/set` and
+  `/stackchan/<device_id>/device/motion/run` plus
+  `/stackchan/<device_id>/device/motion/pose/set`.
 - Let `StackChan-BSP` resolve `M5Unified`, `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
 - Promote transitive dependencies to explicit pins only if reproducibility breaks.
 - Treat the `FTServo_Arduino` driver as owned by the `StackChan-BSP` layer unless a concrete adapter need appears.
@@ -650,14 +719,20 @@ The first firmware slice should prove the device loop and safety boundary, but i
 2. Connect to micro-ROS.
 3. Publish heartbeat/status.
 4. Handle one face service command.
-5. Handle one motion action command, such as `nod`.
-6. Enforce servo limits in firmware.
-7. Publish `ACCEPTED` or `REJECTED` command state through the shared result model.
-8. Add LED command support.
-9. Add audio playback/capture status.
-10. Add explicitly contracted raw IMU stream.
-11. Add NFC event stream.
-12. Add constrained camera snapshot support.
+5. Handle one named motion command such as `nod`; the bring-up firmware may use
+   the documented `/stackchan/<device_id>/device/motion/run` service mirror for
+   immediate accept/reject until the full action mirror owns progress and
+   cancellation.
+6. Handle explicit pose/home through
+   `/stackchan/<device_id>/device/motion/pose/set` and publish confirmed
+   `/stackchan/<device_id>/device/motion/pose` telemetry.
+7. Enforce servo limits in firmware.
+8. Publish `ACCEPTED`, `COMPLETED`, or `REJECTED` command state through the shared result model.
+9. Add LED command support.
+10. Add audio playback/capture status.
+11. Add explicitly contracted raw IMU stream.
+12. Add NFC event stream.
+13. Add constrained camera snapshot support.
 
 Face, motion, LED, audio, camera, NFC, and IMU work should be designed as independent adapters so they can advance in parallel without turning the firmware into a fork of the factory application.
 

@@ -7,21 +7,28 @@ from types import SimpleNamespace
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
     _coerce_telemetry_device_id,
+    _copy_command_meta,
     _copy_power_status,
     _copy_head_pose,
     _copy_status_with_type,
     _copy_event_record,
     _configured_device_records,
+    _event_matches_device_id,
+    _mark_device_available_from_event,
+    _mark_device_available_from_status,
     _snapshot_from_power_status,
     _snapshot_from_head_pose,
+    _snapshot_from_stackchan_status,
     _records_after_event_id,
     _sequence_for_event_id,
     _meta_from_ros,
     _normalize_device_ids,
     _reject_external_safety_priority,
     _relay_telemetry_message,
+    _status_matches_device_id,
 )
 from stackchan_bridge.models import CapabilitySnapshot, Result, StatusSnapshot
+from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
 from stackchan_bridge.telemetry import HeadPoseSnapshot, PowerStatusSnapshot
 
 
@@ -98,6 +105,28 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertEqual(converted.device_id, "default")
 
+    def test_copy_command_meta_preserves_bridge_namespace_device_id(self) -> None:
+        target = SimpleNamespace(created_at=None)
+        stamp = SimpleNamespace(sec=1778889601, nanosec=250000000)
+        meta = _meta_from_ros(
+            SimpleNamespace(
+                device_id="desk",
+                command_id="cmd-test-0001",
+                source="human_cli",
+                created_at=stamp,
+                priority=2,
+            ),
+            "default",
+        )
+
+        _copy_command_meta(target, meta, stamp)
+
+        self.assertEqual(target.device_id, "default")
+        self.assertEqual(target.command_id, "cmd-test-0001")
+        self.assertEqual(target.source, "human_cli")
+        self.assertIs(target.created_at, stamp)
+        self.assertEqual(target.priority, 2)
+
     def test_safety_priority_rejection_helper_clears_result_response_payloads(self) -> None:
         meta = SimpleNamespace(device_id="default", command_id="cmd-test-0001", priority=3)
         response = SimpleNamespace(
@@ -147,6 +176,130 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertFalse(records[0].connected)
         self.assertFalse(records[1].connected)
 
+    def test_firmware_event_marks_configured_device_available(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        event = SimpleNamespace(
+            device_id="default",
+            event_name="firmware_ready",
+            source="firmware",
+        )
+
+        changed = _mark_device_available_from_event(registry, "default", event)
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.AVAILABLE,
+        )
+
+    def test_firmware_event_liveness_rejects_device_id_mismatch(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        event = SimpleNamespace(
+            device_id="desk",
+            event_name="firmware_ready",
+            source="firmware",
+        )
+
+        self.assertFalse(_event_matches_device_id("default", event))
+        changed = _mark_device_available_from_event(registry, "default", event)
+
+        self.assertFalse(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.DISCONNECTED,
+        )
+
+    def test_bridge_origin_events_do_not_mark_device_available(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        event = SimpleNamespace(
+            device_id="default",
+            event_name="device_connected",
+            source="bridge",
+        )
+
+        changed = _mark_device_available_from_event(registry, "default", event)
+
+        self.assertFalse(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.DISCONNECTED,
+        )
+
+    def test_firmware_status_marks_configured_device_available(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        status = SimpleNamespace(device_id="default", connected=True)
+
+        changed = _mark_device_available_from_status(registry, "default", status)
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.AVAILABLE,
+        )
+
+    def test_firmware_status_can_mark_available_device_disconnected(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=True)])
+        status = SimpleNamespace(device_id="default", connected=False)
+
+        changed = _mark_device_available_from_status(registry, "default", status)
+
+        self.assertFalse(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.DISCONNECTED,
+        )
+
+    def test_firmware_status_liveness_rejects_device_id_mismatch(self) -> None:
+        registry = DeviceRegistry([DeviceRecord("default", connected=False)])
+        status = SimpleNamespace(device_id="desk", connected=True)
+
+        self.assertFalse(_status_matches_device_id("default", status))
+        changed = _mark_device_available_from_status(registry, "default", status)
+
+        self.assertFalse(changed)
+        self.assertEqual(
+            registry.availability("default"),
+            DeviceAvailability.DISCONNECTED,
+        )
+
+    def test_stackchan_status_snapshot_copies_liveness_fields(self) -> None:
+        last_error = SimpleNamespace(
+            ok=False,
+            state=3,
+            error_code="TRANSPORT_DISCONNECTED",
+            message="lost heartbeat",
+            recoverable=True,
+        )
+        capability = SimpleNamespace(
+            name="face",
+            state="available",
+            detail_code="",
+            active=True,
+            queued=0,
+            last_update=SimpleNamespace(sec=42, nanosec=250000000),
+        )
+        status = SimpleNamespace(
+            device_id="",
+            connected=False,
+            state="degraded",
+            face="neutral",
+            motion="idle",
+            last_command_id="cmd-1",
+            last_error=last_error,
+            firmware_version="bringup",
+            capabilities=[capability],
+        )
+
+        snapshot = _snapshot_from_stackchan_status(status, fallback_device_id="default")
+
+        self.assertEqual(snapshot.device_id, "default")
+        self.assertFalse(snapshot.connected)
+        self.assertEqual(snapshot.state, "degraded")
+        self.assertEqual(snapshot.last_error.error_code, "TRANSPORT_DISCONNECTED")
+        self.assertTrue(snapshot.last_error.recoverable)
+        self.assertEqual(snapshot.capabilities[0].name, "face")
+        self.assertEqual(snapshot.capabilities[0].last_update, 42.25)
+
     def test_event_record_copies_to_ros_shape_with_compact_payload(self) -> None:
         target = SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=0))
         record = EventRecord(
@@ -192,14 +345,28 @@ class RosNodeHelperTests(unittest.TestCase):
             "GetTranscript",
             "GetPowerStatus",
             "GetHeadPose",
+            "SetHeadPose",
             "TouchState",
             "HeadPose",
             "ProximityRaw",
             "LightRaw",
             "PowerStatus",
             "StackChanEvent",
+            "StackChanStatus",
             "EVENT_QOS_DEPTH = 32",
+            "DEFAULT_LIVENESS_TIMEOUT_SEC = 3.5",
+            "device_command_timeout_sec",
+            "MultiThreadedExecutor",
+            "ReentrantCallbackGroup",
             "reliable_depth_4 = QoSProfile(depth=4)",
+            "_mark_device_available_from_event(",
+            "_mark_device_available_from_status(",
+            "_device_face_clients",
+            "_device_head_pose_clients",
+            "_device_motion_clients",
+            "_call_device_face_set",
+            "_call_device_head_pose",
+            "_call_device_motion_run",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",
@@ -207,8 +374,13 @@ class RosNodeHelperTests(unittest.TestCase):
             "/power/status",
             "/motion/status",
             "/motion/pose",
+            "/status",
             "/events",
             "/device/events",
+            "/device/status",
+            "/device/face/set",
+            "/device/motion/pose/set",
+            "/device/motion/run",
             "device/{tail}",
         ):
             self.assertIn(name, source)

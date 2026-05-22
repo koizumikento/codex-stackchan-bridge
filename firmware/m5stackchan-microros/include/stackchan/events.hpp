@@ -61,6 +61,7 @@ enum class DeviceEventKind : uint8_t {
   IrTransmitFinished,
   IrTransmitFailed,
   TransportUnstable,
+  FirmwareReady,
 };
 
 struct DeviceEvent {
@@ -159,6 +160,8 @@ inline const char* device_event_name(DeviceEventKind kind) {
       return "ir_transmit_failed";
     case DeviceEventKind::TransportUnstable:
       return "transport_unstable";
+    case DeviceEventKind::FirmwareReady:
+      return "firmware_ready";
   }
   return "";
 }
@@ -207,7 +210,8 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "ir_transmit_started") == 0 ||
          strcmp(name, "ir_transmit_finished") == 0 ||
          strcmp(name, "ir_transmit_failed") == 0 ||
-         strcmp(name, "transport_unstable") == 0;
+         strcmp(name, "transport_unstable") == 0 ||
+         strcmp(name, "firmware_ready") == 0;
 }
 
 inline void copy_event_string(char* destination, size_t size, const char* source) {

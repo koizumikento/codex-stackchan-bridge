@@ -260,6 +260,16 @@ Recommended IDL details:
 - `connected` reflects current registry/transport availability, not whether the
   previous command succeeded. A healthy device may still report a historical
   command rejection in `last_error` until a later command result replaces it.
+- A configured device may transition to connected when `stackchan_bridge`
+  observes a firmware-origin event on `/stackchan/<device_id>/device/events`,
+  such as `firmware_ready`. The bridge should not require a static
+  `device_connected=true` override for real hardware smoke once firmware events
+  are flowing.
+- Firmware publishes `/stackchan/<device_id>/device/status` at 1 Hz while the
+  micro-ROS Agent session is healthy. `stackchan_bridge` treats this as the
+  liveness heartbeat, republishes the aggregated public
+  `/stackchan/<device_id>/status`, and returns `TRANSPORT_DISCONNECTED` after
+  3 missed status heartbeats unless `liveness_timeout_sec` is overridden.
 - `capabilities` is a bounded additive status field and does not replace
   feature-specific interfaces. Capability records include `name`, `state`,
   `detail_code`, `active`, `queued`, and `last_update`, where `state` is one of
@@ -635,6 +645,9 @@ Response fields:
 
 Rules:
 
+- `stackchan_bridge` exposes this facade service for `stackchanctl`; after
+  facade metadata, availability, priority, and policy checks pass, it forwards
+  the command to `/stackchan/<device_id>/device/face/set`.
 - `duration_ms=0` means persistent until replaced by another command,
   safety/fault handling, or device reset.
 - Face commands are idempotent by expression and duration; repeating the same
@@ -687,7 +700,10 @@ Device-side service mirrors:
 - `/stackchan/<device_id>/device/face/set`
 - `/stackchan/<device_id>/device/led/set`
 
-The bridge facade may reject requests before forwarding them if metadata, device availability, priority, or policy checks fail.
+The bridge facade may reject requests before forwarding them if metadata, device
+availability, priority, or policy checks fail. The device-side face service is
+implemented by the bring-up firmware and returns the same `Result` contract as
+the public facade service.
 
 ### `/stackchan/<device_id>/cmd/events/list`
 
@@ -876,6 +892,12 @@ Feedback fields:
 
 Purpose: request a named motion primitive with progress and cancellation.
 
+The public CLI-facing resource remains an action. During bring-up, the bridge
+may forward the immediate device-side accept/reject portion to
+`/stackchan/<device_id>/device/motion/run` as a `stackchan_msgs/srv/SetMotion`
+service so firmware can validate calibration, safety, and command metadata
+before the full device-side action implementation exists.
+
 Goal fields:
 
 - `meta`
@@ -929,6 +951,13 @@ Rules:
 - External explicit pose values outside limits are rejected with `SERVO_LIMIT_EXCEEDED` or `MOTION_INTERRUPTED`; they are not clamped.
 - Non-finite explicit pose values are rejected before they can be published as state.
 - Firmware owns the final safety validation even if the CLI or bridge rejected obvious invalid input earlier.
+- When a real device is connected, bridge-only pose/home simulation must not be
+  reported as physical actuation success. The bridge forwards valid pose/home
+  action goals to `/stackchan/<device_id>/device/motion/pose/set` and reports
+  the firmware `Result`.
+- `/stackchan/<device_id>/motion/pose` public telemetry is updated only after
+  firmware returns a completed pose with a matching `device_id`. Rejected
+  requests must not update telemetry to the rejected target.
 - `motion home` is a CLI/MCP command that sends `home=true`; it uses firmware-owned home behavior and is not a raw calibration command or a `pose(0,0)` alias.
 - Firmware may reject pose/home with `FIRMWARE_BUSY` when a pose action is already active or the command rate exceeds the configured minimum interval.
 
@@ -1040,6 +1069,30 @@ per-step result state/error summary, cancellation/preemption state, partial
 failure semantics, and recoverability. It must not include raw speech text, PCM
 payloads, image bytes, NFC/IR raw identifiers, or maintenance data.
 
+### Maintenance and calibration
+
+Calibration write, reset, import/export, raw servo controls, and maintenance
+unlock operations are not part of the normal public bridge facade under
+`/stackchan/<device_id>/cmd/...`. They must not be reachable through routine
+`face`, `motion`, `led`, `observe`, `perform`, Codex skill, or MCP command
+flows.
+
+If a maintenance calibration interface is added, it must be documented as a
+separate local maintenance path before implementation. The write/reset must
+terminate in firmware-owned logic that validates the complete calibration
+record, writes only firmware-owned NVS data, and preserves hard safety limits in
+firmware constants. It must not accept raw servo ticks, PWM, torque, relative
+movement, continuous rotation, arbitrary NVS blobs, or CLI config-derived safety
+limits.
+
+For early K151 bring-up, a firmware-local serial maintenance seed or build-time
+maintenance mode is acceptable only when it requires an explicit operator
+confirmation, is documented in `docs/hardware-validation.md`, and is disabled
+or unreachable from normal
+Codex/MCP flows. Hardware validation must prove both invalid calibration
+rejection with `CALIBRATION_INVALID` and valid calibration progression to the
+servo-read/motion-safety stage before real-servo motion is marked complete.
+
 ### `/stackchan/<device_id>/cmd/audio/capture`
 
 Purpose: capture microphone audio and stream chunks to the PC side.
@@ -1082,15 +1135,36 @@ Baseline chunk policy:
 - Playback and capture may run concurrently only if the documented echo/VAD
   policy preserves safety and transcript privacy.
 
-Device-side action mirrors:
+Target device-side action mirrors:
 
 - `/stackchan/<device_id>/device/motion/run`
-- `/stackchan/<device_id>/device/motion/pose`
 - `/stackchan/<device_id>/device/audio/play`
 - `/stackchan/<device_id>/device/audio/capture`
 - `/stackchan/<device_id>/device/camera/capture`
 
 The bridge facade is allowed to implement a richer policy than the device mirror, but it must return the shared `Result` shape.
+
+Bring-up device-side service mirrors:
+
+- `/stackchan/<device_id>/device/motion/run`
+- `/stackchan/<device_id>/device/motion/pose/set`
+
+The motion bring-up service uses `stackchan_msgs/srv/SetMotion` and is limited
+to immediate firmware accept/reject. It is expected to return
+`CALIBRATION_INVALID`, `SERVO_READ_FAILED`, `SERVO_LIMIT_EXCEEDED`,
+`MOTION_INTERRUPTED`, `UNKNOWN_COMMAND`, or `INVALID_PRIORITY` through the
+shared `Result` shape until the full action mirror owns progress and
+cancellation.
+
+The head pose bring-up service uses `stackchan_msgs/srv/SetHeadPose`. It is a
+firmware-owned validation and actuation boundary for the public
+`/stackchan/<device_id>/cmd/motion/pose` action. The service name uses
+`/pose/set` so it does not collide with the existing
+`/stackchan/<device_id>/device/motion/pose` telemetry topic. On success it
+returns a completed `Result` and the confirmed home-frame `HeadPose`; on
+invalid calibration, out-of-range servo target, servo read failure, busy/fault,
+or device mismatch it returns a structured rejection and leaves pose telemetry
+unchanged.
 
 ## QoS and heartbeat baseline
 
@@ -1099,6 +1173,7 @@ Baseline QoS:
 - Status heartbeat is published at 1 Hz.
 - A device is considered disconnected after 3 missed heartbeats unless config overrides it.
 - `/stackchan/<device_id>/status`: reliable, transient local, keep last 1.
+- `/stackchan/<device_id>/device/status`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/events`: reliable, volatile, keep last 32.
 - `/stackchan/<device_id>/device/events`: reliable, volatile, keep last 32.
 - `/stackchan/<device_id>/device/imu/raw`: best effort, volatile, keep last 10.

@@ -64,6 +64,44 @@ uv run --no-project python scripts/firmware_container.py build-image
 uv run --no-project python scripts/firmware_container.py build
 ```
 
+When a board is connected to the host, use PlatformIO upload rather than
+calling `esptool` directly. The repository runner invokes PlatformIO through
+`uv` with the Python packages required by `micro_ros_platformio`:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3
+```
+
+If upload reaches the ESP32-S3 stub and then fails with `No serial data
+received` or `Unable to verify flash chip connection`, keep the PlatformIO path
+and retry without the stub at a lower upload speed:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+```
+
+For bring-up serial diagnostics:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py monitor --port COM3
+```
+
+The runner syncs the canonical `ros/stackchan_msgs` package into
+`extra_packages/` before build or upload so `micro_ros_platformio` can generate
+firmware-side headers. When those messages change, regenerate the micro-ROS
+cache with the container build first, then use the host PlatformIO runner for
+the short build/upload loop.
+
+The project uses `microros_stackchan.meta` as a `microros_user_meta` override.
+The same path is also listed as `board_microros_user_meta` for forward
+compatibility with PlatformIO-style board options. The default ESP32 meta in
+the pinned `micro_ros_platformio` commit
+allows one firmware service; StackChan bring-up currently needs
+`/stackchan/default/device/face/set` and
+`/stackchan/default/device/motion/run` plus
+`/stackchan/default/device/motion/pose/set`, so `RMW_UXRCE_MAX_SERVICES` is
+raised to `3`.
+
 The firmware package also includes hardware-free contract checks:
 
 ```bash
@@ -80,7 +118,9 @@ Current dependency pins:
 
 The micro-ROS README documents `board_microros_distro = jazzy` and serial transport configuration; the first real build should re-check the pinned commit in the ROS 2 Jazzy environment before hardware flashing.
 
-The current firmware scaffold does not initialize micro-ROS publishers,
-services, actions, or executor objects yet. `try_connect_microros_agent()` is a
-guarded stub so firmware remains in degraded mode until the ROS 2 environment
-and hardware bring-up path are available.
+The current firmware initializes the micro-ROS serial transport, pings the
+Agent, creates a device event publisher on
+`/stackchan/default/device/events`, and publishes a bounded `firmware_ready`
+bring-up event when an Agent is reachable. It also exposes bring-up device-side
+services for face and named motion. LED, audio, camera, and sensor
+services/actions remain follow-up work.

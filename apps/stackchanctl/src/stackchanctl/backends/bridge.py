@@ -319,6 +319,23 @@ class BridgeBackend:
                 wait=request.wait,
                 timeout=request.timeout,
             )
+        if request.command_type in {
+            CommandType.MAINTENANCE_CALIBRATION_STATUS,
+            CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL,
+            CommandType.MAINTENANCE_CALIBRATION_RESET,
+        }:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message=(
+                        "maintenance calibration requires a firmware-owned "
+                        "maintenance service before bridge execution"
+                    ),
+                    recoverable=True,
+                ),
+            )
         raise BridgeBackendError(
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
@@ -1111,6 +1128,27 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
         }
     if request.command_type is CommandType.POWER_STATUS:
         return {"type": "power.status"}
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_STATUS:
+        return {
+            "type": "maintenance.calibration.status",
+            "store": "firmware_nvs",
+            "write": False,
+        }
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL:
+        return {
+            "type": "maintenance.calibration.capture-neutral",
+            "confirmed": bool(request.args.get("confirmed")),
+            "store": "firmware_nvs",
+            "write": True,
+        }
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_RESET:
+        return {
+            "type": "maintenance.calibration.reset",
+            "confirmed": bool(request.args.get("confirmed")),
+            "reset_to": "invalid",
+            "store": "firmware_nvs",
+            "write": True,
+        }
     return {"type": request.command_type.value}
 
 

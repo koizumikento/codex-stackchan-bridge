@@ -12,3 +12,5 @@ build/
 install/
 log/
 ros2_ws/
+
+firmware/m5stackchan-microros/extra_packages/

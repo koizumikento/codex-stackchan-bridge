@@ -39,6 +39,9 @@ class CommandType(StrEnum):
     CAMERA_CAPTURE = "camera-capture"
     NFC_WAIT = "nfc-wait"
     IMU_STREAM = "imu-stream"
+    MAINTENANCE_CALIBRATION_STATUS = "maintenance-calibration-status"
+    MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL = "maintenance-calibration-capture-neutral"
+    MAINTENANCE_CALIBRATION_RESET = "maintenance-calibration-reset"
 
 
 @dataclass(frozen=True)

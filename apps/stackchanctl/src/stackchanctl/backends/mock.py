@@ -94,6 +94,14 @@ class MockBackend:
         if request.command_type is CommandType.MOTION_STATUS:
             return _head_pose_status(request)
 
+        if request.command_type is CommandType.MAINTENANCE_CALIBRATION_STATUS:
+            return CommandResult(
+                ok=True,
+                result_state=ResultState.COMPLETED,
+                meta=request.meta,
+                command=_command_payload(request),
+            )
+
         command_failure = _mock_command_failure(request)
         if command_failure is not None:
             return command_failure
@@ -250,6 +258,27 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
             message="CLI priority SAFETY is reserved for bridge and firmware internals",
             recoverable=False,
         )
+
+    if request.command_type in {
+        CommandType.MAINTENANCE_CALIBRATION_STATUS,
+        CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL,
+        CommandType.MAINTENANCE_CALIBRATION_RESET,
+    }:
+        if request.meta.source != "human_cli":
+            return ErrorDetail(
+                code="INVALID_SOURCE",
+                message="maintenance calibration commands require source=human_cli",
+                recoverable=False,
+            )
+        if request.command_type in {
+            CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL,
+            CommandType.MAINTENANCE_CALIBRATION_RESET,
+        } and not bool(request.args.get("confirmed")):
+            return ErrorDetail(
+                code="OPERATOR_CONFIRMATION_REQUIRED",
+                message="maintenance calibration write/reset commands require --confirm",
+                recoverable=False,
+            )
 
     if request.command_type is CommandType.FACE and request.args["name"] not in ALLOWED_FACES:
         return ErrorDetail(
@@ -922,6 +951,33 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
         }
     if request.command_type is CommandType.POWER_STATUS:
         return {"type": "power.status"}
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_STATUS:
+        return {
+            "type": "maintenance.calibration.status",
+            "calibration_valid": True,
+            "store": "firmware_nvs",
+            "mode": "mock",
+            "write": False,
+        }
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_CAPTURE_NEUTRAL:
+        return {
+            "type": "maintenance.calibration.capture-neutral",
+            "confirmed": bool(request.args.get("confirmed")),
+            "calibration_valid": True,
+            "store": "firmware_nvs",
+            "mode": "mock",
+            "write": True,
+        }
+    if request.command_type is CommandType.MAINTENANCE_CALIBRATION_RESET:
+        return {
+            "type": "maintenance.calibration.reset",
+            "confirmed": bool(request.args.get("confirmed")),
+            "calibration_valid": False,
+            "reset_to": "invalid",
+            "store": "firmware_nvs",
+            "mode": "mock",
+            "write": True,
+        }
     return {"type": request.command_type.value}
 
 

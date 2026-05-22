@@ -64,6 +64,30 @@ Development assistant surfaces:
 - Update docs in the same change when behavior, contracts, safety policy, or validation expectations change.
 - Do not duplicate detailed interface, firmware, CLI, or dependency rules in this root file; link to the canonical doc instead.
 
+## Hardware Bring-Up Practice
+
+- Use `uv` for repository Python helpers and validation commands.
+- For connected firmware work, prefer the repository PlatformIO helper over
+  direct `esptool` calls. Use direct flashing tools only when a documented
+  recovery or diagnostic path requires them.
+- Treat Windows Docker Desktop serial access as suspicious until proven. If a
+  COM port appears inside the Linux container or WSL VM but fails to open, use
+  the documented host serial TCP bridge flow in `docs/hardware-validation.md`.
+- During micro-ROS Agent bring-up, prefer same-container Agent, bridge, and
+  smoke checks before blaming firmware. Docker Desktop can expose the ROS graph
+  while still dropping cross-container DDS samples.
+- When adding firmware publishers, services, actions, or clients, check
+  micro-ROS resource limits and regenerate `libmicroros` with matching entity
+  counts. In particular, the bring-up firmware needs more than the upstream
+  default single service once both face and motion firmware services exist.
+- For uncalibrated hardware, `CALIBRATION_INVALID` from firmware is a valid
+  safety result, not a failed command path. Only count servo-actuating motion as
+  complete after an explicit maintenance/calibration path has loaded valid
+  firmware-owned calibration.
+- Record hardware failures, workarounds, and smoke results in the relevant
+  Linear issue before marking bring-up work complete. Create focused subissues
+  for the next physical risk instead of hiding it in a broad parent issue.
+
 ## Quality
 
 Use `docs/quality-gates.md` before committing, pushing, or marking work complete.

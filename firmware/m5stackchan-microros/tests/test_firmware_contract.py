@@ -29,12 +29,19 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("board = m5stack-cores3", platformio)
         self.assertIn("board_microros_transport = serial", platformio)
         self.assertIn("board_microros_distro = jazzy", platformio)
+        self.assertIn("board_microros_user_meta = ${PROJECT_DIR}/microros_stackchan.meta", platformio)
+        self.assertIn("microros_transport = serial", platformio)
+        self.assertIn("microros_distro = jazzy", platformio)
+        self.assertIn("microros_user_meta = ${PROJECT_DIR}/microros_stackchan.meta", platformio)
         self.assertIn("monitor_speed = 921600", platformio)
         self.assertIn("-std=gnu++17", platformio)
         self.assertIn("UART_SCLK_DEFAULT=UART_SCLK_XTAL", platformio)
         self.assertIn("STACKCHAN_MICROROS_SERIAL_BAUD=921600", platformio)
         self.assertIn("StackChan-BSP.git#1.1.0", platformio)
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
+
+        microros_meta = (ROOT / "microros_stackchan.meta").read_text()
+        self.assertIn("-DRMW_UXRCE_MAX_SERVICES=3", microros_meta)
 
     def test_hardware_free_contract_matrix_has_coverage_targets(self) -> None:
         for label, relative_path in HARDWARE_FREE_CONTRACT_MATRIX.items():
@@ -128,8 +135,109 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("void reset()", calibration)
         self.assertIn("valid_ = false", calibration)
         self.assertIn("stackchan::CalibrationStore calibration_store", main)
+        self.assertIn("#include <Preferences.h>", main)
+        self.assertIn("stackchan::Result load_calibration_from_nvs()", main)
+        self.assertIn("calibration_preferences.begin(stackchan::kCalibrationNvsNamespace, true)", main)
+        self.assertIn("getBytesLength(stackchan::kCalibrationNvsKey)", main)
+        self.assertIn("getBytes(", main)
+        self.assertIn("calibration_store.load_from_nvs_record(record)", main)
+        self.assertIn("stackchan::Result write_calibration_to_nvs", main)
+        self.assertIn("stackchan::validate_calibration_record(record)", main)
+        self.assertIn("calibration_preferences.putBytes(", main)
+        self.assertIn("stackchan::Result reset_calibration_nvs()", main)
+        self.assertIn("calibration_preferences.remove(stackchan::kCalibrationNvsKey)", main)
+        self.assertIn("STACKCHAN_CALIBRATION_MAINTENANCE_ENABLE", main)
+        self.assertIn("STACKCHAN_CALIBRATION_MAINTENANCE_SEED", main)
+        self.assertIn("STACKCHAN_CALIBRATION_MAINTENANCE_RESET", main)
+        self.assertIn("calibration_load_result = load_calibration_from_nvs();", main)
+        self.assertIn("calibration_maintenance_result = apply_calibration_maintenance_action();", main)
         self.assertIn("return calibration_store.valid();", main)
-        self.assertNotIn("return true;", main[main.find("bool firmware_calibration_valid") : main.find("bool servo_position_read_available")])
+        self.assertNotIn("TODO: load kCalibrationNvsNamespace", main)
+        calibration_valid_body = main[
+            main.find("bool firmware_calibration_valid") :
+            main.find("bool raw_servo_position_valid")
+        ]
+        self.assertNotIn("return true;", calibration_valid_body)
+
+    def test_k151_servo_adapter_uses_checked_read_and_fail_closed_motion(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("#include <drivers/FTServo_Arduino/src/SCSCL.h>", main)
+        self.assertIn("#include <drivers/PY32IOExpander/PY32IOExpander.hpp>", main)
+        self.assertIn("SCSCL servo_bus", main)
+        self.assertIn("stackchan::Result initialize_servo_adapter()", main)
+        self.assertIn("servo_bus.ReadPos(kYawServoId)", main)
+        self.assertIn("servo_bus.ReadPos(kPitchServoId)", main)
+        self.assertIn("raw_servo_position_valid", main)
+        self.assertIn('"SERVO_READ_FAILED"', main)
+        self.assertIn("servo_adapter_init_result.ok", main)
+        self.assertIn("MotionSchedulerJob motion_scheduler", main)
+        self.assertIn("void step_motion_scheduler(unsigned long now)", main)
+        self.assertIn("stackchan::Result enqueue_motion_scheduler", main)
+        self.assertIn("stackchan::Result try_motion_neutral_recovery()", main)
+        self.assertIn("servo_bus.EnableTorque(kYawServoId, 1)", main)
+        self.assertIn("servo_bus.WritePos(kYawServoId", main)
+        self.assertIn("servo_bus.WritePos(kPitchServoId", main)
+        self.assertIn("servo_position_read_available_cache", main)
+        self.assertIn("void update_servo_health_cache(unsigned long now, bool force = false)", main)
+        self.assertIn("const bool servo_read_ok = calibration_valid && servo_position_read_available_cache;", main)
+        self.assertIn("validate_motion_servo_target(home, \"home\")", main)
+        self.assertIn("validate_motion_servo_target(target, \"motion\")", main)
+        self.assertIn("state_machine.fault();", main)
+        self.assertIn("const bool safety_fault = is_servo_safety_fault(result);", main)
+        self.assertIn("if (safety_fault || !recovery_result.ok)", main)
+        self.assertIn("copy_bounded(current_motion, sizeof(current_motion), motion_scheduler.name);", main)
+        self.assertIn("step_motion_scheduler(now);", main)
+        loop_body = main[main.find("void loop() {") :]
+        self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("update_servo_health_cache(now);"))
+        self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("publish_status_heartbeat();"))
+        self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("spin_command_executor();"))
+        self.assertIn("move_servo_pair_to(motion_scheduler.target)", main)
+        self.assertIn("move_servo_pair_to(motion_scheduler.home)", main)
+        self.assertIn("fail_motion_scheduler(result);", main)
+        self.assertIn("try_motion_neutral_recovery", main)
+        self.assertNotIn("delay(plan.duration_ms / 2)", main)
+        motion_handler = main[
+            main.find("stackchan::Result handle_motion_command") :
+            main.find("void handle_motion_set_service")
+        ]
+        self.assertNotIn("move_servo_pair_to(", motion_handler)
+        self.assertNotIn("servo_position_read_available()", motion_handler)
+        enqueue_body = main[
+            main.find("stackchan::Result enqueue_motion_scheduler") :
+            main.find("void step_motion_scheduler")
+        ]
+        self.assertNotIn("publish_status_heartbeat();", enqueue_body)
+        self.assertNotIn("TODO: call StackChan-BSP servo adapter", main)
+
+    def test_face_commands_render_to_display(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("void render_face_display(const char* name)", main)
+        self.assertIn("M5.Display.fillScreen", main)
+        self.assertIn("M5.Display.fillRoundRect", main)
+        self.assertIn("M5.Display.fillCircle", main)
+        self.assertIn("M5.Display.drawFastHLine", main)
+        self.assertIn("render_face_display(\"neutral\");", main)
+        self.assertIn("render_face_display(name);", main)
+        self.assertIn("publish_status_heartbeat();", main)
+        for face in ["happy", "thinking", "surprised", "sleepy", "error"]:
+            self.assertIn(f'strcmp(name, "{face}") == 0', main)
+
+    def test_calibration_maintenance_requires_operator_confirm_and_stays_out_of_default_paths(self) -> None:
+        script = (ROOT.parents[1] / "scripts" / "firmware_platformio.py").read_text()
+        cli = (ROOT.parents[1] / "apps" / "stackchanctl" / "src" / "stackchanctl" / "cli.py").read_text()
+        mcp = (ROOT.parents[1] / "apps" / "stackchanctl" / "src" / "stackchanctl" / "mcp_stdio.py").read_text()
+
+        self.assertIn("--calibration-maintenance-seed", script)
+        self.assertIn("--calibration-maintenance-reset", script)
+        self.assertIn("--confirm-calibration-maintenance", script)
+        self.assertIn("STACKCHAN_CALIBRATION_MAINTENANCE_ENABLE=1", script)
+        self.assertIn("parser.error(", script)
+        self.assertNotIn("calibration-maintenance-seed", cli)
+        self.assertNotIn("calibration-maintenance-reset", cli)
+        self.assertNotIn("calibration_maintenance_seed", mcp)
+        self.assertNotIn("calibration_maintenance_reset", mcp)
 
     def test_calibration_contract_cpp_harness(self) -> None:
         compiler = shutil.which("g++") or shutil.which("clang++")
@@ -194,8 +302,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('strcmp(result.error_code, "SERVO_READ_FAILED") == 0', main)
         self.assertIn("publish_status_heartbeat", main)
         self.assertIn("try_connect_microros_agent", main)
-        self.assertIn("check_microros_agent_connection", main)
         self.assertIn("update_agent_connection(false)", main)
+        self.assertIn("if (!result.ok) {\n      update_agent_connection(false);", main)
+        self.assertNotIn("check_microros_agent_connection", main)
+        self.assertNotIn("kAgentHealthCheckIntervalMs", main)
         self.assertIn("copy_bounded", main)
         self.assertIn("stackchan::EventPublisher event_publisher", main)
         self.assertIn("stackchan::DevicePublisherRegistry device_publishers", main)
@@ -205,13 +315,36 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("drain_device_events", main)
         self.assertIn("kEventDrainBudget", main)
         self.assertIn("/stackchan/<device_id>/device/events", main)
+        self.assertIn("/stackchan/<device_id>/device/status", main)
+        self.assertIn("ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, StackChanStatus)", main)
+        self.assertIn("ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetFace)", main)
+        self.assertIn("ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetHeadPose)", main)
+        self.assertIn("ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetMotion)", main)
+        self.assertIn("ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, HeadPose)", main)
+        self.assertIn("/stackchan/%s/device/face/set", main)
+        self.assertIn("/stackchan/%s/device/motion/pose/set", main)
+        self.assertIn("/stackchan/%s/device/motion/run", main)
+        self.assertIn("rclc_executor_add_service", main)
+        self.assertIn("spin_command_executor", main)
+        self.assertIn("handle_face_set_service", main)
+        self.assertIn("handle_head_pose_set_service", main)
+        self.assertIn("handle_motion_set_service", main)
+        self.assertIn("reserve_face_set_request_strings", main)
+        self.assertIn("reserve_head_pose_set_request_strings", main)
+        self.assertIn("reserve_motion_set_request_strings", main)
+        self.assertIn("request_matches_device_id", main)
+        self.assertIn('"INVALID_DEVICE_ID"', main)
+        self.assertIn("device_publishers.publish_status", main)
+        self.assertIn("device_publishers.publish_motion_pose", main)
+        self.assertIn("runtime_state_name", main)
         self.assertIn("firmware_calibration_valid", main)
         self.assertIn("servo_position_read_available", main)
         face_handler = main[
             main.find("stackchan::Result handle_face_command") : main.find("stackchan::Result handle_motion_command")
         ]
         motion_handler = main[
-            main.find("stackchan::Result handle_motion_command") : main.find("void publish_status_heartbeat")
+            main.find("stackchan::Result handle_motion_command") :
+            main.find("void publish_status_heartbeat() {\n")
         ]
         self.assertLess(
             face_handler.find("meta.priority == stackchan::Priority::Safety"),
@@ -254,6 +387,7 @@ class FirmwareContractTests(unittest.TestCase):
 
         self.assertIn("kStackchanNamespacePrefix = \"/stackchan/\"", publishers)
         self.assertIn("kDeviceEventsTopicSuffix", publishers)
+        self.assertIn("kDeviceStatusTopicSuffix = \"/device/status\"", publishers)
         self.assertIn("kDeviceTouchStateTopicSuffix = \"/device/touch/state\"", publishers)
         self.assertIn("kDeviceProximityRawTopicSuffix = \"/device/proximity/raw\"", publishers)
         self.assertIn("kDeviceLightRawTopicSuffix = \"/device/light/raw\"", publishers)
@@ -267,6 +401,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("RosReliability::BestEffort", publishers)
         self.assertIn("kDeviceEventsQos", publishers)
         self.assertIn("32", publishers)
+        self.assertIn("kDeviceStatusQos", publishers)
+        self.assertIn("StackChanStatusTelemetry", publishers)
+        self.assertIn("publish_status", publishers)
         self.assertIn("kDeviceTouchStateQos", publishers)
         self.assertIn("kDeviceProximityRawQos", publishers)
         self.assertIn("kDeviceLightRawQos", publishers)
@@ -420,6 +557,7 @@ class FirmwareContractTests(unittest.TestCase):
             "ir_transmit_finished",
             "ir_transmit_failed",
             "transport_unstable",
+            "firmware_ready",
         ):
             self.assertIn(f'"{name}"', events)
 

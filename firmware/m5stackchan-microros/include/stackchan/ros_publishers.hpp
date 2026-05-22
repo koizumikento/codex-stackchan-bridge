@@ -19,6 +19,7 @@ constexpr size_t kRosFrameMaxLength = 16;
 constexpr size_t kRosTouchIntensityCapacity = 3;
 
 constexpr const char* kStackchanNamespacePrefix = "/stackchan/";
+constexpr const char* kDeviceStatusTopicSuffix = "/device/status";
 constexpr const char* kDeviceTouchStateTopicSuffix = "/device/touch/state";
 constexpr const char* kDeviceProximityRawTopicSuffix = "/device/proximity/raw";
 constexpr const char* kDeviceLightRawTopicSuffix = "/device/light/raw";
@@ -32,6 +33,7 @@ enum class RosReliability : uint8_t {
 
 enum class DevicePublisherTopic : uint8_t {
   Events = 0,
+  Status,
   TouchState,
   ProximityRaw,
   LightRaw,
@@ -49,6 +51,10 @@ struct DevicePublisherQos {
 constexpr DevicePublisherQos kDeviceEventsQos{
     RosReliability::Reliable,
     32,
+    false};
+constexpr DevicePublisherQos kDeviceStatusQos{
+    RosReliability::Reliable,
+    2,
     false};
 constexpr DevicePublisherQos kDeviceTouchStateQos{
     RosReliability::Reliable,
@@ -140,6 +146,36 @@ struct StackChanEventMsg {
   BoundedString<kEventPayloadJsonMaxLength> payload_json;
 };
 
+struct ResultMsg {
+  bool ok;
+  uint8_t state;
+  BoundedString<48> error_code;
+  BoundedString<160> message;
+  bool recoverable;
+};
+
+struct StackChanStatusMsg {
+  BoundedString<kRosDeviceIdMaxLength> device_id;
+  bool connected;
+  BoundedString<kRosSurfaceMaxLength> state;
+  BoundedString<kRosSurfaceMaxLength> face;
+  BoundedString<kRosSurfaceMaxLength> motion;
+  BoundedString<36> last_command_id;
+  ResultMsg last_error;
+  BoundedString<kRosSurfaceMaxLength> firmware_version;
+};
+
+struct StackChanStatusTelemetry {
+  const char* device_id;
+  bool connected;
+  const char* state;
+  const char* face;
+  const char* motion;
+  const char* last_command_id;
+  Result last_error;
+  const char* firmware_version;
+};
+
 struct TouchStateMsg {
   BoundedString<kRosDeviceIdMaxLength> device_id;
   RosTime stamp;
@@ -224,6 +260,8 @@ inline const char* device_topic_suffix(DevicePublisherTopic topic) {
   switch (topic) {
     case DevicePublisherTopic::Events:
       return kDeviceEventsTopicSuffix;
+    case DevicePublisherTopic::Status:
+      return kDeviceStatusTopicSuffix;
     case DevicePublisherTopic::TouchState:
       return kDeviceTouchStateTopicSuffix;
     case DevicePublisherTopic::ProximityRaw:
@@ -244,6 +282,8 @@ inline DevicePublisherQos device_topic_qos(DevicePublisherTopic topic) {
   switch (topic) {
     case DevicePublisherTopic::Events:
       return kDeviceEventsQos;
+    case DevicePublisherTopic::Status:
+      return kDeviceStatusQos;
     case DevicePublisherTopic::TouchState:
       return kDeviceTouchStateQos;
     case DevicePublisherTopic::ProximityRaw:
@@ -337,6 +377,61 @@ inline Result fill_event_message(
   }
   message->stamp = ros_time_from_ms(event.stamp_ms);
   return Result::accepted("event message converted");
+}
+
+inline Result fill_result_message(
+    const Result& result,
+    ResultMsg* message) {
+  if (message == nullptr) {
+    return Result::rejected("FIRMWARE_BUSY", "result message storage missing", true);
+  }
+  if (!message->error_code.assign(result.error_code) ||
+      !message->message.assign(result.message)) {
+    return Result::rejected(
+        "FIRMWARE_BUSY",
+        "result message exceeded bounded ROS storage",
+        true);
+  }
+  message->ok = result.ok;
+  message->state = static_cast<uint8_t>(result.state);
+  message->recoverable = result.recoverable;
+  return Result::accepted("result message converted");
+}
+
+inline Result fill_stackchan_status_message(
+    const char* configured_device_id,
+    const StackChanStatusTelemetry& telemetry,
+    StackChanStatusMsg* message) {
+  if (message == nullptr) {
+    return Result::rejected("FIRMWARE_BUSY", "status message storage missing", true);
+  }
+  const char* status_device_id =
+      telemetry.device_id == nullptr || telemetry.device_id[0] == '\0'
+          ? configured_device_id
+          : telemetry.device_id;
+  if (!telemetry_device_id_matches(configured_device_id, status_device_id)) {
+    return Result::rejected(
+        "INVALID_DEVICE_ID",
+        "status telemetry device_id does not match publisher namespace",
+        true);
+  }
+  if (!message->device_id.assign(configured_device_id) ||
+      !message->state.assign(telemetry.state) ||
+      !message->face.assign(telemetry.face) ||
+      !message->motion.assign(telemetry.motion) ||
+      !message->last_command_id.assign(telemetry.last_command_id) ||
+      !message->firmware_version.assign(telemetry.firmware_version)) {
+    return Result::rejected(
+        "FIRMWARE_BUSY",
+        "status message exceeded bounded ROS storage",
+        true);
+  }
+  Result result = fill_result_message(telemetry.last_error, &message->last_error);
+  if (!result.ok) {
+    return result;
+  }
+  message->connected = telemetry.connected;
+  return Result::accepted("status message converted");
 }
 
 inline Result fill_touch_state_message(
@@ -519,6 +614,15 @@ class DevicePublisherRegistry {
     return publish(DevicePublisherTopic::Events, &event_message_);
   }
 
+  Result publish_status(const StackChanStatusTelemetry& telemetry) {
+    Result result =
+        fill_stackchan_status_message(device_id_, telemetry, &status_message_);
+    if (!result.ok) {
+      return result;
+    }
+    return publish(DevicePublisherTopic::Status, &status_message_);
+  }
+
   Result publish_touch_state(const TouchStateTelemetry& telemetry) {
     if (!telemetry_device_id_matches(device_id_, telemetry.device_id)) {
       return Result::rejected(
@@ -603,6 +707,7 @@ class DevicePublisherRegistry {
   FirmwarePublishFn callback_ = nullptr;
   void* context_ = nullptr;
   StackChanEventMsg event_message_{};
+  StackChanStatusMsg status_message_{};
   TouchStateMsg touch_state_message_{};
   ProximityRawMsg proximity_raw_message_{};
   LightRawMsg light_raw_message_{};
