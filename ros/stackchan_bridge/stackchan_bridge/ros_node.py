@@ -26,6 +26,17 @@ AUDIO_PLAYBACK_DIRECTION = 1
 AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 256
 
 
+def _audio_chunk_pcm_size(message: object) -> int:
+    pcm = getattr(message, "pcm", b"")
+    size = getattr(pcm, "size", None)
+    if size is not None:
+        return int(size)
+    try:
+        return len(pcm)
+    except TypeError:
+        return 0
+
+
 def _time_to_string(stamp: object) -> str:
     sec = getattr(stamp, "sec", 0)
     nanosec = getattr(stamp, "nanosec", 0)
@@ -509,6 +520,7 @@ def main(args: list[str] | None = None) -> None:
             self._pending_playback_chunks = {}
             self._active_playback_sessions = set()
             self._closed_playback_sessions = set()
+            self._playback_relay_stats = {}
             self._playback_chunk_lock = threading.Lock()
             self._telemetry_publishers = {}
             self._telemetry_subscriptions = []
@@ -1204,22 +1216,40 @@ def main(args: list[str] | None = None) -> None:
                 return
             key = (device_id, command_id)
             publish_now = False
+            sequence = int(getattr(message, "sequence", 0))
+            pcm_size = _audio_chunk_pcm_size(message)
             with self._playback_chunk_lock:
-                if key in self._active_playback_sessions:
-                    publish_now = True
-                elif key in self._closed_playback_sessions:
+                if key in self._closed_playback_sessions:
                     self.get_logger().warning(
                         f"dropping late playback chunk for command_id={command_id!r}"
                     )
                     return
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["received"] += 1
+                if key in self._active_playback_sessions:
+                    publish_now = True
                 else:
                     buffer = self._pending_playback_chunks.setdefault(key, [])
                     if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
+                        stats["dropped"] += 1
                         self.get_logger().warning(
                             f"dropping playback chunk for command_id={command_id!r}: bridge buffer is full"
                         )
                         return
                     buffer.append(message)
+                    stats["buffered"] += 1
+                    if stats["buffered"] == 1:
+                        self.get_logger().info(
+                            "audio playback relay buffered first chunk "
+                            f"device_id={device_id!r} command_id={command_id!r} "
+                            f"sequence={sequence} bytes={pcm_size} "
+                            f"format={int(getattr(message, 'format', 0))} "
+                            f"sample_rate={int(getattr(message, 'sample_rate', 0))} "
+                            f"channels={int(getattr(message, 'channels', 0))}"
+                        )
             if publish_now:
                 self._publish_device_audio_chunk(device_id, message)
                 return
@@ -1230,6 +1260,15 @@ def main(args: list[str] | None = None) -> None:
                 self._closed_playback_sessions.discard(key)
                 self._active_playback_sessions.add(key)
                 buffered = self._pending_playback_chunks.pop(key, [])
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+            self.get_logger().info(
+                "audio playback relay activated "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"buffered={len(buffered)} received={stats['received']}"
+            )
             for message in buffered:
                 self._publish_device_audio_chunk(device_id, message)
 
@@ -1237,16 +1276,50 @@ def main(args: list[str] | None = None) -> None:
             key = (device_id, command_id)
             with self._playback_chunk_lock:
                 self._active_playback_sessions.discard(key)
-                self._pending_playback_chunks.pop(key, None)
+                pending = self._pending_playback_chunks.pop(key, [])
                 self._closed_playback_sessions.add(key)
+                stats = self._playback_relay_stats.pop(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+            self.get_logger().info(
+                "audio playback relay finished "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"received={stats['received']} buffered={stats['buffered']} "
+                f"published={stats['published']} dropped={stats['dropped']} "
+                f"pending={len(pending)}"
+            )
 
         def _publish_device_audio_chunk(self, device_id: str, message: object) -> None:
             publisher = self._device_audio_chunk_publishers.get(device_id)
+            command_id = getattr(message, "command_id", "")
+            key = (device_id, command_id)
+            sequence = int(getattr(message, "sequence", 0))
+            pcm_size = _audio_chunk_pcm_size(message)
             if publisher is None:
+                with self._playback_chunk_lock:
+                    stats = self._playback_relay_stats.setdefault(
+                        key,
+                        {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                    )
+                    stats["dropped"] += 1
                 self.get_logger().warning(
                     f"dropping playback chunk for unconfigured device_id={device_id!r}"
                 )
                 return
+            with self._playback_chunk_lock:
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["published"] += 1
+                published_count = stats["published"]
+            if published_count == 1:
+                self.get_logger().info(
+                    "audio playback relay published first chunk "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"sequence={sequence} bytes={pcm_size}"
+                )
             publisher.publish(message)
 
         def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:

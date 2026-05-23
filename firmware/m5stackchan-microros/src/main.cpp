@@ -420,6 +420,10 @@ uint32_t play_audio_started_ms = 0;
 uint32_t play_audio_last_chunk_ms = 0;
 uint8_t play_audio_buffer_index = 0;
 int16_t play_audio_buffers[4][stackchan::kAudioMaxChunkBytes / 2]{};
+char play_audio_diagnostic_command_id[37] = "";
+uint32_t play_audio_chunks_seen = 0;
+uint32_t play_audio_chunks_accepted = 0;
+uint32_t play_audio_chunks_rejected = 0;
 
 void publish_status_heartbeat();
 stackchan::Result validate_motion_servo_target(
@@ -432,6 +436,51 @@ void copy_bounded(char* destination, size_t size, const char* source) {
   }
   strncpy(destination, source == nullptr ? "" : source, size - 1);
   destination[size - 1] = '\0';
+}
+
+void reset_play_audio_diagnostics(const char* command_id) {
+  copy_bounded(
+      play_audio_diagnostic_command_id,
+      sizeof(play_audio_diagnostic_command_id),
+      command_id);
+  play_audio_chunks_seen = 0;
+  play_audio_chunks_accepted = 0;
+  play_audio_chunks_rejected = 0;
+}
+
+void log_play_audio_chunk_diagnostic(
+    const char* stage,
+    const char* command_id,
+    uint32_t sequence,
+    uint32_t bytes,
+    const char* result_code) {
+  stackchan_diag_print("stackchan audio_playback_diag stage=");
+  stackchan_diag_print(stage == nullptr ? "" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_print(command_id == nullptr ? "" : command_id);
+  stackchan_diag_print(" sequence=");
+  stackchan_diag_print(sequence);
+  stackchan_diag_print(" bytes=");
+  stackchan_diag_print(bytes);
+  stackchan_diag_print(" result=");
+  stackchan_diag_println(result_code == nullptr ? "" : result_code);
+}
+
+void log_play_audio_session_diagnostic(
+    const char* stage,
+    const stackchan::Result& result) {
+  stackchan_diag_print("stackchan audio_playback_diag stage=");
+  stackchan_diag_print(stage == nullptr ? "" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_print(play_audio_diagnostic_command_id);
+  stackchan_diag_print(" seen=");
+  stackchan_diag_print(play_audio_chunks_seen);
+  stackchan_diag_print(" accepted=");
+  stackchan_diag_print(play_audio_chunks_accepted);
+  stackchan_diag_print(" rejected=");
+  stackchan_diag_print(play_audio_chunks_rejected);
+  stackchan_diag_print(" result=");
+  stackchan_diag_println(result.error_code);
 }
 
 bool is_known_face(const char* name) {
@@ -4383,6 +4432,9 @@ bool play_audio_goal_valid(
 }
 
 void finish_play_audio_goal(const stackchan::Result& result, int8_t action_status) {
+  log_play_audio_session_diagnostic(
+      result.ok ? "goal_succeeded" : "goal_failed",
+      result);
   if (play_audio_goal_active && play_audio_active_goal_handle != nullptr) {
     rcl_ok(
         rcl_action_update_goal_state(
@@ -4437,6 +4489,9 @@ void maybe_finish_play_audio_session() {
   const uint32_t now_ms = millis();
   if (!play_audio_received_chunk &&
       now_ms - play_audio_started_ms >= kAudioPlaybackNoChunkTimeoutMs) {
+    log_play_audio_session_diagnostic(
+        "no_chunk_timeout",
+        stackchan::audio_underrun());
     finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
   } else if (play_audio_received_chunk &&
              now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs &&
@@ -4455,21 +4510,23 @@ void start_play_audio_goal(
   rcl_ok(
       rcl_action_update_goal_state(play_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
       "play_audio_update_execute_goal_state");
+  const char* command_id =
+      request.goal.meta.command_id.data != nullptr
+          ? request.goal.meta.command_id.data
+          : "";
+  reset_play_audio_diagnostics(command_id);
   const stackchan::Result start_result =
-      audio_playback_guard.start_session(
-          request.goal.meta.command_id.data != nullptr
-              ? request.goal.meta.command_id.data
-              : "");
+      audio_playback_guard.start_session(command_id);
   if (!start_result.ok) {
+    log_play_audio_session_diagnostic("goal_start_failed", start_result);
     finish_play_audio_goal(start_result, GOAL_STATE_ABORTED);
     return;
   }
+  log_play_audio_session_diagnostic("goal_active", start_result);
   copy_bounded(
       last_command_id,
       sizeof(last_command_id),
-      request.goal.meta.command_id.data != nullptr
-          ? request.goal.meta.command_id.data
-          : "");
+      command_id);
   play_audio_received_chunk = false;
   play_audio_started_ms = millis();
   play_audio_last_chunk_ms = play_audio_started_ms;
@@ -4525,6 +4582,11 @@ void poll_play_audio_goal_request() {
     play_audio_active_goal_handle = goal_handle;
     copy_goal_info_from_request(&play_audio_active_goal_info, play_audio_goal_request);
     play_audio_goal_active = true;
+    reset_play_audio_diagnostics(
+        play_audio_goal_request.goal.meta.command_id.data != nullptr
+            ? play_audio_goal_request.goal.meta.command_id.data
+            : "");
+    log_play_audio_session_diagnostic("invalid_goal", validation_result);
     rcl_ok(
         rcl_action_update_goal_state(play_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
         "play_audio_update_invalid_goal_state");
@@ -4563,7 +4625,7 @@ void poll_play_audio_action_server() {
 }
 
 void handle_audio_chunk_subscription(const void* message) {
-  if (message == nullptr || !play_audio_goal_active) {
+  if (message == nullptr) {
     return;
   }
   const auto* chunk = static_cast<const stackchan_msgs__msg__AudioChunk*>(message);
@@ -4572,6 +4634,16 @@ void handle_audio_chunk_subscription(const void* message) {
   }
   const char* chunk_command_id =
       chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  if (!play_audio_goal_active) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_without_active_goal",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        "UNKNOWN_COMMAND");
+    return;
+  }
+  ++play_audio_chunks_seen;
   stackchan::AudioPlaybackChunk playback_chunk{
       chunk_command_id,
       stackchan::AudioDirection::Playback,
@@ -4584,6 +4656,13 @@ void handle_audio_chunk_subscription(const void* message) {
   const stackchan::Result validation_result =
       audio_playback_guard.validate_chunk(playback_chunk);
   if (!validation_result.ok) {
+    ++play_audio_chunks_rejected;
+    log_play_audio_chunk_diagnostic(
+        "chunk_rejected",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        validation_result.error_code);
     if (strcmp(validation_result.error_code, "AUDIO_UNDERRUN") == 0) {
       stackchan::publish_audio_underrun_event(
           event_publisher,
@@ -4595,6 +4674,13 @@ void handle_audio_chunk_subscription(const void* message) {
   }
   if (chunk->pcm.size % 2 != 0 ||
       chunk->pcm.size > stackchan::kAudioMaxChunkBytes) {
+    ++play_audio_chunks_rejected;
+    log_play_audio_chunk_diagnostic(
+        "chunk_rejected",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        "MALFORMED_AUDIO_CHUNK");
     finish_play_audio_goal(
         stackchan::Result::rejected(
             "MALFORMED_AUDIO_CHUNK",
@@ -4622,8 +4708,24 @@ void handle_audio_chunk_subscription(const void* message) {
           1,
           0,
           false)) {
+    ++play_audio_chunks_rejected;
+    log_play_audio_chunk_diagnostic(
+        "play_raw_failed",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        "AUDIO_UNDERRUN");
     finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
     return;
+  }
+  ++play_audio_chunks_accepted;
+  if (play_audio_chunks_accepted == 1) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_accepted",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        "OK");
   }
   play_audio_received_chunk = true;
   play_audio_last_chunk_ms = millis();

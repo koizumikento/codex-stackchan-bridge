@@ -788,6 +788,12 @@ uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sw
   needs payload-free diagnostics on the bridge relay and firmware playback
   consumer to determine whether the first PLAYBACK chunk reaches the active
   `command_id`.
+- Follow-up implementation adds payload-free playback relay diagnostics on the
+  bridge and firmware. The next connected smoke should inspect
+  `audio playback relay buffered/activated/published/finished` bridge logs and
+  firmware `stackchan audio_playback_diag` serial lines to classify the
+  remaining `AUDIO_UNDERRUN` as relay timing, firmware chunk rejection,
+  `playRaw` failure, or device-side no-chunk timeout.
 - Audio capture one-chunk smoke still passed:
   `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1` and
   `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`.

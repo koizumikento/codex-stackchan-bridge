@@ -495,6 +495,14 @@ are rejected with structured results such as `UNKNOWN_COMMAND`,
 the chunk topic from becoming a raw speaker-control bypass while the
 firmware-owned `PlayAudio` action server is being added.
 
+During hardware bring-up, playback relay diagnostics may print bounded metadata
+for the active playback session. The allowed fields are `command_id`, chunk
+sequence, PCM byte count, accepted/rejected counters, and structured result
+codes such as `AUDIO_UNDERRUN` or `MALFORMED_AUDIO_CHUNK`. These diagnostics
+exist only to distinguish bridge relay timing, firmware chunk rejection,
+speaker `playRaw` failure, and device-side no-chunk timeout; they must not print
+PCM bytes, speech text, transcripts, or any image/NFC/IR payload.
+
 ### Camera
 
 Camera support should be treated as an independent capability.
