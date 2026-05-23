@@ -155,8 +155,15 @@ playback chunk subscription, so the meta raises
 `RMW_UXRCE_MAX_SUBSCRIPTIONS` to `4`. It also raises
 `RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and keeps
 the input and output reliable stream history at `8` so the full entity set has
-entity margin without overflowing CoreS3 DRAM. Keep these counts aligned when
-adding more firmware-owned actions, publishers, or subscribers.
+entity margin without overflowing CoreS3 DRAM. Firmware action servers also use
+bounded QoS depths for goal/result/cancel, feedback, and status paths, with
+best-effort volatile feedback/status topics, so action entities do not starve
+the device status heartbeat on the serial transport.
+If a media action server fails to initialize, the firmware reports that media
+transport as unavailable and keeps status, face, motion, and LED services alive
+for hardware validation.
+Keep these counts aligned when adding more firmware-owned actions, publishers,
+or subscribers.
 
 The firmware package also includes hardware-free contract checks:
 

@@ -1458,6 +1458,25 @@ rmw_qos_profile_t qos_profile_for(stackchan::DevicePublisherTopic topic) {
   return profile;
 }
 
+rcl_action_server_options_t stackchan_action_server_options() {
+  rcl_action_server_options_t options = rcl_action_server_get_default_options();
+  options.goal_service_qos.depth = 1;
+  options.cancel_service_qos.depth = 1;
+  options.result_service_qos.depth = 1;
+  options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  options.feedback_topic_qos.durability =
+      RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  options.feedback_topic_qos.depth = 1;
+  options.status_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  options.status_topic_qos.durability =
+      RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  options.status_topic_qos.depth = 1;
+  options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  return options;
+}
+
 bool assign_ros_string(rosidl_runtime_c__String* destination, const char* value) {
   return rosidl_runtime_c__String__assign(destination, value == nullptr ? "" : value);
 }
@@ -1640,7 +1659,8 @@ bool assign_status_capabilities(stackchan_msgs__msg__StackChanStatus* destinatio
          assign_capability_status(
              &destination->capabilities.data[5],
              "camera_snapshot",
-             stackchan_camera_snapshot_initialized);
+             stackchan_camera_snapshot_initialized &&
+                 capture_camera_action_server_initialized);
 }
 
 bool convert_status_message(
@@ -1873,6 +1893,60 @@ void build_capture_camera_action_name() {
       "/stackchan/%s/device/camera/capture",
       STACKCHAN_DEVICE_ID);
   capture_camera_action_name[sizeof(capture_camera_action_name) - 1] = '\0';
+}
+
+bool try_initialize_capture_audio_action_server(const char* step) {
+  build_capture_audio_action_name();
+  rcl_action_server_options_t options = stackchan_action_server_options();
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureAudio),
+                  capture_audio_action_name,
+                  &options),
+              step)) {
+    capture_audio_action_server_initialized = false;
+    return false;
+  }
+  capture_audio_action_server_initialized = true;
+  return true;
+}
+
+bool try_initialize_capture_camera_action_server(const char* step) {
+  build_capture_camera_action_name();
+  rcl_action_server_options_t options = stackchan_action_server_options();
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_camera_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera),
+                  capture_camera_action_name,
+                  &options),
+              step)) {
+    capture_camera_action_server_initialized = false;
+    return false;
+  }
+  capture_camera_action_server_initialized = true;
+  return true;
+}
+
+bool try_initialize_play_audio_action_server(const char* step) {
+  build_play_audio_action_name();
+  rcl_action_server_options_t options = stackchan_action_server_options();
+  if (!rcl_ok(rcl_action_server_init(
+                  &play_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, PlayAudio),
+                  play_audio_action_name,
+                  &options),
+              step)) {
+    play_audio_action_server_initialized = false;
+    return false;
+  }
+  play_audio_action_server_initialized = true;
+  return true;
 }
 
 void handle_face_set_service(const void* request, void* response);
@@ -2129,67 +2203,16 @@ bool initialize_microros_entities() {
   }
 #endif
 #if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
-  build_capture_audio_action_name();
-  rcl_action_server_options_t core_capture_audio_options =
-      rcl_action_server_get_default_options();
-  core_capture_audio_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  core_capture_audio_options.feedback_topic_qos.depth = 2;
-  core_capture_audio_options.status_topic_qos.depth = 2;
-  core_capture_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &capture_audio_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureAudio),
-                  capture_audio_action_name,
-                  &core_capture_audio_options),
-              "capture_audio_action_server_init")) {
-    return false;
-  }
-  capture_audio_action_server_initialized = true;
+  (void)try_initialize_capture_audio_action_server(
+      "capture_audio_action_server_init");
 #endif
 #if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
-  build_capture_camera_action_name();
-  rcl_action_server_options_t core_capture_camera_options =
-      rcl_action_server_get_default_options();
-  core_capture_camera_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  core_capture_camera_options.feedback_topic_qos.depth = 2;
-  core_capture_camera_options.status_topic_qos.depth = 2;
-  core_capture_camera_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &capture_camera_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera),
-                  capture_camera_action_name,
-                  &core_capture_camera_options),
-              "capture_camera_action_server_init")) {
-    return false;
-  }
-  capture_camera_action_server_initialized = true;
+  (void)try_initialize_capture_camera_action_server(
+      "capture_camera_action_server_init");
 #endif
 #if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
-  build_play_audio_action_name();
-  rcl_action_server_options_t core_play_audio_options =
-      rcl_action_server_get_default_options();
-  core_play_audio_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  core_play_audio_options.feedback_topic_qos.depth = 2;
-  core_play_audio_options.status_topic_qos.depth = 2;
-  core_play_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &play_audio_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, PlayAudio),
-                  play_audio_action_name,
-                  &core_play_audio_options),
-              "play_audio_action_server_init")) {
-    return false;
-  }
-  play_audio_action_server_initialized = true;
+  (void)try_initialize_play_audio_action_server(
+      "play_audio_action_server_init");
 #endif
 #endif
   if (!stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)) {
@@ -2423,9 +2446,13 @@ bool initialize_microros_entities() {
 #endif
   microros_entities_initialized = true;
   stackchan_audio_playback_transport_initialized =
-      STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP && stackchan_audio_playback_initialized;
+      STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP &&
+      play_audio_action_server_initialized &&
+      stackchan_audio_playback_initialized;
   stackchan_audio_capture_transport_initialized =
-      STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP && stackchan_audio_capture_initialized;
+      STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP &&
+      capture_audio_action_server_initialized &&
+      stackchan_audio_capture_initialized;
   return true;
 #endif
   rmw_qos_profile_t motion_pose_qos =
@@ -2517,63 +2544,12 @@ bool initialize_microros_entities() {
               "audio_chunk_subscription_init")) {
     return false;
   }
-  build_capture_audio_action_name();
-  rcl_action_server_options_t capture_audio_options =
-      rcl_action_server_get_default_options();
-  capture_audio_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  capture_audio_options.feedback_topic_qos.depth = 2;
-  capture_audio_options.status_topic_qos.depth = 2;
-  capture_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &capture_audio_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureAudio),
-                  capture_audio_action_name,
-                  &capture_audio_options),
-              "capture_audio_action_server_init")) {
-    return false;
-  }
-  capture_audio_action_server_initialized = true;
-  build_capture_camera_action_name();
-  rcl_action_server_options_t capture_camera_options =
-      rcl_action_server_get_default_options();
-  capture_camera_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  capture_camera_options.feedback_topic_qos.depth = 2;
-  capture_camera_options.status_topic_qos.depth = 2;
-  capture_camera_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &capture_camera_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera),
-                  capture_camera_action_name,
-                  &capture_camera_options),
-              "capture_camera_action_server_init")) {
-    return false;
-  }
-  capture_camera_action_server_initialized = true;
-  build_play_audio_action_name();
-  rcl_action_server_options_t play_audio_options =
-      rcl_action_server_get_default_options();
-  play_audio_options.feedback_topic_qos.reliability =
-      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
-  play_audio_options.feedback_topic_qos.depth = 2;
-  play_audio_options.status_topic_qos.depth = 2;
-  play_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
-  if (!rcl_ok(rcl_action_server_init(
-                  &play_audio_action_server,
-                  &microros_node,
-                  &microros_support.clock,
-                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, PlayAudio),
-                  play_audio_action_name,
-                  &play_audio_options),
-              "play_audio_action_server_init")) {
-    return false;
-  }
-  play_audio_action_server_initialized = true;
+  (void)try_initialize_capture_audio_action_server(
+      "capture_audio_action_server_init");
+  (void)try_initialize_capture_camera_action_server(
+      "capture_camera_action_server_init");
+  (void)try_initialize_play_audio_action_server(
+      "play_audio_action_server_init");
   build_face_set_service_name();
   if (!rcl_ok(rclc_service_init_default(
                   &face_set_service,
@@ -3067,8 +3043,10 @@ bool initialize_microros_entities() {
     return false;
   }
   microros_entities_initialized = true;
-  stackchan_audio_playback_transport_initialized = stackchan_audio_playback_initialized;
-  stackchan_audio_capture_transport_initialized = stackchan_audio_capture_initialized;
+  stackchan_audio_playback_transport_initialized =
+      play_audio_action_server_initialized && stackchan_audio_playback_initialized;
+  stackchan_audio_capture_transport_initialized =
+      capture_audio_action_server_initialized && stackchan_audio_capture_initialized;
   return true;
 }
 

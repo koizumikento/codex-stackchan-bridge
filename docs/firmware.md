@@ -812,6 +812,12 @@ Pinning rules:
   raised publisher, subscription, client, RMW history, and reliable stream
   history limits for telemetry/events plus audio and camera actions; keep the
   values in `microros_stackchan.meta` and the PlatformIO helper patcher in sync.
+  Firmware action servers must keep bounded goal/result/cancel, feedback, and
+  status QoS depths, and use best-effort volatile feedback/status topics, so
+  media actions do not starve `/stackchan/<device_id>/device/status`.
+  If a media action server cannot be initialized during bring-up, firmware must
+  degrade that media capability to unavailable rather than suppressing the
+  status heartbeat or core face/motion/LED services.
 - Let `StackChan-BSP` resolve `M5Unified`, `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
 - Promote transitive dependencies to explicit pins only if reproducibility breaks.
 - Treat the `FTServo_Arduino` driver as owned by the `StackChan-BSP` layer unless a concrete adapter need appears.
