@@ -560,6 +560,15 @@ When `audio_playback` is available, the bridge backend sends the public
 goal is accepted. Invalid or unsupported input files return structured errors;
 PCM bytes are never printed in normal output.
 
+When `audio_capture` is available, the bridge backend subscribes to
+`/stackchan/<device_id>/device/audio/chunks` before sending the public
+`CaptureAudio` action, collects only `AudioChunk(direction=CAPTURE)` messages
+with the matching `device_id` and `command_id`, and writes the collected PCM to
+the requested WAV output path. Missing chunks, malformed metadata, odd byte
+lengths, or sequence gaps return structured audio capture errors. Captured PCM
+bytes are written only to the explicit output file and are not printed in
+normal output, JSON, events, or diagnostics.
+
 Audio command results should distinguish transport/session acceptance from
 playback or capture completion. For example, a future `audio play --json` result
 may report accepted metadata first, while final completion, underrun, queue

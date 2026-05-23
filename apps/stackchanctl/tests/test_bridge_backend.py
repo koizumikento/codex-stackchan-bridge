@@ -939,6 +939,107 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(captured.exception.code, "UNSUPPORTED_FEATURE")
         self.assertFalse(captured.exception.recoverable)
 
+    def test_capture_audio_writes_wav_from_matching_chunks(self) -> None:
+        action = FakeActionClient()
+        node = FakeNode()
+        chunks = [bytes([1, 0]) * 320, bytes([2, 0]) * 320]
+
+        def emit_capture_chunks(node, future) -> None:
+            if not isinstance(future.result(), SimpleNamespace):
+                return
+            for sequence, pcm in enumerate(chunks):
+                message = FakeAudioChunk()
+                message.device_id = "default"
+                message.command_id = "cmd-capture-0001"
+                message.direction = 2
+                message.sequence = sequence
+                message.format = 1
+                message.sample_rate = 16000
+                message.channels = 1
+                message.pcm = pcm
+                node.emit_audio_chunk(message)
+
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy(on_spin=emit_capture_chunks)
+        client._node = node
+        client._action_client_type = action
+        client._capture_audio_type = FakeCaptureAudio
+        client._audio_chunk_type = FakeAudioChunk
+        client.get_status = lambda meta, timeout: DeviceStatus(
+            device_id=meta.device_id,
+            connected=True,
+            device_state="idle",
+            face="neutral",
+            last_error=None,
+            capabilities=(CapabilityStatus("audio_capture", "available"),),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "mic.wav"
+            response = client.capture_audio(
+                SimpleNamespace(
+                    device_id="default",
+                    command_id="cmd-capture-0001",
+                    source="test",
+                    created_at="2026-05-16T00:00:00Z",
+                    priority=SimpleNamespace(value="NORMAL"),
+                ),
+                1.0,
+                str(output),
+                wait=True,
+                timeout=1.0,
+            )
+            with wave.open(str(output), "rb") as wav:
+                self.assertEqual(wav.getnchannels(), 1)
+                self.assertEqual(wav.getsampwidth(), 2)
+                self.assertEqual(wav.getframerate(), 16000)
+                self.assertEqual(wav.readframes(wav.getnframes()), b"".join(chunks))
+
+        self.assertTrue(response.ok)
+        self.assertEqual(response.result_state, ResultState.COMPLETED)
+        self.assertEqual(action.action_name, "/stackchan/default/cmd/audio/capture")
+        self.assertEqual(action.last_goal.duration_ms, 1000)
+        self.assertEqual(node.subscriptions, [])
+
+    def test_capture_audio_rejects_completed_action_without_chunks(self) -> None:
+        action = FakeActionClient()
+        node = FakeNode()
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = node
+        client._action_client_type = action
+        client._capture_audio_type = FakeCaptureAudio
+        client._audio_chunk_type = FakeAudioChunk
+        client.get_status = lambda meta, timeout: DeviceStatus(
+            device_id=meta.device_id,
+            connected=True,
+            device_state="idle",
+            face="neutral",
+            last_error=None,
+            capabilities=(CapabilityStatus("audio_capture", "available"),),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "mic.wav"
+            response = client.capture_audio(
+                SimpleNamespace(
+                    device_id="default",
+                    command_id="cmd-capture-0002",
+                    source="test",
+                    created_at="2026-05-16T00:00:00Z",
+                    priority=SimpleNamespace(value="NORMAL"),
+                ),
+                1.0,
+                str(output),
+                wait=True,
+                timeout=1.0,
+            )
+            self.assertFalse(output.exists())
+
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error.code, "AUDIO_CAPTURE_FAILED")
+        self.assertEqual(node.subscriptions, [])
+
     def test_non_wait_action_preserves_facade_rejection(self) -> None:
         response = _normalize_action_response(
             BridgeCommandResponse(
@@ -982,8 +1083,13 @@ class BridgeBackendTests(unittest.TestCase):
 
 
 class FakeRclpy:
+    def __init__(self, on_spin=None) -> None:
+        self.on_spin = on_spin
+
     def spin_until_future_complete(self, node, future, timeout_sec: float) -> None:
-        del node, timeout_sec
+        del timeout_sec
+        if self.on_spin is not None:
+            self.on_spin(node, future)
         future.completed = True
 
 
@@ -1062,6 +1168,16 @@ class FakePlayAudio:
             self.motion_hint = ""
 
 
+class FakeCaptureAudio:
+    class Goal:
+        def __init__(self) -> None:
+            self.meta = SimpleNamespace(created_at=SimpleNamespace())
+            self.format = ""
+            self.sample_rate = 0
+            self.channels = 0
+            self.duration_ms = 0
+
+
 class FakeAudioChunk:
     def __init__(self) -> None:
         self.device_id = ""
@@ -1085,12 +1201,28 @@ class FakePublisher:
 class FakeNode:
     def __init__(self) -> None:
         self.publishers = {}
+        self.subscriptions = []
 
     def create_publisher(self, message_type, topic: str, depth: int):
         del message_type, depth
         publisher = FakePublisher()
         self.publishers[topic] = publisher
         return publisher
+
+    def create_subscription(self, message_type, topic: str, callback, depth: int):
+        del message_type, depth
+        subscription = SimpleNamespace(topic=topic, callback=callback)
+        self.subscriptions.append(subscription)
+        return subscription
+
+    def destroy_subscription(self, subscription) -> bool:
+        if subscription in self.subscriptions:
+            self.subscriptions.remove(subscription)
+        return True
+
+    def emit_audio_chunk(self, message) -> None:
+        for subscription in list(self.subscriptions):
+            subscription.callback(message)
 
 
 if __name__ == "__main__":

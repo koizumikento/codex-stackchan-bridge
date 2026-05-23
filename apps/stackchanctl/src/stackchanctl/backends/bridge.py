@@ -69,6 +69,7 @@ SENSITIVE_EVENT_MARKERS = (
 )
 SENSITIVE_EVENT_KEY_PARTS = ("transcript", "speech_text")
 AUDIO_PLAYBACK_DIRECTION = 1
+AUDIO_CAPTURE_DIRECTION = 2
 AUDIO_PCM_S16LE_FORMAT = 1
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -91,6 +92,55 @@ class BridgeCommandResponse:
     ok: bool
     result_state: ResultState
     error: ErrorDetail | None = None
+
+
+class _AudioCaptureCollector:
+    def __init__(self, device_id: str, command_id: str) -> None:
+        self.device_id = device_id
+        self.command_id = command_id
+        self._chunks: dict[int, bytes] = {}
+        self.error: ErrorDetail | None = None
+
+    def handle_chunk(self, message) -> None:
+        if getattr(message, "device_id", "") != self.device_id:
+            return
+        if getattr(message, "command_id", "") != self.command_id:
+            return
+        if int(getattr(message, "direction", 0)) != AUDIO_CAPTURE_DIRECTION:
+            return
+        if (
+            int(getattr(message, "format", 0)) != AUDIO_PCM_S16LE_FORMAT
+            or int(getattr(message, "sample_rate", 0)) != AUDIO_SAMPLE_RATE
+            or int(getattr(message, "channels", 0)) != AUDIO_CHANNELS
+        ):
+            self.error = ErrorDetail(
+                code="MALFORMED_AUDIO_CHUNK",
+                message="audio capture chunk metadata did not match PCM S16LE 16 kHz mono",
+                recoverable=True,
+            )
+            return
+        pcm = bytes(getattr(message, "pcm", b""))
+        if len(pcm) % 2:
+            self.error = ErrorDetail(
+                code="MALFORMED_AUDIO_CHUNK",
+                message="audio capture chunk had an odd byte length",
+                recoverable=True,
+            )
+            return
+        self._chunks[int(getattr(message, "sequence", 0))] = pcm
+
+    def pcm(self) -> bytes:
+        if not self._chunks:
+            return b""
+        expected = list(range(max(self._chunks) + 1))
+        if sorted(self._chunks) != expected:
+            self.error = ErrorDetail(
+                code="AUDIO_CAPTURE_FAILED",
+                message="audio capture chunks were not contiguous",
+                recoverable=True,
+            )
+            return b""
+        return b"".join(self._chunks[index] for index in expected)
 
 
 class BridgeClient(Protocol):
@@ -623,20 +673,63 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        del output
+        status = self.get_status(meta, timeout)
+        if not _capability_available(status, "audio_capture"):
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="audio capture requires firmware-confirmed device transport.",
+                    recoverable=False,
+                ),
+            )
+        collector = _AudioCaptureCollector(meta.device_id, meta.command_id)
+        subscription = self._node.create_subscription(
+            self._audio_chunk_type,
+            f"/stackchan/{meta.device_id}/device/audio/chunks",
+            collector.handle_chunk,
+            8,
+        )
         goal = self._capture_audio_type.Goal()
         _copy_meta(goal.meta, meta)
         goal.format = "pcm_s16le"
-        goal.sample_rate = 16000
-        goal.channels = 1
+        goal.sample_rate = AUDIO_SAMPLE_RATE
+        goal.channels = AUDIO_CHANNELS
         goal.duration_ms = max(1, int(seconds * 1000))
-        return self._send_action_goal(
-            self._capture_audio_type,
-            f"/stackchan/{meta.device_id}/cmd/audio/capture",
-            goal,
-            wait=wait,
-            timeout=timeout,
-        )
+        try:
+            response = self._send_action_goal(
+                self._capture_audio_type,
+                f"/stackchan/{meta.device_id}/cmd/audio/capture",
+                goal,
+                wait=wait,
+                timeout=timeout,
+            )
+        finally:
+            destroy_subscription = getattr(self._node, "destroy_subscription", None)
+            if destroy_subscription is not None:
+                destroy_subscription(subscription)
+        if not response.ok:
+            return response
+        pcm = collector.pcm()
+        if collector.error is not None:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=collector.error,
+            )
+        if not pcm:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="AUDIO_CAPTURE_FAILED",
+                    message="audio capture completed without PCM chunks",
+                    recoverable=True,
+                ),
+            )
+        _write_audio_capture_wav(output, pcm)
+        return response
 
     def capture_camera(
         self, meta: CommandMeta, output: str, quality: int, *, wait: bool, timeout: float
@@ -880,6 +973,34 @@ def _read_audio_playback_wav(path: Path) -> bytes:
         raise BridgeBackendError(
             "INVALID_AUDIO_PAYLOAD",
             "audio playback input is not a readable WAV file",
+            recoverable=False,
+        ) from exc
+
+
+def _write_audio_capture_wav(path: str, pcm: bytes) -> None:
+    destination = Path(path)
+    if destination.parent != Path(".") and not destination.parent.exists():
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output directory does not exist",
+            recoverable=False,
+        )
+    try:
+        with wave.open(str(destination), "wb") as wav:
+            wav.setnchannels(AUDIO_CHANNELS)
+            wav.setsampwidth(2)
+            wav.setframerate(AUDIO_SAMPLE_RATE)
+            wav.writeframes(pcm)
+    except OSError as exc:
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output file could not be written",
+            recoverable=False,
+        ) from exc
+    except wave.Error as exc:
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output WAV could not be written",
             recoverable=False,
         ) from exc
 
