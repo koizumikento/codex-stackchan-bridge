@@ -51,6 +51,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("-DRMW_UXRCE_MAX_WAIT_SETS=8", microros_meta)
         self.assertIn("-DRMW_UXRCE_MAX_GUARD_CONDITION=8", microros_meta)
         self.assertIn("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96", microros_meta)
+        self.assertIn("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024", microros_meta)
         for helper_name in ("firmware_platformio.py", "firmware_container.py"):
             helper = (REPO_ROOT / "scripts" / helper_name).read_text()
             self.assertIn("-DRMW_UXRCE_MAX_SERVICES=16", helper)
@@ -63,6 +64,7 @@ class FirmwareContractTests(unittest.TestCase):
             self.assertIn("-DRMW_UXRCE_MAX_WAIT_SETS=8", helper)
             self.assertIn("-DRMW_UXRCE_MAX_GUARD_CONDITION=8", helper)
             self.assertIn("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96", helper)
+            self.assertIn("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024", helper)
 
     def test_device_scoped_action_names_fit_microros_topic_bound(self) -> None:
         meta = (ROOT / "microros_stackchan.meta").read_text()

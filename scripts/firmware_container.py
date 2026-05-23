@@ -187,6 +187,7 @@ def patch_microros_platformio_meta() -> None:
         wait_sets_seen = False
         guard_condition_seen = False
         topic_name_max_seen = False
+        custom_transport_mtu_seen = False
         services_seen = False
         publishers_seen = False
         subscriptions_seen = False
@@ -221,6 +222,9 @@ def patch_microros_platformio_meta() -> None:
             elif arg.startswith("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH="):
                 patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
                 topic_name_max_seen = True
+            elif arg.startswith("-DUCLIENT_CUSTOM_TRANSPORT_MTU="):
+                patched_args.append("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024")
+                custom_transport_mtu_seen = True
             else:
                 patched_args.append(arg)
         if not services_seen:
@@ -243,6 +247,8 @@ def patch_microros_platformio_meta() -> None:
             patched_args.append("-DRMW_UXRCE_MAX_GUARD_CONDITION=8")
         if not topic_name_max_seen:
             patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
+        if not custom_transport_mtu_seen:
+            patched_args.append("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024")
         if patched_args == cmake_args:
             continue
         data["names"]["rmw_microxrcedds"]["cmake-args"] = patched_args

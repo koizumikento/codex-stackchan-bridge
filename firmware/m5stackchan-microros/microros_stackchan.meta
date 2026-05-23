@@ -11,7 +11,8 @@
                 "-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8",
                 "-DRMW_UXRCE_MAX_WAIT_SETS=8",
                 "-DRMW_UXRCE_MAX_GUARD_CONDITION=8",
-                "-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96"
+                "-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96",
+                "-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024"
             ]
         }
     }

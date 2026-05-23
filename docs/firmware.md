@@ -817,8 +817,11 @@ Pinning rules:
   also need a longer `RMW_UXRCE_TOPIC_NAME_MAX_LENGTH` than the upstream 60
   character default because rmw-microxrcedds adds `rq` / `rr` prefixes and
   `Request` / `Reply` suffixes around names such as
-  `/stackchan/default/device/audio/capture/_action/send_goal`. Keep the values in
-  `microros_stackchan.meta` and the PlatformIO helper patcher in sync. Firmware
+  `/stackchan/default/device/audio/capture/_action/send_goal`. Audio capture
+  chunks use 20 ms PCM S16LE payloads, so the custom transport MTU is raised to
+  1024 bytes to keep a full 640 byte chunk plus XRCE/message overhead inside one
+  transfer unit. Keep the values in `microros_stackchan.meta` and the
+  PlatformIO helper patcher in sync. Firmware
   action servers must keep bounded goal/result/cancel, feedback, and status QoS
   depths, and use best-effort volatile feedback/status topics, so media actions
   do not starve `/stackchan/<device_id>/device/status`.
