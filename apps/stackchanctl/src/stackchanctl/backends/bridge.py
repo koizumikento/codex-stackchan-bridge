@@ -446,6 +446,7 @@ class RclpyBridgeClient:
         try:
             import rclpy
             from rclpy.action import ActionClient
+            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
             from stackchan_msgs.action import (
                 CaptureAudio,
                 CaptureCamera,
@@ -489,6 +490,9 @@ class RclpyBridgeClient:
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
         self._audio_chunk_publishers = {}
+        self._audio_chunk_qos = QoSProfile(depth=8)
+        self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self._audio_chunk_qos.durability = DurabilityPolicy.VOLATILE
 
     def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
         request = self._get_status_type.Request()
@@ -691,7 +695,7 @@ class RclpyBridgeClient:
             self._audio_chunk_type,
             f"/stackchan/{meta.device_id}/device/audio/chunks",
             collector.handle_chunk,
-            8,
+            getattr(self, "_audio_chunk_qos", 8),
         )
         goal = self._capture_audio_type.Goal()
         _copy_meta(goal.meta, meta)
@@ -907,7 +911,7 @@ class RclpyBridgeClient:
             publisher = self._node.create_publisher(
                 self._audio_chunk_type,
                 f"/stackchan/{device_id}/device/audio/chunks",
-                8,
+                getattr(self, "_audio_chunk_qos", 8),
             )
             self._audio_chunk_publishers[device_id] = publisher
         return publisher

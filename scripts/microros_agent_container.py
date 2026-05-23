@@ -367,9 +367,30 @@ run_power_status() {{
 }}
 
 run_media_smoke() {{
+  prompt_wav=$(mktemp /tmp/stackchan-prompt-XXXXXX.wav)
+  mic_wav=$(mktemp /tmp/stackchan-mic-XXXXXX.wav)
+  frame_jpg=$(mktemp /tmp/stackchan-frame-XXXXXX.jpg)
+  python3 - "$prompt_wav" <<'PY'
+import math
+import sys
+import wave
+
+sample_rate = 16000
+samples = bytearray()
+for index in range(sample_rate // 10):
+    value = int(1200 * math.sin(2 * math.pi * 440 * index / sample_rate))
+    samples.extend(int(value).to_bytes(2, "little", signed=True))
+with wave.open(sys.argv[1], "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(sample_rate)
+    wav.writeframes(bytes(samples))
+PY
+
   echo "--- stackchanctl audio play smoke ---"
-  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play prompt.wav --json 2>&1)
+  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play "$prompt_wav" --json 2>&1)
   audio_play_result=$?
+  rm -f "$prompt_wav"
   printf '%s\n' "$audio_play_output"
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
   printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
@@ -380,8 +401,9 @@ run_media_smoke() {{
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
 
   echo "--- stackchanctl audio capture smoke ---"
-  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds 1 --output mic.wav --json 2>&1)
+  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds 1 --output "$mic_wav" --json 2>&1)
   audio_capture_result=$?
+  rm -f "$mic_wav"
   printf '%s\n' "$audio_capture_output"
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=$audio_capture_result"
   printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
@@ -395,8 +417,9 @@ run_media_smoke() {{
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
 
   echo "--- stackchanctl camera capture smoke ---"
-  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output frame.jpg --quality 80 --json 2>&1)
+  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality 80 --json 2>&1)
   camera_result=$?
+  rm -f "$frame_jpg"
   printf '%s\n' "$camera_output"
   echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=$camera_result"
   printf '%s\n' "$camera_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'

@@ -670,6 +670,39 @@ Observed results:
 - Manual button/IMU/touch/proximity/light/power/NFC/IR stimulus checks were not
   performed in this no-stimulus sweep and remain recorded as `UNAVAILABLE`.
 
+2026-05-23 MTU/QoS media follow-up, device `default`, COM3 through the Windows
+serial TCP bridge, after moving `UCLIENT_CUSTOM_TRANSPORT_MTU=1024` to the
+`microxrcedds_client` meta package and matching stackchanctl audio chunk QoS to
+the firmware best-effort volatile topic:
+
+```powershell
+uv run --no-project python scripts/firmware_container.py build
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 20 --stimulus-window-seconds 0
+```
+
+Observed results:
+
+- Firmware build and upload: pass. The generated micro-ROS client config now
+  sets `UXR_CONFIG_CUSTOM_TRANSPORT_MTU` to `1024`; `SERIAL_TRANSPORT_MTU`
+  remains `512`.
+- Transport warning regression check: pass. The prior Agent warning
+  `Trying to serialize 720 in 508 MTU stream` did not recur in this sweep.
+- Low-rate telemetry, raw IMU relay, `power status`, and normal redaction:
+  pass. Touch, proximity, light, power, device/public IMU, event redaction, and
+  log redaction markers remained green.
+- Audio playback: still not complete. `stackchanctl audio play prompt.wav`
+  reached the firmware-owned action and returned structured `AUDIO_UNDERRUN`
+  instead of missing local payload or unsupported transport.
+- Audio capture: still not complete. The sweep observed bounded
+  `audio_capture_started` but the command timed out before a terminal result or
+  usable WAV output.
+- Camera capture: still not complete. The public camera capture command timed
+  out while waiting for the firmware-owned capture action to complete. JPEG
+  bytes/base64 were still absent from normal output and logs.
+- Manual button/touch/proximity/power/NFC/IR stimulus checks were not performed
+  in this no-stimulus sweep. IMU and light semantic event markers were observed.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear
