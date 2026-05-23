@@ -426,6 +426,9 @@ def main(args: list[str] | None = None) -> None:
     best_effort_depth_8.reliability = ReliabilityPolicy.BEST_EFFORT
     best_effort_depth_10 = QoSProfile(depth=10)
     best_effort_depth_10.reliability = ReliabilityPolicy.BEST_EFFORT
+    action_status_best_effort_depth_1 = QoSProfile(depth=1)
+    action_status_best_effort_depth_1.reliability = ReliabilityPolicy.BEST_EFFORT
+    action_status_best_effort_depth_1.durability = DurabilityPolicy.VOLATILE
     transient_depth_1 = QoSProfile(depth=1)
     transient_depth_1.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
@@ -554,18 +557,24 @@ def main(args: list[str] | None = None) -> None:
                 PlayAudio,
                 f"/stackchan/{device_id}/device/audio/play",
                 callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
             )
             self._device_audio_capture_clients[device_id] = ActionClient(
                 self,
                 CaptureAudio,
                 f"/stackchan/{device_id}/device/audio/capture",
                 callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
             )
             self._device_camera_capture_clients[device_id] = ActionClient(
                 self,
                 CaptureCamera,
                 f"/stackchan/{device_id}/device/camera/capture",
                 callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
             )
             self.create_service(
                 ListEvents,

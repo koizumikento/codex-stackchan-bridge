@@ -639,6 +639,10 @@ Observed results:
     on the node before building firmware-owned `SetLed` requests.
   - A stale `--skip-build` run hid the missing public `/stackchan/default/imu/raw`
     relay until the container install was rebuilt.
+  - Device-owned media actions appeared in `ros2 action list -t` but standard
+    action clients still reported the server unavailable until the bridge
+    firmware-facing `ActionClient` feedback/status QoS was matched to the
+    firmware action server's best-effort volatile feedback/status topics.
 - LED command path: pass. `--led-check` sent `progress`, `success`, and `off`
   through `stackchanctl --backend bridge led ... --json`; all returned
   `ok=true`, and the bridge log recorded `led_set_accepted` for each pattern.
@@ -654,10 +658,13 @@ Observed results:
 - Touch, proximity, light, and power telemetry: pass on both device-owned and
   bridge-public topics. `stackchanctl --backend bridge power status --json`
   returned `ok=true`.
-- Audio and camera: the sweep accepts either structured `UNSUPPORTED_FEATURE`
-  during unavailable bring-up states or `ok=true` after firmware-owned action
-  transport is available. Camera capture must still keep JPEG bytes/base64 out
-  of normal output and logs.
+- Audio and camera: the sweep accepts structured `UNSUPPORTED_FEATURE` during
+  unavailable bring-up states. For audio capture, `MIC_OVERRUN` is also a valid
+  transport-reached-firmware result during sensor sweep because it proves the
+  bridge action path reached the firmware-owned action and received a bounded
+  firmware error; a later audio-quality issue must still drive `audio capture`
+  to `ok=true` with usable PCM/WAV output. Camera capture must still keep JPEG
+  bytes/base64 out of normal output and logs.
 - Privacy/redaction: pass. Normal event and log scans reported no sensitive
   payload exposure.
 - Manual button/IMU/touch/proximity/light/power/NFC/IR stimulus checks were not

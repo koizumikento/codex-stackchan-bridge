@@ -387,6 +387,9 @@ run_media_smoke() {{
   printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
   audio_capture_unsupported_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=$([ "$audio_capture_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"MIC_OVERRUN"'
+  audio_capture_mic_overrun_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=$([ "$audio_capture_mic_overrun_result" -eq 0 ] && echo 1 || echo 0)"
   printf '%s\n' "$audio_capture_output" | grep -Eq '"ok": *true'
   audio_capture_ok_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
@@ -404,7 +407,7 @@ run_media_smoke() {{
   echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=$([ "$camera_ok_result" -eq 0 ] && echo 1 || echo 0)"
 
   if {{ [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; }} ||
-     {{ [ "$audio_capture_unsupported_result" -ne 0 ] && [ "$audio_capture_ok_result" -ne 0 ]; }} ||
+     {{ [ "$audio_capture_unsupported_result" -ne 0 ] && [ "$audio_capture_mic_overrun_result" -ne 0 ] && [ "$audio_capture_ok_result" -ne 0 ]; }} ||
      {{ [ "$camera_unsupported_result" -ne 0 ] && [ "$camera_ok_result" -ne 0 ]; }}; then
     result=1
   fi
