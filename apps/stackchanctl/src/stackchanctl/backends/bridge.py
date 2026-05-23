@@ -77,8 +77,7 @@ AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
 AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
-AUDIO_PLAYBACK_SESSION_ARM_DELAY_SEC = 3.00
-AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 2
+AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 1
 CAMERA_JPEG_FORMAT = "jpeg"
 CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
 
@@ -915,7 +914,7 @@ class RclpyBridgeClient:
         if publisher is None:
             publisher = self._node.create_publisher(
                 self._audio_chunk_type,
-                f"/stackchan/{device_id}/device/audio/chunks",
+                f"/stackchan/{device_id}/cmd/audio/chunks",
                 getattr(self, "_audio_chunk_qos", 8),
             )
             self._audio_chunk_publishers[device_id] = publisher
@@ -929,7 +928,6 @@ class RclpyBridgeClient:
     ) -> None:
         publisher = self._audio_chunk_publisher(meta.device_id)
         self._wait_for_audio_playback_subscriber(publisher, timeout)
-        self._wait_for_audio_playback_session_arm()
         for sequence, offset in enumerate(range(0, len(pcm), AUDIO_CHUNK_BYTES)):
             message = self._audio_chunk_type()
             message.device_id = meta.device_id
@@ -960,12 +958,6 @@ class RclpyBridgeClient:
             spin_once = getattr(self._rclpy, "spin_once", None)
             if spin_once is not None:
                 spin_once(self._node, timeout_sec=0)
-
-    def _wait_for_audio_playback_session_arm(self) -> None:
-        self._sleep_audio_playback(AUDIO_PLAYBACK_SESSION_ARM_DELAY_SEC)
-        spin_once = getattr(self._rclpy, "spin_once", None)
-        if spin_once is not None:
-            spin_once(self._node, timeout_sec=0)
 
     def _pace_audio_playback_chunk(self) -> None:
         self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)

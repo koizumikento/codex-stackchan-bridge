@@ -605,9 +605,22 @@ Rules:
   bus/pin selection, I2C object availability, and counters. NFC uses `tag_ref`;
   IR uses `remote_ref`.
 
+### `/stackchan/<device_id>/cmd/audio/chunks`
+
+Purpose: carry bounded CLI-origin playback chunks from `stackchanctl` to the
+bridge. This is a command payload ingress, not a firmware-owned topic. The
+bridge buffers chunks by `device_id` and `command_id`, then relays them to
+`/stackchan/<device_id>/device/audio/chunks` only after the matching
+firmware-owned playback action goal is accepted.
+
+Fields and bounds are the same as `/stackchan/<device_id>/device/audio/chunks`.
+This ingress accepts `direction=PLAYBACK` only. Capture chunks are firmware
+observations and must not be published on this command topic.
+
 ### `/stackchan/<device_id>/device/audio/chunks`
 
-Purpose: carry bounded audio chunks for playback or capture flows coordinated by actions.
+Purpose: carry bounded audio chunks between bridge and firmware for playback or
+capture flows coordinated by actions.
 
 Fields:
 
@@ -981,7 +994,11 @@ Rules:
 
 Purpose: play speech or prompt audio on the device speaker.
 
-Do not put large PCM payloads in a single service request. Coordinate playback with this action and send payload through `/stackchan/<device_id>/device/audio/chunks`.
+Do not put large PCM payloads in a single service request. Coordinate playback
+with this action and send CLI-origin payload through
+`/stackchan/<device_id>/cmd/audio/chunks`; the bridge relays accepted playback
+chunks to `/stackchan/<device_id>/device/audio/chunks` only after the
+firmware-owned playback action goal is accepted.
 The bridge accepts and forwards the public action to
 `/stackchan/<device_id>/device/audio/play` only after firmware status reports
 `audio_playback` as available. Missing device action servers return structured
@@ -995,9 +1012,12 @@ Implementations must keep actual PCM chunks on the bounded audio chunk path and
 must not inline bytes in action results, MCP output, events, or normal logs.
 The CLI/bridge playback path may validate the action/capability before opening
 the local audio file, so unsupported hardware smokes can remain metadata-only.
-Once `audio_playback` is available, playback chunks use the accepted
+Once `audio_playback` is available, CLI-origin playback chunks use the accepted
 `command_id` and monotonic `sequence` values on
-`/stackchan/<device_id>/device/audio/chunks`.
+`/stackchan/<device_id>/cmd/audio/chunks`. The bridge may buffer bounded chunks
+for a pending command, but it must forward them to
+`/stackchan/<device_id>/device/audio/chunks` only while the matching
+firmware-owned playback session is active.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout large
 enough for goal acceptance, firmware buffering, chunk transfer, and terminal

@@ -892,7 +892,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(action.action_name, "/stackchan/default/cmd/audio/play")
         self.assertEqual(action.last_goal.sample_rate, 16000)
         self.assertEqual(action.last_goal.channels, 1)
-        publisher = node.publishers["/stackchan/default/device/audio/chunks"]
+        publisher = node.publishers["/stackchan/default/cmd/audio/chunks"]
         self.assertEqual(len(publisher.messages), 3)
         self.assertEqual(b"".join(message.pcm for message in publisher.messages), pcm)
         self.assertEqual([message.sequence for message in publisher.messages], [0, 1, 2])
@@ -941,7 +941,7 @@ class BridgeBackendTests(unittest.TestCase):
             )
 
         self.assertTrue(response.ok)
-        self.assertEqual(len(node.publishers["/stackchan/default/device/audio/chunks"].messages), 1)
+        self.assertEqual(len(node.publishers["/stackchan/default/cmd/audio/chunks"].messages), 1)
         self.assertGreaterEqual(len(sleeps), 2)
 
     def test_play_audio_keeps_unsupported_capability_before_file_read(self) -> None:

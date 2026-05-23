@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from stackchan_bridge.audio_session import AudioChunk
@@ -21,6 +22,8 @@ from stackchan_bridge.telemetry import HeadPoseSnapshot, HeadPoseTelemetryStore,
 EVENT_QOS_DEPTH = 32
 DEFAULT_LIVENESS_TIMEOUT_SEC = 3.5
 LIVENESS_CHECK_INTERVAL_SEC = 1.0
+AUDIO_PLAYBACK_DIRECTION = 1
+AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 256
 
 
 def _time_to_string(stamp: object) -> str:
@@ -489,6 +492,7 @@ def main(args: list[str] | None = None) -> None:
             self._public_status_publishers = {}
             self._device_audio_capture_clients = {}
             self._device_audio_play_clients = {}
+            self._device_audio_chunk_publishers = {}
             self._device_camera_capture_clients = {}
             self._device_face_clients = {}
             self._device_led_clients = {}
@@ -496,7 +500,12 @@ def main(args: list[str] | None = None) -> None:
             self._device_motion_clients = {}
             self._device_event_subscriptions = []
             self._device_status_subscriptions = []
+            self._cmd_audio_chunk_subscriptions = []
             self._speech_audio_subscriptions = []
+            self._pending_playback_chunks = {}
+            self._active_playback_sessions = set()
+            self._closed_playback_sessions = set()
+            self._playback_chunk_lock = threading.Lock()
             self._telemetry_publishers = {}
             self._telemetry_subscriptions = []
             self._device_last_seen = {}
@@ -584,6 +593,11 @@ def main(args: list[str] | None = None) -> None:
                 callback_group=self._device_client_callback_group,
                 feedback_sub_qos_profile=action_status_best_effort_depth_1,
                 status_sub_qos_profile=action_status_best_effort_depth_1,
+            )
+            self._device_audio_chunk_publishers[device_id] = self.create_publisher(
+                RosAudioChunk,
+                f"/stackchan/{device_id}/device/audio/chunks",
+                best_effort_depth_8,
             )
             self.create_service(
                 ListEvents,
@@ -696,6 +710,17 @@ def main(args: list[str] | None = None) -> None:
                     RosAudioChunk,
                     f"/stackchan/{device_id}/device/audio/chunks",
                     lambda message, device_id=device_id: self._handle_speech_audio_chunk(
+                        device_id,
+                        message,
+                    ),
+                    best_effort_depth_8,
+                )
+            )
+            self._cmd_audio_chunk_subscriptions.append(
+                self.create_subscription(
+                    RosAudioChunk,
+                    f"/stackchan/{device_id}/cmd/audio/chunks",
+                    lambda message, device_id=device_id: self._handle_cmd_audio_chunk(
                         device_id,
                         message,
                     ),
@@ -1159,6 +1184,66 @@ def main(args: list[str] | None = None) -> None:
                         },
                     )
                 )
+
+        def _handle_cmd_audio_chunk(self, device_id: str, message: object) -> None:
+            if not _coerce_telemetry_device_id(message, device_id):
+                self.get_logger().warning(
+                    f"dropping playback chunk for unexpected device_id={getattr(message, 'device_id', '')!r}"
+                )
+                return
+            if int(getattr(message, "direction", 0)) != AUDIO_PLAYBACK_DIRECTION:
+                self.get_logger().warning("dropping non-playback chunk on command audio ingress")
+                return
+            command_id = getattr(message, "command_id", "")
+            if not command_id:
+                self.get_logger().warning("dropping playback chunk without command_id")
+                return
+            key = (device_id, command_id)
+            publish_now = False
+            with self._playback_chunk_lock:
+                if key in self._active_playback_sessions:
+                    publish_now = True
+                elif key in self._closed_playback_sessions:
+                    self.get_logger().warning(
+                        f"dropping late playback chunk for command_id={command_id!r}"
+                    )
+                    return
+                else:
+                    buffer = self._pending_playback_chunks.setdefault(key, [])
+                    if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
+                        self.get_logger().warning(
+                            f"dropping playback chunk for command_id={command_id!r}: bridge buffer is full"
+                        )
+                        return
+                    buffer.append(message)
+            if publish_now:
+                self._publish_device_audio_chunk(device_id, message)
+                return
+
+        def _activate_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
+            key = (device_id, command_id)
+            with self._playback_chunk_lock:
+                self._closed_playback_sessions.discard(key)
+                self._active_playback_sessions.add(key)
+                buffered = self._pending_playback_chunks.pop(key, [])
+            for message in buffered:
+                self._publish_device_audio_chunk(device_id, message)
+
+        def _finish_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
+            key = (device_id, command_id)
+            with self._playback_chunk_lock:
+                self._active_playback_sessions.discard(key)
+                self._pending_playback_chunks.pop(key, None)
+                self._closed_playback_sessions.add(key)
+
+        def _publish_device_audio_chunk(self, device_id: str, message: object) -> None:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            if publisher is None:
+                self.get_logger().warning(
+                    f"dropping playback chunk for unconfigured device_id={device_id!r}"
+                )
+                return
+            publisher.publish(message)
 
         def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:
             if not _coerce_telemetry_device_id(message, device_id):
@@ -1668,6 +1753,14 @@ def main(args: list[str] | None = None) -> None:
                 goal,
                 f"audio playback action for '{device_id}'",
                 timeout_sec=self._device_media_action_timeout_sec,
+                on_accepted=lambda: self._activate_playback_chunk_relay(
+                    device_id,
+                    meta.command_id,
+                ),
+                on_finished=lambda: self._finish_playback_chunk_relay(
+                    device_id,
+                    meta.command_id,
+                ),
             )
 
         def _call_device_audio_capture(
@@ -1749,6 +1842,8 @@ def main(args: list[str] | None = None) -> None:
             label: str,
             *,
             timeout_sec: float | None = None,
+            on_accepted=None,
+            on_finished=None,
         ) -> Result:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable")
@@ -1767,16 +1862,22 @@ def main(args: list[str] | None = None) -> None:
                     f"firmware {label} rejected the goal",
                     recoverable=False,
                 )
+            if on_accepted is not None:
+                on_accepted()
 
-            result_future = device_goal_handle.get_result_async()
-            wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
-            if wait_result is not None:
-                return wait_result
             try:
-                result_response = result_future.result()
-            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
-                return _make_transport_result(f"firmware {label} result failed: {exc}")
-            return _result_from_ros(result_response.result.result)
+                result_future = device_goal_handle.get_result_async()
+                wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
+                if wait_result is not None:
+                    return wait_result
+                try:
+                    result_response = result_future.result()
+                except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                    return _make_transport_result(f"firmware {label} result failed: {exc}")
+                return _result_from_ros(result_response.result.result)
+            finally:
+                if on_finished is not None:
+                    on_finished()
 
         def _wait_for_future(
             self,

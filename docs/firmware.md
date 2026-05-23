@@ -223,6 +223,11 @@ firmware result. Capture uses the baseline 20 ms chunk size for hardware
 bring-up because the current micro-ROS serial path handled 640 byte publishes
 more reliably than max-size 40 ms chunks.
 
+CLI-origin playback chunks enter the bridge on
+`/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe chunks
+after the bridge has relayed them to `/stackchan/<device_id>/device/audio/chunks`
+for an accepted firmware-owned playback action goal.
+
 Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
 driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
 a fallback when a board profile cannot produce JPEG frames directly. Camera

@@ -756,6 +756,11 @@ timing updates, device `default`, COM3 through host serial TCP bridge:
   conservative fixed arm delay and longer firmware no-chunk window. Treat this
   as evidence that playback chunks should be routed by the bridge after
   device-goal acceptance instead of timed from the CLI.
+- Follow-up implementation changes the playback payload ingress to
+  `/stackchan/default/cmd/audio/chunks`; the bridge buffers these chunks and
+  relays them to `/stackchan/default/device/audio/chunks` only after firmware
+  accepts `/stackchan/default/device/audio/play`. Re-run the media smoke before
+  marking playback complete.
 - Camera capture still returned `TIMEOUT`. Firmware now prefers native JPEG and
   the loop order keeps audio ahead of camera, but camera acquisition/result
   delivery still needs a focused nonblocking or bounded-driver follow-up.

@@ -556,15 +556,14 @@ reports the baseline metadata contract and never includes PCM bytes. The mock
 backend keeps deterministic responses for CLI development.
 When `audio_playback` is available, the bridge backend sends the public
 `PlayAudio` action and publishes bounded playback chunks with the same
-`command_id` on `/stackchan/<device_id>/device/audio/chunks` after the action
-goal is accepted. Playback chunks are paced at the baseline 20 ms cadence after
-a subscriber-discovery wait and firmware-session arm delay so best-effort
-micro-ROS links do not drop an entire short prompt before firmware has entered
-its playback session. The arm delay is intentionally conservative for the
-serial micro-ROS action handshake; a follow-up should move playback chunk
-routing behind bridge-observed device-goal acceptance instead of relying on a
-fixed delay. Invalid or unsupported input files return structured errors; PCM
-bytes are never printed in normal output.
+`command_id` on `/stackchan/<device_id>/cmd/audio/chunks`. The bridge buffers
+those command-ingress chunks and relays them to
+`/stackchan/<device_id>/device/audio/chunks` only after it observes the
+firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
+Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
+bridge; the bridge owns device-session arming and must not rely on a fixed
+sleep before forwarding to firmware. Invalid or unsupported input files return
+structured errors; PCM bytes are never printed in normal output.
 
 When `audio_capture` is available, the bridge backend subscribes to
 `/stackchan/<device_id>/device/audio/chunks` before sending the public
