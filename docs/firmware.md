@@ -809,12 +809,19 @@ Pinning rules:
   `/stackchan/<device_id>/device/motion/run` plus
   `/stackchan/<device_id>/device/motion/pose/set` and
   `/stackchan/<device_id>/device/led/set`. The full K151 entity set also needs
-  raised publisher, subscription, client, RMW history, and reliable stream
-  history limits for telemetry/events plus audio and camera actions; keep the
-  values in `microros_stackchan.meta` and the PlatformIO helper patcher in sync.
-  Firmware action servers must keep bounded goal/result/cancel, feedback, and
-  status QoS depths, and use best-effort volatile feedback/status topics, so
-  media actions do not starve `/stackchan/<device_id>/device/status`.
+  raised publisher, subscription, client, RMW history, reliable stream history,
+  wait-set, and guard-condition limits for telemetry/events plus audio and
+  camera actions. `rcl_action_server_init()` also creates a result-expiry timer,
+  so action-server capacity must account for the timer guard condition, not only
+  the action's visible services and topics. Device-scoped action service topics
+  also need a longer `RMW_UXRCE_TOPIC_NAME_MAX_LENGTH` than the upstream 60
+  character default because rmw-microxrcedds adds `rq` / `rr` prefixes and
+  `Request` / `Reply` suffixes around names such as
+  `/stackchan/default/device/audio/capture/_action/send_goal`. Keep the values in
+  `microros_stackchan.meta` and the PlatformIO helper patcher in sync. Firmware
+  action servers must keep bounded goal/result/cancel, feedback, and status QoS
+  depths, and use best-effort volatile feedback/status topics, so media actions
+  do not starve `/stackchan/<device_id>/device/status`.
   If a media action server cannot be initialized during bring-up, firmware must
   degrade that media capability to unavailable rather than suppressing the
   status heartbeat or core face/motion/LED services. Capability status should

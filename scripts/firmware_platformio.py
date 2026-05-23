@@ -555,6 +555,9 @@ def patch_microros_platformio_meta() -> None:
         history_seen = False
         stream_history_input_seen = False
         stream_history_output_seen = False
+        wait_sets_seen = False
+        guard_condition_seen = False
+        topic_name_max_seen = False
         services_seen = False
         publishers_seen = False
         subscriptions_seen = False
@@ -580,6 +583,15 @@ def patch_microros_platformio_meta() -> None:
             elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT="):
                 patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
                 stream_history_output_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_WAIT_SETS="):
+                patched_args.append("-DRMW_UXRCE_MAX_WAIT_SETS=8")
+                wait_sets_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_GUARD_CONDITION="):
+                patched_args.append("-DRMW_UXRCE_MAX_GUARD_CONDITION=8")
+                guard_condition_seen = True
+            elif arg.startswith("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH="):
+                patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
+                topic_name_max_seen = True
             else:
                 patched_args.append(arg)
         if not services_seen:
@@ -596,6 +608,12 @@ def patch_microros_platformio_meta() -> None:
             patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
         if not stream_history_output_seen:
             patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
+        if not wait_sets_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_WAIT_SETS=8")
+        if not guard_condition_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_GUARD_CONDITION=8")
+        if not topic_name_max_seen:
+            patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
         if patched_args == cmake_args:
             continue
         data["names"]["rmw_microxrcedds"]["cmake-args"] = patched_args

@@ -154,8 +154,13 @@ playback chunk subscription, so the meta raises
 `RMW_UXRCE_MAX_SERVICES` to `16`, `RMW_UXRCE_MAX_PUBLISHERS` to `20`, and
 `RMW_UXRCE_MAX_SUBSCRIPTIONS` to `4`. It also raises
 `RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and keeps
-the input and output reliable stream history at `8` so the full entity set has
-entity margin without overflowing CoreS3 DRAM. Firmware action servers also use
+the input and output reliable stream history at `8`. Action servers create
+result-expiry timers, so this profile also raises `RMW_UXRCE_MAX_WAIT_SETS` and
+`RMW_UXRCE_MAX_GUARD_CONDITION` to `8`. Device-scoped action service topic names
+also exceed the upstream 60 character rmw-microxrcedds default after the `rq` /
+`rr` service prefixes and `Request` / `Reply` suffixes are added, so
+`RMW_UXRCE_TOPIC_NAME_MAX_LENGTH` is raised to `96`. This gives the full entity
+set resource margin without overflowing CoreS3 DRAM. Firmware action servers also use
 bounded QoS depths for goal/result/cancel, feedback, and status paths, with
 best-effort volatile feedback/status topics, so action entities do not starve
 the device status heartbeat on the serial transport.
@@ -165,7 +170,7 @@ for hardware validation. When the media hardware probe succeeded but the
 micro-ROS action server did not initialize, the capability detail code is
 `TRANSPORT_INIT_FAILED`.
 Keep these counts aligned when adding more firmware-owned actions, publishers,
-or subscribers.
+subscribers, or action timers.
 
 The firmware package also includes hardware-free contract checks:
 

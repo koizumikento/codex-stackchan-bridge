@@ -48,6 +48,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", microros_meta)
         self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8", microros_meta)
         self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_WAIT_SETS=8", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_GUARD_CONDITION=8", microros_meta)
+        self.assertIn("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96", microros_meta)
         for helper_name in ("firmware_platformio.py", "firmware_container.py"):
             helper = (REPO_ROOT / "scripts" / helper_name).read_text()
             self.assertIn("-DRMW_UXRCE_MAX_SERVICES=16", helper)
@@ -57,6 +60,33 @@ class FirmwareContractTests(unittest.TestCase):
             self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", helper)
             self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8", helper)
             self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_WAIT_SETS=8", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_GUARD_CONDITION=8", helper)
+            self.assertIn("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96", helper)
+
+    def test_device_scoped_action_names_fit_microros_topic_bound(self) -> None:
+        meta = (ROOT / "microros_stackchan.meta").read_text()
+        match = re.search(r"-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=(\d+)", meta)
+        self.assertIsNotNone(match)
+        topic_name_max = int(match.group(1))
+        action_names = [
+            "/stackchan/default/device/audio/capture",
+            "/stackchan/default/device/camera/capture",
+            "/stackchan/default/device/audio/play",
+        ]
+        service_suffixes = [
+            "/_action/send_goal",
+            "/_action/get_result",
+            "/_action/cancel_goal",
+        ]
+
+        for action_name in action_names:
+            for suffix in service_suffixes:
+                service_name = f"{action_name}{suffix}"
+                request_topic = f"rq{service_name}Request"
+                reply_topic = f"rr{service_name}Reply"
+                self.assertLess(len(request_topic), topic_name_max)
+                self.assertLess(len(reply_topic), topic_name_max)
 
     def test_hardware_free_contract_matrix_has_coverage_targets(self) -> None:
         for label, relative_path in HARDWARE_FREE_CONTRACT_MATRIX.items():
@@ -275,6 +305,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("-DRMW_UXRCE_MAX_PUBLISHERS=20", meta)
         self.assertIn("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4", meta)
         self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", meta)
+        self.assertIn("-DRMW_UXRCE_MAX_WAIT_SETS=8", meta)
+        self.assertIn("-DRMW_UXRCE_MAX_GUARD_CONDITION=8", meta)
+        self.assertIn("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96", meta)
 
     def test_calibration_maintenance_requires_operator_confirm_and_stays_out_of_default_paths(self) -> None:
         script = (ROOT.parents[1] / "scripts" / "firmware_platformio.py").read_text()
