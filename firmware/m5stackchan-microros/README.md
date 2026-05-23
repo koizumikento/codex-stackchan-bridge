@@ -161,7 +161,9 @@ best-effort volatile feedback/status topics, so action entities do not starve
 the device status heartbeat on the serial transport.
 If a media action server fails to initialize, the firmware reports that media
 transport as unavailable and keeps status, face, motion, and LED services alive
-for hardware validation.
+for hardware validation. When the media hardware probe succeeded but the
+micro-ROS action server did not initialize, the capability detail code is
+`TRANSPORT_INIT_FAILED`.
 Keep these counts aligned when adding more firmware-owned actions, publishers,
 or subscribers.
 

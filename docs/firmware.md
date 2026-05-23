@@ -817,7 +817,9 @@ Pinning rules:
   media actions do not starve `/stackchan/<device_id>/device/status`.
   If a media action server cannot be initialized during bring-up, firmware must
   degrade that media capability to unavailable rather than suppressing the
-  status heartbeat or core face/motion/LED services.
+  status heartbeat or core face/motion/LED services. Capability status should
+  use `TRANSPORT_INIT_FAILED` for media hardware that is present but whose
+  micro-ROS action transport could not initialize.
 - Let `StackChan-BSP` resolve `M5Unified`, `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
 - Promote transitive dependencies to explicit pins only if reproducibility breaks.
 - Treat the `FTServo_Arduino` driver as owned by the `StackChan-BSP` layer unless a concrete adapter need appears.

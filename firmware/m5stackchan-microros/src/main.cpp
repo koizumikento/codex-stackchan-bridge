@@ -340,6 +340,9 @@ bool microros_executor_initialized = false;
 bool capture_audio_action_server_initialized = false;
 bool capture_camera_action_server_initialized = false;
 bool play_audio_action_server_initialized = false;
+bool capture_audio_action_init_failed = false;
+bool capture_camera_action_init_failed = false;
+bool play_audio_action_init_failed = false;
 bool stackchan_touch_sensor_initialized = false;
 bool stackchan_power_monitor_initialized = false;
 bool ltr553_sensor_initialized = false;
@@ -1623,7 +1626,8 @@ bool assign_capability_status(
     const char* name,
     bool available,
     bool active = false,
-    uint8_t queued = 0) {
+    uint8_t queued = 0,
+    const char* unavailable_detail_code = "UNSUPPORTED_FEATURE") {
   if (destination == nullptr) {
     return false;
   }
@@ -1633,7 +1637,30 @@ bool assign_capability_status(
   destination->last_update.nanosec = 0;
   return assign_ros_string(&destination->name, name) &&
          assign_ros_string(&destination->state, available ? "available" : "unavailable") &&
-         assign_ros_string(&destination->detail_code, available ? "" : "UNSUPPORTED_FEATURE");
+         assign_ros_string(
+             &destination->detail_code,
+             available ? "" : unavailable_detail_code);
+}
+
+const char* audio_playback_unavailable_detail_code() {
+  if (stackchan_audio_playback_initialized && play_audio_action_init_failed) {
+    return "TRANSPORT_INIT_FAILED";
+  }
+  return "UNSUPPORTED_FEATURE";
+}
+
+const char* audio_capture_unavailable_detail_code() {
+  if (stackchan_audio_capture_initialized && capture_audio_action_init_failed) {
+    return "TRANSPORT_INIT_FAILED";
+  }
+  return "UNSUPPORTED_FEATURE";
+}
+
+const char* camera_snapshot_unavailable_detail_code() {
+  if (stackchan_camera_snapshot_initialized && capture_camera_action_init_failed) {
+    return "TRANSPORT_INIT_FAILED";
+  }
+  return "UNSUPPORTED_FEATURE";
 }
 
 bool assign_status_capabilities(stackchan_msgs__msg__StackChanStatus* destination) {
@@ -1649,18 +1676,23 @@ bool assign_status_capabilities(stackchan_msgs__msg__StackChanStatus* destinatio
              "audio_playback",
              stackchan_audio_playback_transport_initialized,
              audio_playback_guard.active(),
-             audio_playback_guard.active() ? 1 : 0) &&
+             audio_playback_guard.active() ? 1 : 0,
+             audio_playback_unavailable_detail_code()) &&
          assign_capability_status(
              &destination->capabilities.data[4],
              "audio_capture",
              stackchan_audio_capture_transport_initialized,
              audio_capture_session_active,
-             audio_capture_session_active ? 1 : 0) &&
+             audio_capture_session_active ? 1 : 0,
+             audio_capture_unavailable_detail_code()) &&
          assign_capability_status(
              &destination->capabilities.data[5],
              "camera_snapshot",
              stackchan_camera_snapshot_initialized &&
-                 capture_camera_action_server_initialized);
+                 capture_camera_action_server_initialized,
+             false,
+             0,
+             camera_snapshot_unavailable_detail_code());
 }
 
 bool convert_status_message(
@@ -1907,9 +1939,11 @@ bool try_initialize_capture_audio_action_server(const char* step) {
                   &options),
               step)) {
     capture_audio_action_server_initialized = false;
+    capture_audio_action_init_failed = true;
     return false;
   }
   capture_audio_action_server_initialized = true;
+  capture_audio_action_init_failed = false;
   return true;
 }
 
@@ -1925,9 +1959,11 @@ bool try_initialize_capture_camera_action_server(const char* step) {
                   &options),
               step)) {
     capture_camera_action_server_initialized = false;
+    capture_camera_action_init_failed = true;
     return false;
   }
   capture_camera_action_server_initialized = true;
+  capture_camera_action_init_failed = false;
   return true;
 }
 
@@ -1943,9 +1979,11 @@ bool try_initialize_play_audio_action_server(const char* step) {
                   &options),
               step)) {
     play_audio_action_server_initialized = false;
+    play_audio_action_init_failed = true;
     return false;
   }
   play_audio_action_server_initialized = true;
+  play_audio_action_init_failed = false;
   return true;
 }
 
@@ -1976,6 +2014,9 @@ bool initialize_microros_entities() {
   capture_audio_action_server = rcl_action_get_zero_initialized_server();
   capture_camera_action_server = rcl_action_get_zero_initialized_server();
   play_audio_action_server = rcl_action_get_zero_initialized_server();
+  capture_audio_action_init_failed = false;
+  capture_camera_action_init_failed = false;
+  play_audio_action_init_failed = false;
   face_set_service = rcl_get_zero_initialized_service();
   head_pose_set_service = rcl_get_zero_initialized_service();
   led_set_service = rcl_get_zero_initialized_service();
