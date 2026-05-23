@@ -64,7 +64,7 @@ constexpr HeadPoseLimits kDefaultHeadPoseLimits{
 constexpr HeadPoseTarget kHomeHeadPose{0.0f, 0.0f, 0, 0};
 constexpr uint32_t kMinMotionDurationMs = 100;
 constexpr uint32_t kMaxMotionDurationMs = 2000;
-constexpr uint32_t kDefaultMotionDurationMs = 500;
+constexpr uint32_t kDefaultMotionDurationMs = 900;
 
 inline int clamp_int(int value, int min_value, int max_value) {
   if (value < min_value) {
@@ -234,7 +234,7 @@ inline MotionPlan plan_motion(
 
   ServoTarget target = kNeutralTarget;
   if (strcmp(name, "nod") == 0) {
-    target.y = static_cast<int>(20.0f * intensity);
+    target.y = static_cast<int>(28.0f * intensity);
   }
 
   target.x = clamp_int(target.x, limits.min_x, limits.max_x);

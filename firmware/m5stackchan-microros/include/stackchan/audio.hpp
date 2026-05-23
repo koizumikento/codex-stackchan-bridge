@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <string.h>
 
 #include "stackchan/contract.hpp"
 #include "stackchan/events.hpp"
@@ -19,6 +20,10 @@ enum class AudioDirection : uint8_t {
   Capture = 2,
 };
 
+enum class AudioFormat : uint8_t {
+  PcmS16Le = 1,
+};
+
 enum class AudioCaptureEvent : uint8_t {
   Started,
   Finished,
@@ -33,6 +38,16 @@ struct AudioChunkPolicy {
   uint16_t max_chunk_bytes;
 };
 
+struct AudioPlaybackChunk {
+  const char* command_id;
+  AudioDirection direction;
+  AudioFormat format;
+  uint32_t sample_rate;
+  uint8_t channels;
+  uint32_t sequence;
+  uint16_t pcm_size;
+};
+
 inline AudioChunkPolicy baseline_audio_policy() {
   return {
       kAudioSampleRate,
@@ -42,6 +57,77 @@ inline AudioChunkPolicy baseline_audio_policy() {
       kAudioMaxChunkBytes,
   };
 }
+
+class AudioPlaybackChunkGuard {
+ public:
+  Result start_session(const char* command_id) {
+    if (active_) {
+      return Result::rejected("FIRMWARE_BUSY", "audio playback already active", true);
+    }
+    copy_event_string(command_id_, sizeof(command_id_), command_id == nullptr ? "" : command_id);
+    expected_sequence_ = 0;
+    active_ = true;
+    return Result::accepted("audio playback session accepted");
+  }
+
+  Result finish_session() {
+    active_ = false;
+    expected_sequence_ = 0;
+    copy_event_string(command_id_, sizeof(command_id_), "");
+    return Result::accepted("audio playback session finished");
+  }
+
+  Result validate_chunk(const AudioPlaybackChunk& chunk) {
+    if (!active_) {
+      return Result::rejected(
+          "UNKNOWN_COMMAND",
+          "audio playback chunk arrived without an accepted session",
+          true);
+    }
+    if (chunk.command_id == nullptr || strcmp(chunk.command_id, command_id_) != 0) {
+      return Result::rejected(
+          "UNKNOWN_COMMAND",
+          "audio playback chunk command_id does not match active session",
+          true);
+    }
+    if (chunk.direction != AudioDirection::Playback) {
+      return Result::rejected(
+          "MALFORMED_AUDIO_CHUNK",
+          "audio playback chunk has wrong direction",
+          true);
+    }
+    if (chunk.format != AudioFormat::PcmS16Le ||
+        chunk.sample_rate != kAudioSampleRate ||
+        chunk.channels != kAudioChannels) {
+      return Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "audio playback chunk format is unsupported",
+          false);
+    }
+    if (chunk.pcm_size == 0 || chunk.pcm_size > kAudioMaxChunkBytes) {
+      return Result::rejected(
+          "MALFORMED_AUDIO_CHUNK",
+          "audio playback chunk size is invalid",
+          true);
+    }
+    if (chunk.sequence != expected_sequence_) {
+      return Result::rejected(
+          "AUDIO_UNDERRUN",
+          "audio playback chunk sequence gap",
+          true);
+    }
+    expected_sequence_++;
+    return Result::accepted("audio playback chunk accepted");
+  }
+
+  bool active() const { return active_; }
+  uint32_t expected_sequence() const { return expected_sequence_; }
+
+ private:
+  bool active_ = false;
+  uint32_t expected_sequence_ = 0;
+  char command_id_[37]{};
+};
 
 inline Result audio_underrun() {
   return Result::rejected("AUDIO_UNDERRUN", "audio playback underrun", true);

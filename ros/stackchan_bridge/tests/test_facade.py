@@ -5,11 +5,13 @@ import math
 
 from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import (
+    CapabilitySnapshot,
     PRIORITY_NORMAL,
     PRIORITY_SAFETY,
     STATE_ACCEPTED,
     STATE_COMPLETED,
     CommandMeta,
+    StatusSnapshot,
 )
 from stackchan_bridge.registry import DeviceRecord, DeviceRegistry
 
@@ -144,6 +146,34 @@ class FacadeTests(unittest.TestCase):
             bridge.capture_camera(meta(), quality=80).result.error_code,
             "UNSUPPORTED_FEATURE",
         )
+
+    def test_media_actions_accept_when_firmware_capability_is_available(self) -> None:
+        bridge = facade()
+        bridge.update_status(
+            StatusSnapshot(
+                device_id="default",
+                connected=True,
+                capabilities=[
+                    CapabilitySnapshot("face", "available"),
+                    CapabilitySnapshot("motion", "available"),
+                    CapabilitySnapshot("led", "available"),
+                    CapabilitySnapshot("audio_playback", "available"),
+                    CapabilitySnapshot("audio_capture", "available"),
+                    CapabilitySnapshot("camera_snapshot", "available"),
+                ],
+            )
+        )
+
+        play = bridge.play_audio(meta())
+        capture = bridge.capture_audio(meta(), duration_ms=1000)
+        camera = bridge.capture_camera(meta(), quality=80)
+
+        self.assertTrue(play.result.ok)
+        self.assertEqual(play.result.state, STATE_COMPLETED)
+        self.assertTrue(capture.result.ok)
+        self.assertEqual(capture.result.state, STATE_COMPLETED)
+        self.assertTrue(camera.result.ok)
+        self.assertEqual(camera.result.state, STATE_COMPLETED)
 
     def test_media_actions_reject_outside_baseline_without_payloads(self) -> None:
         bridge = facade()

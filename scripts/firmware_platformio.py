@@ -48,7 +48,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "build":
-        calibration_flags = calibration_maintenance_build_flags(args, parser)
+        extra_build_flags = firmware_build_flags(args, parser)
         command = [
             "run",
             "-d",
@@ -57,8 +57,8 @@ def main() -> int:
             args.environment,
         ]
         platformio_config = None
-        if calibration_flags:
-            platformio_config = write_platformio_config(None, False, calibration_flags)
+        if extra_build_flags:
+            platformio_config = write_platformio_config(None, False, extra_build_flags)
             command.extend(["-c", str(platformio_config)])
         try:
             return run_platformio(command)
@@ -67,7 +67,7 @@ def main() -> int:
                 platformio_config.unlink(missing_ok=True)
 
     if args.command == "upload":
-        calibration_flags = calibration_maintenance_build_flags(args, parser)
+        extra_build_flags = firmware_build_flags(args, parser)
         command = [
             "run",
             "-d",
@@ -80,11 +80,11 @@ def main() -> int:
             args.port,
         ]
         upload_config = None
-        if args.upload_speed or args.no_stub or calibration_flags:
+        if args.upload_speed or args.no_stub or extra_build_flags:
             upload_config = write_platformio_config(
                 args.upload_speed,
                 args.no_stub,
-                calibration_flags,
+                extra_build_flags,
             )
             command.extend(["-c", str(upload_config)])
         try:
@@ -130,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ENV,
         help=f"PlatformIO environment to build (default: {DEFAULT_ENV}).",
     )
+    add_microros_diagnostic_arguments(build)
     add_calibration_maintenance_arguments(build)
 
     upload = subparsers.add_parser("upload", help="Upload firmware with PlatformIO.")
@@ -154,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pass --no-stub to esptool through PlatformIO upload_flags.",
     )
+    add_microros_diagnostic_arguments(upload)
     add_calibration_maintenance_arguments(upload)
 
     monitor = subparsers.add_parser(
@@ -179,6 +181,69 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def add_microros_diagnostic_arguments(parser: argparse.ArgumentParser) -> None:
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument(
+        "--microros-minimal-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that initializes only the "
+            "micro-ROS status publisher. This isolates transport/status "
+            "publishing from optional services, actions, and telemetry entities."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-command-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that initializes the status "
+            "publisher plus core face, LED, motion, and pose services while "
+            "skipping optional events, media actions, and raw telemetry."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-raw-telemetry-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that initializes the core "
+            "command profile plus raw telemetry publishers, while still "
+            "skipping media actions and audio chunk transport."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-audio-chunk-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that extends the core raw "
+            "telemetry profile with the audio chunk publisher/subscriber only."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-capture-audio-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that extends the core raw "
+            "telemetry profile with the capture-audio action and chunk publisher."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-capture-camera-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that extends the core raw "
+            "telemetry profile with the capture-camera action."
+        ),
+    )
+    profile.add_argument(
+        "--microros-core-play-audio-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that extends the core raw "
+            "telemetry profile with the play-audio action and chunk subscriber."
+        ),
+    )
 
 
 def add_calibration_maintenance_arguments(parser: argparse.ArgumentParser) -> None:
@@ -231,6 +296,37 @@ def add_calibration_maintenance_arguments(parser: argparse.ArgumentParser) -> No
         default=0,
         help="Seed Y correction in degrees, bounded by firmware safety limits.",
     )
+
+
+def firmware_build_flags(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> list[str]:
+    flags = calibration_maintenance_build_flags(args, parser)
+    if getattr(args, "microros_minimal_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_MINIMAL_BRINGUP=1")
+    if getattr(args, "microros_core_command_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+    if getattr(args, "microros_core_raw_telemetry_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
+    if getattr(args, "microros_core_audio_chunk_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP=1")
+    if getattr(args, "microros_core_capture_audio_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP=1")
+    if getattr(args, "microros_core_capture_camera_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP=1")
+    if getattr(args, "microros_core_play_audio_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
+        flags.append("-D STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP=1")
+    return flags
 
 
 def calibration_maintenance_build_flags(
@@ -454,12 +550,52 @@ def patch_microros_platformio_meta() -> None:
     for meta in libdeps.glob("*/micro_ros_platformio/metas/colcon.meta"):
         data = json.loads(meta.read_text())
         cmake_args = data["names"]["rmw_microxrcedds"]["cmake-args"]
-        patched_args = [
-            "-DRMW_UXRCE_MAX_SERVICES=3"
-            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES=")
-            else arg
-            for arg in cmake_args
-        ]
+        patched_args = []
+        clients_seen = False
+        history_seen = False
+        stream_history_input_seen = False
+        stream_history_output_seen = False
+        services_seen = False
+        publishers_seen = False
+        subscriptions_seen = False
+        for arg in cmake_args:
+            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES="):
+                patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+                services_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_PUBLISHERS="):
+                patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+                publishers_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_SUBSCRIPTIONS="):
+                patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+                subscriptions_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_CLIENTS="):
+                patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+                clients_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_HISTORY="):
+                patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+                history_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_INPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+                stream_history_input_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
+                stream_history_output_seen = True
+            else:
+                patched_args.append(arg)
+        if not services_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+        if not publishers_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+        if not subscriptions_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+        if not clients_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+        if not history_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+        if not stream_history_input_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+        if not stream_history_output_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
         if patched_args == cmake_args:
             continue
         data["names"]["rmw_microxrcedds"]["cmake-args"] = patched_args
@@ -482,9 +618,10 @@ def remove_tree(path: Path) -> None:
     if not path.exists():
         return
 
+    remove_path = windows_extended_path(path) if os.name == "nt" else str(path)
     for attempt in range(5):
         try:
-            shutil.rmtree(path, onerror=make_writable_and_retry)
+            shutil.rmtree(remove_path, onerror=make_writable_and_retry)
         except OSError:
             pass
         if not path.exists():
@@ -533,6 +670,15 @@ def remove_tree(path: Path) -> None:
             time.sleep(0.5)
 
     raise RuntimeError(f"failed to remove micro-ROS build cache: {path}")
+
+
+def windows_extended_path(path: Path) -> str:
+    resolved = str(path.resolve(strict=False))
+    if resolved.startswith("\\\\?\\"):
+        return resolved
+    if resolved.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + resolved[2:]
+    return "\\\\?\\" + resolved
 
 
 def make_writable_and_retry(function, path: str, _exc_info) -> None:

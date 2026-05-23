@@ -179,12 +179,52 @@ def patch_microros_platformio_meta() -> None:
     for meta in libdeps.glob("*/micro_ros_platformio/metas/colcon.meta"):
         data = json.loads(meta.read_text())
         cmake_args = data["names"]["rmw_microxrcedds"]["cmake-args"]
-        patched_args = [
-            "-DRMW_UXRCE_MAX_SERVICES=3"
-            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES=")
-            else arg
-            for arg in cmake_args
-        ]
+        patched_args = []
+        clients_seen = False
+        history_seen = False
+        stream_history_input_seen = False
+        stream_history_output_seen = False
+        services_seen = False
+        publishers_seen = False
+        subscriptions_seen = False
+        for arg in cmake_args:
+            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES="):
+                patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+                services_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_PUBLISHERS="):
+                patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+                publishers_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_SUBSCRIPTIONS="):
+                patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+                subscriptions_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_CLIENTS="):
+                patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+                clients_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_HISTORY="):
+                patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+                history_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_INPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+                stream_history_input_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
+                stream_history_output_seen = True
+            else:
+                patched_args.append(arg)
+        if not services_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+        if not publishers_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+        if not subscriptions_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+        if not clients_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+        if not history_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+        if not stream_history_input_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+        if not stream_history_output_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
         if patched_args == cmake_args:
             continue
         data["names"]["rmw_microxrcedds"]["cmake-args"] = patched_args

@@ -25,6 +25,7 @@ constexpr const char* kDeviceProximityRawTopicSuffix = "/device/proximity/raw";
 constexpr const char* kDeviceLightRawTopicSuffix = "/device/light/raw";
 constexpr const char* kDevicePowerStatusTopicSuffix = "/device/power/status";
 constexpr const char* kDeviceMotionPoseTopicSuffix = "/device/motion/pose";
+constexpr const char* kDeviceImuRawTopicSuffix = "/device/imu/raw";
 
 enum class RosReliability : uint8_t {
   BestEffort = 0,
@@ -39,6 +40,7 @@ enum class DevicePublisherTopic : uint8_t {
   LightRaw,
   PowerStatus,
   MotionPose,
+  ImuRaw,
   Count,
 };
 
@@ -75,6 +77,10 @@ constexpr DevicePublisherQos kDevicePowerStatusQos{
 constexpr DevicePublisherQos kDeviceMotionPoseQos{
     RosReliability::Reliable,
     2,
+    false};
+constexpr DevicePublisherQos kDeviceImuRawQos{
+    RosReliability::BestEffort,
+    10,
     false};
 
 struct RosTime {
@@ -228,6 +234,21 @@ struct HeadPoseMsg {
   BoundedString<kRosFrameMaxLength> frame;
 };
 
+struct ImuRawMsg {
+  BoundedString<kRosDeviceIdMaxLength> device_id;
+  RosTime stamp;
+  float accel_x;
+  float accel_y;
+  float accel_z;
+  float gyro_x;
+  float gyro_y;
+  float gyro_z;
+  float mag_x;
+  float mag_y;
+  float mag_z;
+  float temperature;
+};
+
 using FirmwarePublishFn = bool (*)(
     DevicePublisherTopic topic,
     const void* message,
@@ -272,6 +293,8 @@ inline const char* device_topic_suffix(DevicePublisherTopic topic) {
       return kDevicePowerStatusTopicSuffix;
     case DevicePublisherTopic::MotionPose:
       return kDeviceMotionPoseTopicSuffix;
+    case DevicePublisherTopic::ImuRaw:
+      return kDeviceImuRawTopicSuffix;
     case DevicePublisherTopic::Count:
       return "";
   }
@@ -294,6 +317,8 @@ inline DevicePublisherQos device_topic_qos(DevicePublisherTopic topic) {
       return kDevicePowerStatusQos;
     case DevicePublisherTopic::MotionPose:
       return kDeviceMotionPoseQos;
+    case DevicePublisherTopic::ImuRaw:
+      return kDeviceImuRawQos;
     case DevicePublisherTopic::Count:
       return {RosReliability::BestEffort, 0, false};
   }
@@ -550,6 +575,43 @@ inline Result fill_head_pose_message(
   return Result::accepted("head pose message converted");
 }
 
+inline Result fill_imu_raw_message(
+    const char* configured_device_id,
+    const ImuRawMsg& telemetry,
+    ImuRawMsg* message) {
+  if (message == nullptr) {
+    return Result::rejected("FIRMWARE_BUSY", "IMU raw message storage missing", true);
+  }
+  const char* telemetry_device_id =
+      telemetry.device_id.data == nullptr || telemetry.device_id.data[0] == '\0'
+          ? configured_device_id
+          : telemetry.device_id.data;
+  if (!telemetry_device_id_matches(configured_device_id, telemetry_device_id)) {
+    return Result::rejected(
+        "INVALID_DEVICE_ID",
+        "IMU raw telemetry device_id does not match publisher namespace",
+        true);
+  }
+  if (!message->device_id.assign(configured_device_id)) {
+    return Result::rejected(
+        "FIRMWARE_BUSY",
+        "IMU raw message exceeded bounded ROS storage",
+        true);
+  }
+  message->stamp = telemetry.stamp;
+  message->accel_x = telemetry.accel_x;
+  message->accel_y = telemetry.accel_y;
+  message->accel_z = telemetry.accel_z;
+  message->gyro_x = telemetry.gyro_x;
+  message->gyro_y = telemetry.gyro_y;
+  message->gyro_z = telemetry.gyro_z;
+  message->mag_x = telemetry.mag_x;
+  message->mag_y = telemetry.mag_y;
+  message->mag_z = telemetry.mag_z;
+  message->temperature = telemetry.temperature;
+  return Result::accepted("IMU raw message converted");
+}
+
 class DevicePublisherRegistry {
  public:
   Result initialize(const char* device_id) {
@@ -698,6 +760,15 @@ class DevicePublisherRegistry {
     return publish(DevicePublisherTopic::MotionPose, &head_pose_message_);
   }
 
+  Result publish_imu_raw(const ImuRawMsg& telemetry) {
+    Result result =
+        fill_imu_raw_message(device_id_, telemetry, &imu_raw_message_);
+    if (!result.ok) {
+      return result;
+    }
+    return publish(DevicePublisherTopic::ImuRaw, &imu_raw_message_);
+  }
+
  private:
   char device_id_[kRosDeviceIdMaxLength + 1]{};
   char topic_names_[static_cast<uint8_t>(DevicePublisherTopic::Count)]
@@ -713,6 +784,7 @@ class DevicePublisherRegistry {
   LightRawMsg light_raw_message_{};
   PowerStatusMsg power_status_message_{};
   HeadPoseMsg head_pose_message_{};
+  ImuRawMsg imu_raw_message_{};
 
   Result publish(DevicePublisherTopic topic, const void* message) {
     if (!initialized_ || callback_ == nullptr) {
@@ -749,6 +821,14 @@ class TelemetryPublishScheduler {
     return should_publish(now_ms, kPowerMinIntervalMs, &last_power_ms_);
   }
 
+  bool should_sample_imu(uint32_t now_ms) {
+    return should_publish(now_ms, kImuMinIntervalMs, &last_imu_ms_);
+  }
+
+  bool should_sample_nfc(uint32_t now_ms) {
+    return should_publish(now_ms, kNfcMinIntervalMs, &last_nfc_ms_);
+  }
+
   bool should_publish_motion_pose(uint32_t now_ms) {
     return should_publish(
         now_ms,
@@ -761,12 +841,16 @@ class TelemetryPublishScheduler {
   static constexpr uint32_t kProximityMinIntervalMs = 100;
   static constexpr uint32_t kLightMinIntervalMs = 200;
   static constexpr uint32_t kPowerMinIntervalMs = 1000;
+  static constexpr uint32_t kImuMinIntervalMs = 100;
+  static constexpr uint32_t kNfcMinIntervalMs = 250;
   static constexpr uint32_t kMotionPoseMinIntervalMs = 100;
 
   uint32_t last_touch_ms_ = 0;
   uint32_t last_proximity_ms_ = 0;
   uint32_t last_light_ms_ = 0;
   uint32_t last_power_ms_ = 0;
+  uint32_t last_imu_ms_ = 0;
+  uint32_t last_nfc_ms_ = 0;
   uint32_t last_motion_pose_ms_ = 0;
 
   bool should_publish(

@@ -42,6 +42,49 @@ hardware bring-up issue complete.
   A successful Agent connection logs `session established`, then creates the
   participant, topic, publisher, and datawriter for
   `/stackchan/default/device/events`.
+- If the Agent creates the graph but all topic echoes time out, isolate the
+  transport/status path with the temporary minimal firmware profile:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-minimal-bringup
+  ```
+
+  This diagnostic build initializes only
+  `/stackchan/default/device/status`; it should not be used to validate face,
+  motion, audio, camera, events, or raw telemetry. Restore a normal PlatformIO
+  upload before marking the standard bridge command path ready.
+- If minimal status works, isolate the core command path with:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-command-bringup
+  ```
+
+  This profile keeps `/stackchan/default/device/status` and the firmware-owned
+  face, LED, named-motion, and pose services so `stackchanctl --backend bridge
+  face happy` can be validated before optional event, media, and raw telemetry
+  entities are re-enabled.
+- If full firmware still creates the graph but no samples arrive, test raw
+  telemetry pressure separately from media actions:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-raw-telemetry-bringup
+  ```
+
+  This profile keeps the core command path and raw telemetry publishers, while
+  skipping audio actions, camera action, and audio chunk transport.
+- If core raw telemetry works but full firmware still stops samples, add only
+  one media/action group at a time:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-audio-chunk-bringup
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-capture-audio-bringup
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-capture-camera-bringup
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-play-audio-bringup
+  ```
+
+  These profiles extend `/stackchan/default/device/status`, core command
+  services, and raw telemetry with a single media/action entity group so status
+  sample loss can be attributed before returning to the full firmware profile.
 - To validate the first firmware event payload on Windows Docker Desktop, run
   the Agent and `ros2 topic echo` in the same container. This avoids a Docker
   Desktop cross-container DDS data path that may show the topic graph but still
@@ -159,16 +202,31 @@ hardware bring-up issue complete.
 
 ## Audio
 
-- Until firmware-confirmed audio transport exists, confirm
+- Before firmware reports audio capabilities as available, confirm
   `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
   capture return structured `UNSUPPORTED_FEATURE` results while still reporting
-  metadata and never printing PCM bytes.
-- With firmware-confirmed audio transport, confirm playback/capture return
+  metadata and never printing PCM bytes. The playback unsupported smoke does
+  not require `prompt.wav` to exist because the bridge backend must not open the
+  payload until `audio_playback` is firmware-confirmed. Once firmware status
+  reports `audio_playback` or `audio_capture` as available, the same smoke
+  should return success markers instead of unsupported markers.
+- With firmware-confirmed audio chunk transport, confirm playback/capture return
   structured accepted or completed results, microphone capture publishes bounded
   16 kHz mono PCM chunks, and overrun/underrun events are visible through
   `stackchanctl events`.
 - Confirm malformed format, sequence gaps, disconnect, and timeout cases produce
   structured recoverable errors.
+
+## LED
+
+- Confirm `stackchanctl --backend bridge led progress --json`,
+  `stackchanctl --backend bridge led success --json`, and
+  `stackchanctl --backend bridge led off --json` route through firmware
+  `/stackchan/<device_id>/device/led/set` and visibly update the K151 RGB LEDs.
+- Confirm an unknown pattern returns structured `UNKNOWN_COMMAND` and does not
+  leave a stale success state.
+- Confirm LED updates do not block face, motion, audio, camera, safety, or
+  event handling.
 
 ## Camera
 
@@ -212,8 +270,11 @@ hardware bring-up issue complete.
   ```
 
   The sweep starts Agent, bridge, and CLI probes in one container, then records
-  `observe`, `power status`, device and public sensor topics, event output, and
-  normal log redaction markers.
+  `observe`, `power status`, metadata-only audio/camera unsupported smokes,
+  device and public sensor topics, event output, and normal log redaction
+  markers. K151 raw IMU validation expects samples on both
+  `/stackchan/default/device/imu/raw` and `/stackchan/default/imu/raw` while
+  `STACKCHAN_SENSOR_SWEEP_OBSERVE_RAW_TELEMETRY_SEEN=0` remains true.
 - For IMU/NFC/IR hardware event fixtures, add a manual stimulus window:
 
   ```powershell
@@ -224,14 +285,45 @@ hardware bring-up issue complete.
 
   | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |
   | --- | --- | --- | --- |
+  | Buttons | Press, release, and hold CoreS3 BtnA, BtnB, and BtnC. | `button_pressed`, `button_released`, `button_held` | Only bounded button ids `a`, `b`, and `c`; no maintenance/control payloads. |
   | IMU high-level events | Pick up, place down, tilt, face up/down, and shake within safe servo limits. | `picked_up`, `placed_down`, `tilted`, `face_up`, `face_down`, `shaken` | No raw accelerometer/gyroscope samples in `observe` or normal events. |
+  | Touch | Touch, release, and hold the K151 touch surface. | `touched`, `touch_released`, `touch_held` | Only bounded zone metadata; no raw maintenance/control payloads. |
+  | Proximity | Move a hand or object near and away from the LTR553 proximity sensor. | `proximity_near`, `proximity_clear` | Only bounded semantic state; raw samples stay on telemetry topics. |
+  | Light | Cover the light sensor, expose it to brighter light, then return to ambient. | `light_changed`, `dark_detected`, `bright_detected` | Only bounded semantic state; raw samples stay on telemetry topics. |
+  | Power | Connect/disconnect USB power or use a known safe low-power fixture. | `charging_started`, `charging_stopped`, `power_source_changed`, `battery_low`, `battery_recovered`, `brownout_risk`, `power_fault` | Only bounded power state/fault code; no raw maintenance/control payloads. |
   | NFC | Present one tag, remove it, then try a read-failure case such as quick removal. | `nfc_detected`, `nfc_removed`, `nfc_read_failed` | Public events/logs must not expose tag IDs, UIDs, or raw tag payloads. |
   | IR/remote | Press and release a known remote button near the receiver. | `remote_button_pressed`, `remote_button_released`, `remote_command_received` | Public events/logs must not expose raw IR codes, protocol dumps, or remote IDs. |
 
-  The runner emits `STACKCHAN_EVENT_STIMULUS_{IMU,NFC,IR}_STATUS=PASS` when a
-  matching event is observed and `UNAVAILABLE` when the current firmware does
-  not publish that event family during the window. Keep `UNAVAILABLE` as a
+  The runner emits
+  `STACKCHAN_EVENT_STIMULUS_{BUTTON,IMU,TOUCH,PROXIMITY,LIGHT,POWER,NFC,IR}_STATUS=PASS`
+  when a matching event is observed and `UNAVAILABLE` when the current firmware
+  does not publish that event family during the window. Keep `UNAVAILABLE` as a
   recorded fixture result until the corresponding firmware adapter exists.
+- For NFC `UNAVAILABLE`, verify the UnitNFC is on the StackChan-BSP NFC example
+  I2C path. If firmware-only serial diagnostics are needed, rebuild with
+  `STACKCHAN_SERIAL_DIAGNOSTICS=1` and run the monitor with the micro-ROS Agent
+  stopped; do not mix text diagnostics with the Agent on the same USB serial
+  transport. Check for `nfc_bus=in_i2c`, non-negative `nfc_sda`/`nfc_scl`,
+  `nfc_i2c_present=true`, increasing `nfc_detect_attempts`, and
+  `nfc_detect_hits` while a tag is presented. If detect hits increase but no
+  event appears, inspect `nfc_identify_failures` and tag family compatibility.
+  Do not reinitialize the CoreS3 default `Wire` bus for this adapter during
+  normal bring-up. The pinned StackChan-BSP 1.1.0 `examples/NFC/Detect` sketch
+  adds `UnitNFC` to `M5UnitUnified` on `M5.In_I2C`; use that as the reference
+  path unless a later BSP release changes the wrapper.
+- For IR `UNAVAILABLE`, verify the receiver signal path to GPIO 10 and, in the
+  same firmware-only diagnostic mode, check for `ir_rx_pin=10`, increasing
+  `ir_decodes`, and `ir_overflows` while pressing a known remote button. Normal
+  output must still keep raw IR values and protocol dumps redacted.
+- The same sweep emits
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN`, plus corresponding
+  `_OK_SEEN` markers when firmware-owned transport succeeds. Treat either a
+  structured unsupported result or an accepted firmware-confirmed result as a
+  transport smoke pass while that feature is being brought up; the normal
+  redaction scan must still report no PCM, transcript, image, JPEG, or base64
+  payloads.
 - Confirm liveness behavior by stopping the host serial TCP bridge or the
   micro-ROS Agent after `connected: true`; within the configured timeout,
   `stackchanctl --backend bridge observe --json` should return
@@ -350,6 +442,226 @@ Observed results:
 - NFC, IR/remote, IMU high-level events, audio payload, and camera payload
   hardware stimuli remain unavailable in this sweep because those real hardware
   event adapters are not yet part of the K151 bring-up firmware.
+
+2026-05-23, device `default`, COM3 through Windows serial TCP bridge, firmware
+version `bringup` after K151 IMU/NFC/IR event-adapter and audio/camera smoke
+updates, commands:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 20
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --face-check happy --motion-check nod
+```
+
+Observed results:
+
+- Host serial TCP bridge: pass after running it as a detached process. A
+  shell-local PowerShell `Start-Job` can disappear when that shell exits, which
+  causes Docker `socat` to report `Connection refused` and the Agent to wait for
+  `/tmp/stackchan-tty`.
+- Topic samples: pass for touch, proximity, light, and power on both
+  `/stackchan/default/device/...` and public `/stackchan/default/...` resources.
+- `power status`: pass with USB power, charging, `percentage=100.0`,
+  `low_battery=false`, and `brownout_risk=false`.
+- IMU event stimulus: pass. `STACKCHAN_EVENT_STIMULUS_IMU_STATUS=PASS`, and
+  `stackchanctl events list` included bounded `picked_up` and `tilted` events
+  with no raw accelerometer or gyroscope samples in normal output.
+- NFC event stimulus: still unavailable in this sweep.
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=UNAVAILABLE` and
+  `STACKCHAN_EVENT_STIMULUS_NFC_EVENT_SEEN=0`; keep the NFC validation issue
+  open until a physical tag present/remove/read-failure stimulus produces the
+  expected events.
+- IR/remote event stimulus: still unavailable in this sweep.
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=UNAVAILABLE` and
+  `STACKCHAN_EVENT_STIMULUS_IR_EVENT_SEEN=0`; keep the IR validation issue open
+  until a known remote/pin condition produces the expected events.
+- Audio/camera checks: pass as metadata-only unsupported smokes until
+  firmware-confirmed transport exists.
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=1`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN=1`.
+- Redaction checks: pass. `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0`
+  and `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0` for raw NFC IDs,
+  raw IR codes/protocol dumps, PCM, transcript, image/JPEG/base64 payloads, and
+  speech text.
+- Face/motion bridge smoke: pass. `STACKCHAN_BRIDGE_FACE_SEEN=1`,
+  `STACKCHAN_BRIDGE_MOTION_EXIT=0`, and
+  `STACKCHAN_BRIDGE_MOTION_STREAM_SEEN=1` confirmed the bridge facade reached
+  firmware-owned face and `motion nod` paths. The final observe can return
+  `motion: idle` after the tuned motion completes, so use the status stream
+  marker for the in-motion observation.
+
+Remaining physical checks:
+
+- NFC present/remove/read-failure should make
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=PASS`.
+- IR remote input should make `STACKCHAN_EVENT_STIMULUS_IR_STATUS=PASS`.
+
+2026-05-23 follow-up, device `default`, COM3 through Windows serial TCP bridge,
+after changing UnitNFC initialization away from a direct Port A
+`Wire.begin(...)` attempt, commands:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 12 --face-check happy
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 20
+```
+
+Observed results:
+
+- A firmware build that called `Wire.end()`/`Wire.begin(...)` for the UnitNFC
+  path uploaded successfully but regressed micro-ROS Agent bring-up: the Agent
+  stayed at setup logging, never established a session, and bridge probes
+  returned disconnected. Revert that wiring strategy instead of treating it as
+  a firmware or Docker transport failure.
+- With a managed M5 I2C object, face smoke recovered:
+  `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`, `STACKCHAN_BRIDGE_FACE_EXIT=0`,
+  `STACKCHAN_BRIDGE_FACE_SEEN=1`, and
+  `STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=1`.
+- The sensor sweep again passed low-rate touch, proximity, light, device/public
+  power topics, `power status`, metadata-only audio/camera unsupported checks,
+  and normal redaction checks.
+- This follow-up did not capture manual IMU, NFC, or IR stimuli:
+  `STACKCHAN_EVENT_STIMULUS_IMU_STATUS=UNAVAILABLE`,
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=UNAVAILABLE`, and
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=UNAVAILABLE`.
+  Use the earlier same-day IMU `PASS` fixture for IMU event confidence, and
+  keep NFC/IR validation open until physical stimuli produce events.
+
+StackChan-BSP wrapper check:
+
+- The pinned `StackChan-BSP` 1.1.0 source has no dedicated NFC/IR high-level
+  wrapper on `M5StackChan_Class`. Its NFC example includes `M5StackChan.h`,
+  then uses `M5UnitUnified` / `M5UnitUnifiedNFC` and `NFCLayerA` directly. Its
+  IR receive example includes `M5StackChan.h`, then uses `IRremoteESP8266`
+  `IRrecv` directly on GPIO 10.
+- Therefore the bridge firmware should stay aligned to those BSP examples:
+  NFC through `M5UnitUnifiedNFC` on `M5.In_I2C`, and IR receive through
+  `IRremoteESP8266` on GPIO 10. If a future BSP release adds first-class NFC or
+  IR members, migrate to that wrapper before adding more direct adapter logic.
+
+2026-05-23 BSP-alignment follow-up, device `default`, after changing UnitNFC
+from `M5.Ex_I2C` to the StackChan-BSP example path `M5.In_I2C`:
+
+- `uv run --no-project python scripts/firmware_platformio.py build`: pass.
+- `uv run --no-project python scripts/firmware_platformio.py upload --port COM3
+  --upload-speed 115200 --no-stub`: pass.
+- `tcp-pty-bridge-smoke --skip-build ... --face-check happy`: pass.
+  `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`, `STACKCHAN_BRIDGE_FACE_EXIT=0`,
+  `STACKCHAN_BRIDGE_FACE_SEEN=1`, and
+  `STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=1`.
+- `tcp-pty-sensor-sweep --skip-build ... --stimulus-window-seconds 10`: pass
+  for touch, proximity, light, device/public power, `power status`,
+  audio/camera unsupported smokes, and sensitive payload redaction. The initial
+  observe can still race before liveness has flipped to connected, but the Agent
+  tail showed `session established` and all sampled topics were received.
+- NFC and IR are still not physically validated in this run:
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=UNAVAILABLE` and
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=UNAVAILABLE`. Use an actual tag and a
+  known remote while watching the safe counters before marking KOIZUMI-75 or
+  KOIZUMI-76 done.
+
+2026-05-23 ROS 2 command-path follow-up, device `default`, COM3 through the
+Windows serial TCP bridge, after the BSP-aligned UnitNFC firmware upload:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 12 --face-check happy --motion-check nod --pose-pan-deg 10 --pose-tilt-deg 20 --home-check
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 0
+```
+
+Observed results:
+
+- micro-ROS transport and bridge liveness: pass. The first `observe` can race
+  before the bridge flips to connected, but the ROS graph contained
+  `/stackchan/default/device/motion/run`,
+  `/stackchan/default/device/motion/pose/set`,
+  `/stackchan/default/device/motion/pose`, and
+  `/stackchan/default/motion/pose`; the bridge status marker reported
+  `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`.
+- Face and named motion over ROS 2: pass. `face happy` returned
+  `STACKCHAN_BRIDGE_FACE_EXIT=0` and `STACKCHAN_BRIDGE_FACE_SEEN=1`.
+  `motion nod` returned `STACKCHAN_BRIDGE_MOTION_EXIT=0` and the status stream
+  reported `STACKCHAN_BRIDGE_MOTION_STREAM_SEEN=1` while the final observation
+  could already be back at `motion: idle`.
+- Explicit head pose and home over ROS 2: pass. `motion pose --pan-deg 10
+  --tilt-deg 20` returned `STACKCHAN_BRIDGE_POSE_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_POSE_PAN_SEEN=1`, and
+  `STACKCHAN_BRIDGE_POSE_TILT_SEEN=1`; `motion status` reported
+  `pan_deg=10.0`, `tilt_deg=20.0`, `stale=false`. `motion home` returned
+  `STACKCHAN_BRIDGE_HOME_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_HOME_PAN_SEEN=1`, and
+  `STACKCHAN_BRIDGE_HOME_TILT_SEEN=1`; `motion status` reported
+  `pan_deg=0.0`, `tilt_deg=0.0`.
+- Low-rate sensor and power topics: pass for touch, proximity, light, and
+  device/public power samples plus `power status`.
+- Audio acquisition/playback over ROS 2: structured unsupported, not a hardware
+  transport failure. `/stackchan/default/device/audio/chunks` was present, but
+  `stackchanctl --backend bridge audio play ...` and
+  `stackchanctl --backend bridge audio capture --seconds 1 --output mic.wav`
+  returned `UNSUPPORTED_FEATURE` with the expected
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=1` markers because
+  firmware-confirmed audio action transport is not implemented yet.
+- Camera snapshot over ROS 2: earlier sweeps returned structured unsupported.
+  With firmware-confirmed camera transport, the same command should return
+  `ok=true` and `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`; failure or
+  oversize frames should return structured `CAMERA_CAPTURE_FAILED` without
+  exposing JPEG/base64 payloads.
+- Privacy/redaction: pass. The sweep reported
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`; normal output and
+  logs did not expose PCM payloads, image/JPEG/base64 payloads, NFC tag IDs, IR
+  raw codes, speech text, or transcript text.
+- IMU/NFC/IR stimulus checks were not exercised in this no-stimulus run:
+  `STACKCHAN_EVENT_STIMULUS_IMU_STATUS=UNAVAILABLE`,
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=UNAVAILABLE`, and
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=UNAVAILABLE`.
+
+2026-05-23 implementation/update smoke, device `default`, COM3 through the
+Windows serial TCP bridge, after LED, raw IMU relay, and media capability-gate
+updates:
+
+```powershell
+uv run --no-project python scripts/firmware_platformio.py build
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 0
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 12 --led-check --face-check happy --motion-check nod --pose-pan-deg 10 --pose-tilt-deg 20 --home-check
+```
+
+Observed results:
+
+- Firmware build and upload: pass through repository PlatformIO helpers.
+- Container ROS build: pass for `stackchan_msgs` and `stackchan_bridge`. Do not
+  rely on `--skip-build` after bridge Python changes; it can run a stale
+  installed bridge node.
+- Bring-up failures found and fixed during this pass:
+  - The bridge crashed after a fresh container build because `ActionClient` was
+    not imported.
+  - The first LED forwarding smoke crashed because `_set_led_type` was not kept
+    on the node before building firmware-owned `SetLed` requests.
+  - A stale `--skip-build` run hid the missing public `/stackchan/default/imu/raw`
+    relay until the container install was rebuilt.
+- LED command path: pass. `--led-check` sent `progress`, `success`, and `off`
+  through `stackchanctl --backend bridge led ... --json`; all returned
+  `ok=true`, and the bridge log recorded `led_set_accepted` for each pattern.
+- Face, named motion, absolute pose, and home command paths: pass in the same
+  smoke run. `face happy`, `motion nod`, `motion pose --pan-deg 10
+  --tilt-deg 20 --wait`, and `motion home --wait` all completed or were
+  accepted through the bridge/firmware path. The motion status stream observed
+  `motion: nod`; pose status reported `pan_deg=10.0`, `tilt_deg=20.0`, then
+  home reported `pan_deg=0.0`, `tilt_deg=0.0`.
+- Raw IMU transport: pass. The sensor sweep received samples from both
+  `/stackchan/default/device/imu/raw` and `/stackchan/default/imu/raw` while
+  `observe` still reported `STACKCHAN_SENSOR_SWEEP_OBSERVE_RAW_TELEMETRY_SEEN=0`.
+- Touch, proximity, light, and power telemetry: pass on both device-owned and
+  bridge-public topics. `stackchanctl --backend bridge power status --json`
+  returned `ok=true`.
+- Audio and camera: the sweep accepts either structured `UNSUPPORTED_FEATURE`
+  during unavailable bring-up states or `ok=true` after firmware-owned action
+  transport is available. Camera capture must still keep JPEG bytes/base64 out
+  of normal output and logs.
+- Privacy/redaction: pass. Normal event and log scans reported no sensitive
+  payload exposure.
+- Manual button/IMU/touch/proximity/light/power/NFC/IR stimulus checks were not
+  performed in this no-stimulus sweep and remain recorded as `UNAVAILABLE`.
 
 ## Cleanup
 

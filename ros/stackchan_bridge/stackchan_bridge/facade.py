@@ -246,12 +246,16 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        result = Result.rejected(
-            "UNSUPPORTED_FEATURE",
-            "audio playback requires firmware-confirmed device transport.",
-        )
-        self._record_error(meta, result, connected=True)
-        return CommandResponse(meta.device_id, meta.command_id, result)
+        if not self._capability_available(meta.device_id, "audio_playback"):
+            result = Result.rejected(
+                "UNSUPPORTED_FEATURE",
+                "audio playback requires firmware-confirmed device transport.",
+            )
+            self._record_error(meta, result, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, result)
+
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def capture_audio(
         self,
@@ -277,12 +281,16 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        result = Result.rejected(
-            "UNSUPPORTED_FEATURE",
-            "audio capture requires firmware-confirmed device transport.",
-        )
-        self._record_error(meta, result, connected=True)
-        return CommandResponse(meta.device_id, meta.command_id, result)
+        if not self._capability_available(meta.device_id, "audio_capture"):
+            result = Result.rejected(
+                "UNSUPPORTED_FEATURE",
+                "audio capture requires firmware-confirmed device transport.",
+            )
+            self._record_error(meta, result, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, result)
+
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def capture_camera(
         self,
@@ -302,12 +310,16 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        result = Result.rejected(
-            "UNSUPPORTED_FEATURE",
-            "camera capture requires firmware-confirmed device transport.",
-        )
-        self._record_error(meta, result, connected=True)
-        return CommandResponse(meta.device_id, meta.command_id, result)
+        if not self._capability_available(meta.device_id, "camera_snapshot"):
+            result = Result.rejected(
+                "UNSUPPORTED_FEATURE",
+                "camera capture requires firmware-confirmed device transport.",
+            )
+            self._record_error(meta, result, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, result)
+
+        status = self._mark_completed(meta)
+        return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
     def _validate(self, meta: CommandMeta) -> CommandResponse | None:
         availability = self.registry.availability(meta.device_id)
@@ -489,6 +501,13 @@ class StackChanBridgeFacade:
             error_code=result.error_code,
             error_message=result.message,
             recoverable=result.recoverable,
+        )
+
+    def _capability_available(self, device_id: str, name: str) -> bool:
+        status = self._status_for(device_id)
+        return any(
+            capability.name == name and capability.state == "available"
+            for capability in status.capabilities
         )
 
     def _status_for(self, device_id: str) -> StatusSnapshot:

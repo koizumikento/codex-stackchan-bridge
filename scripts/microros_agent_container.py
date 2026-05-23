@@ -148,6 +148,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set this face through stackchanctl and verify observe reports it.",
     )
     tcp_pty_bridge.add_argument(
+        "--allow-missing-firmware-ready",
+        action="store_true",
+        help=(
+            "Do not fail the smoke when firmware_ready is absent. Use this only "
+            "for diagnostic firmware profiles that intentionally skip the "
+            "firmware event publisher."
+        ),
+    )
+    tcp_pty_bridge.add_argument(
+        "--led-check",
+        action="store_true",
+        help="Run progress, success, and off LED commands through stackchanctl.",
+    )
+    tcp_pty_bridge.add_argument(
         "--motion-check",
         default="",
         help="Run this named motion through stackchanctl during the bridge smoke.",
@@ -352,6 +366,50 @@ run_power_status() {{
   echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_STRUCTURED_ERROR_SEEN=$([ "$power_error_result" -eq 0 ] && echo 1 || echo 0)"
 }}
 
+run_media_smoke() {{
+  echo "--- stackchanctl audio play smoke ---"
+  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play prompt.wav --json 2>&1)
+  audio_play_result=$?
+  printf '%s\n' "$audio_play_output"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
+  printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  audio_play_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=$([ "$audio_play_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
+  audio_play_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  echo "--- stackchanctl audio capture smoke ---"
+  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds 1 --output mic.wav --json 2>&1)
+  audio_capture_result=$?
+  printf '%s\n' "$audio_capture_output"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=$audio_capture_result"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  audio_capture_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=$([ "$audio_capture_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"ok": *true'
+  audio_capture_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  echo "--- stackchanctl camera capture smoke ---"
+  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output frame.jpg --quality 80 --json 2>&1)
+  camera_result=$?
+  printf '%s\n' "$camera_output"
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=$camera_result"
+  printf '%s\n' "$camera_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  camera_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN=$([ "$camera_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$camera_output" | grep -Eq '"ok": *true'
+  camera_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=$([ "$camera_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  if {{ [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; }} ||
+     {{ [ "$audio_capture_unsupported_result" -ne 0 ] && [ "$audio_capture_ok_result" -ne 0 ]; }} ||
+     {{ [ "$camera_unsupported_result" -ne 0 ] && [ "$camera_ok_result" -ne 0 ]; }}; then
+    result=1
+  fi
+}}
+
 echo "--- stackchanctl observe ---"
 observe_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json 2>&1)
 observe_result=$?
@@ -370,12 +428,14 @@ ros2 service list -t | grep stackchan || true
 
 if [ "{max(0, int(args.stimulus_window_seconds))}" -gt 0 ]; then
   echo "--- manual hardware stimulus window ({max(0, int(args.stimulus_window_seconds))}s) ---"
-  echo "Apply IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
+  echo "Apply button, IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
   sleep {max(0, int(args.stimulus_window_seconds))}
 fi
 
 run_topic_once "device_touch" "/stackchan/default/device/touch/state" "stackchan_msgs/msg/TouchState"
 run_topic_once "public_touch" "/stackchan/default/touch/state" "stackchan_msgs/msg/TouchState"
+run_topic_once "device_imu_raw" "/stackchan/default/device/imu/raw" "stackchan_msgs/msg/ImuRaw"
+run_topic_once "public_imu_raw" "/stackchan/default/imu/raw" "stackchan_msgs/msg/ImuRaw"
 run_topic_once "device_proximity" "/stackchan/default/device/proximity/raw" "stackchan_msgs/msg/ProximityRaw"
 run_topic_once "public_proximity" "/stackchan/default/proximity/raw" "stackchan_msgs/msg/ProximityRaw"
 run_topic_once "device_light" "/stackchan/default/device/light/raw" "stackchan_msgs/msg/LightRaw"
@@ -383,6 +443,7 @@ run_topic_once "public_light" "/stackchan/default/light/raw" "stackchan_msgs/msg
 run_topic_once "device_power" "/stackchan/default/device/power/status" "stackchan_msgs/msg/PowerStatus"
 run_topic_once "public_power" "/stackchan/default/power/status" "stackchan_msgs/msg/PowerStatus"
 run_power_status
+run_media_smoke
 run_topic_once "device_events" "/stackchan/default/device/events" "stackchan_msgs/msg/StackChanEvent"
 run_topic_once "public_events" "/stackchan/default/events" "stackchan_msgs/msg/StackChanEvent"
 
@@ -405,7 +466,12 @@ classify_event_stimulus() {{
   fi
 }}
 
+classify_event_stimulus "BUTTON" '"button_pressed"|"button_released"|"button_held"'
 classify_event_stimulus "IMU" '"picked_up"|"placed_down"|"shaken"|"tilted"|"face_up"|"face_down"'
+classify_event_stimulus "TOUCH" '"touched"|"touch_released"|"touch_held"'
+classify_event_stimulus "PROXIMITY" '"proximity_near"|"proximity_clear"'
+classify_event_stimulus "LIGHT" '"light_changed"|"dark_detected"|"bright_detected"'
+classify_event_stimulus "POWER" '"battery_low"|"battery_recovered"|"charging_started"|"charging_stopped"|"power_source_changed"|"brownout_risk"|"power_fault"'
 classify_event_stimulus "NFC" '"nfc_detected"|"nfc_removed"|"nfc_read_failed"'
 classify_event_stimulus "IR" '"remote_button_pressed"|"remote_button_released"|"remote_button_held"|"remote_command_received"|"ir_transmit_started"|"ir_transmit_finished"|"ir_transmit_failed"'
 
@@ -438,9 +504,11 @@ exit $result
 
 def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     disconnect_check = "1" if args.disconnect_check or args.reconnect_check else "0"
+    allow_missing_firmware_ready = "1" if args.allow_missing_firmware_ready else "0"
     reconnect_check = "1" if args.reconnect_check else "0"
     disconnect_face_command = args.disconnect_face_command.strip()
     face_check = args.face_check.strip()
+    led_check = "1" if args.led_check else "0"
     motion_check = args.motion_check.strip()
     motion_disconnect_check = args.motion_disconnect_check.strip()
     motion_expected_error = args.motion_expected_error.strip()
@@ -523,6 +591,20 @@ echo "STACKCHAN_BRIDGE_STATUS_ATTEMPTS=$status_attempt"
 [ "$status_result" -eq 0 ] || result=1
 echo "STACKCHAN_BRIDGE_STATUS_CONNECTED=$([ "$status_connected_result" -eq 0 ] && echo 1 || echo 0)"
 [ "$status_connected_result" -eq 0 ] || result=1
+if [ "{led_check}" = "1" ]; then
+  for led_pattern in progress success off; do
+    echo "--- stackchanctl led $led_pattern ---"
+    led_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} led "$led_pattern" --json 2>&1)
+    led_result=$?
+    printf '%s\n' "$led_output"
+    echo "STACKCHAN_BRIDGE_LED_${{led_pattern}}_EXIT=$led_result"
+    [ "$led_result" -eq 0 ] || result=1
+    printf '%s\n' "$led_output" | grep -q '"ok": true'
+    led_ok_result=$?
+    echo "STACKCHAN_BRIDGE_LED_${{led_pattern}}_OK=$([ "$led_ok_result" -eq 0 ] && echo 1 || echo 0)"
+    [ "$led_ok_result" -eq 0 ] || result=1
+  done
+fi
 if [ -n "{face_check}" ]; then
   echo "--- stackchanctl face {face_check} ---"
   face_output=""
@@ -611,7 +693,6 @@ if [ "{1 if pose_check else 0}" = "1" ]; then
   pose_status_result=$?
   printf '%s\n' "$pose_status_output"
   echo "STACKCHAN_BRIDGE_POSE_STATUS_EXIT=$pose_status_result"
-  [ "$pose_status_result" -eq 0 ] || result=1
   printf '%s\n' "$pose_status_output" | grep -q '"pan_deg": {pose_pan}'
   pose_pan_seen_result=$?
   printf '%s\n' "$pose_status_output" | grep -q '"tilt_deg": {pose_tilt}'
@@ -637,7 +718,6 @@ if [ "{home_check}" = "1" ]; then
   home_status_result=$?
   printf '%s\n' "$home_status_output"
   echo "STACKCHAN_BRIDGE_HOME_STATUS_EXIT=$home_status_result"
-  [ "$home_status_result" -eq 0 ] || result=1
   printf '%s\n' "$home_status_output" | grep -q '"pan_deg": 0.0'
   home_pan_seen_result=$?
   printf '%s\n' "$home_status_output" | grep -q '"tilt_deg": 0.0'
@@ -776,7 +856,9 @@ echo "STACKCHAN_BRIDGE_EVENTS_EXIT=$events_result"
 printf '%s\\n' "$events_output" | grep -q 'firmware_ready'
 firmware_ready_result=$?
 echo "STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$([ "$firmware_ready_result" -eq 0 ] && echo 1 || echo 0)"
-[ "$firmware_ready_result" -eq 0 ] || result=1
+if [ "{allow_missing_firmware_ready}" != "1" ]; then
+  [ "$firmware_ready_result" -eq 0 ] || result=1
+fi
 if [ "{reconnect_check}" = "1" ]; then
   device_connected_count=$(printf '%s\n' "$events_output" | grep -c 'device_connected')
   device_disconnected_count=$(printf '%s\n' "$events_output" | grep -c 'device_disconnected')

@@ -382,7 +382,7 @@ def _mark_device_available_from_status(
 def main(args: list[str] | None = None) -> None:
     try:
         import rclpy
-        from rclpy.action import ActionServer
+        from rclpy.action import ActionClient, ActionServer
         from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.node import Node
@@ -392,6 +392,7 @@ def main(args: list[str] | None = None) -> None:
         from stackchan_msgs.msg import CapabilityStatus
         from stackchan_msgs.msg import (
             HeadPose,
+            ImuRaw,
             LightRaw,
             PowerStatus,
             ProximityRaw,
@@ -468,12 +469,17 @@ def main(args: list[str] | None = None) -> None:
             self._stackchan_status_type = StackChanStatus
             self._set_face_type = SetFace
             self._set_head_pose_type = SetHeadPose
+            self._set_led_type = SetLed
             self._set_motion_type = SetMotion
             self._command_callback_group = ReentrantCallbackGroup()
             self._device_client_callback_group = ReentrantCallbackGroup()
             self._public_event_publishers = {}
             self._public_status_publishers = {}
+            self._device_audio_capture_clients = {}
+            self._device_audio_play_clients = {}
+            self._device_camera_capture_clients = {}
             self._device_face_clients = {}
+            self._device_led_clients = {}
             self._device_head_pose_clients = {}
             self._device_motion_clients = {}
             self._device_event_subscriptions = []
@@ -528,6 +534,11 @@ def main(args: list[str] | None = None) -> None:
                 f"/stackchan/{device_id}/device/face/set",
                 callback_group=self._device_client_callback_group,
             )
+            self._device_led_clients[device_id] = self.create_client(
+                SetLed,
+                f"/stackchan/{device_id}/device/led/set",
+                callback_group=self._device_client_callback_group,
+            )
             self._device_motion_clients[device_id] = self.create_client(
                 SetMotion,
                 f"/stackchan/{device_id}/device/motion/run",
@@ -536,6 +547,24 @@ def main(args: list[str] | None = None) -> None:
             self._device_head_pose_clients[device_id] = self.create_client(
                 SetHeadPose,
                 f"/stackchan/{device_id}/device/motion/pose/set",
+                callback_group=self._device_client_callback_group,
+            )
+            self._device_audio_play_clients[device_id] = ActionClient(
+                self,
+                PlayAudio,
+                f"/stackchan/{device_id}/device/audio/play",
+                callback_group=self._device_client_callback_group,
+            )
+            self._device_audio_capture_clients[device_id] = ActionClient(
+                self,
+                CaptureAudio,
+                f"/stackchan/{device_id}/device/audio/capture",
+                callback_group=self._device_client_callback_group,
+            )
+            self._device_camera_capture_clients[device_id] = ActionClient(
+                self,
+                CaptureCamera,
+                f"/stackchan/{device_id}/device/camera/capture",
                 callback_group=self._device_client_callback_group,
             )
             self.create_service(
@@ -636,6 +665,13 @@ def main(args: list[str] | None = None) -> None:
                 HeadPose,
                 public_qos=transient_depth_1,
                 device_qos=reliable_depth_2,
+            )
+            self._create_telemetry_relay(
+                device_id,
+                "imu/raw",
+                ImuRaw,
+                public_qos=best_effort_depth_10,
+                device_qos=best_effort_depth_10,
             )
             self._speech_audio_subscriptions.append(
                 self.create_subscription(
@@ -1271,14 +1307,63 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.set_led(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 request.pattern,
                 request.color,
                 request.duration_ms,
             )
-            _copy_result(response.result, command_response.result)
+            if not command_response.result.ok:
+                _copy_result(response.result, command_response.result)
+                return response
+
+            device_result = self._call_device_led_set(device_id, request, meta)
+            _copy_result(response.result, device_result)
             return response
+
+        def _call_device_led_set(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_led_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' is not configured"
+                )
+            if not client.wait_for_service(timeout_sec=0.1):
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' is unavailable"
+                )
+
+            device_request = self._set_led_type.Request()
+            _copy_command_meta(
+                device_request.meta,
+                meta,
+                getattr(request.meta, "created_at", device_request.meta.created_at),
+            )
+            device_request.pattern = request.pattern
+            device_request.color = request.color
+            device_request.duration_ms = request.duration_ms
+
+            future = client.call_async(device_request)
+            deadline = time.monotonic() + self._device_command_timeout_sec
+            while not future.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not future.done():
+                future.cancel()
+                return _make_timeout_result(
+                    f"firmware LED service for '{device_id}' timed out"
+                )
+            try:
+                device_response = future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' failed: {exc}"
+                )
+            return _result_from_ros(device_response.result)
 
         def _handle_run_motion(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
@@ -1429,12 +1514,20 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_play_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.play_audio(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 sample_rate=int(request.sample_rate),
                 channels=int(request.channels),
             )
+            if command_response.result.ok:
+                device_result = self._call_device_audio_play(device_id, request, meta)
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
             result = PlayAudio.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
@@ -1445,13 +1538,21 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_capture_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.capture_audio(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 sample_rate=int(request.sample_rate),
                 channels=int(request.channels),
                 duration_ms=int(request.duration_ms),
             )
+            if command_response.result.ok:
+                device_result = self._call_device_audio_capture(device_id, request, meta)
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
             result = CaptureAudio.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
@@ -1462,13 +1563,21 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_capture_camera(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.capture_camera(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 width=int(request.width),
                 height=int(request.height),
                 quality=int(request.quality),
             )
+            if command_response.result.ok:
+                device_result = self._call_device_camera_capture(device_id, request, meta)
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
             result = CaptureCamera.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
@@ -1476,6 +1585,131 @@ def main(args: list[str] | None = None) -> None:
             else:
                 goal_handle.abort()
             return result
+
+        def _call_device_camera_capture(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_camera_capture_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware camera capture action for '{device_id}' is not configured"
+                )
+            goal = CaptureCamera.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.width = int(request.width)
+            goal.height = int(request.height)
+            goal.quality = int(request.quality)
+            return self._send_device_action_goal(
+                client,
+                goal,
+                f"camera capture action for '{device_id}'",
+            )
+
+        def _call_device_audio_play(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_audio_play_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware audio playback action for '{device_id}' is not configured"
+                )
+            goal = PlayAudio.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.sample_rate = int(request.sample_rate)
+            goal.channels = int(request.channels)
+            goal.face_hint = getattr(request, "face_hint", "")
+            goal.motion_hint = getattr(request, "motion_hint", "")
+            return self._send_device_action_goal(
+                client,
+                goal,
+                f"audio playback action for '{device_id}'",
+            )
+
+        def _call_device_audio_capture(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_audio_capture_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware audio capture action for '{device_id}' is not configured"
+                )
+            goal = CaptureAudio.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.sample_rate = int(request.sample_rate)
+            goal.channels = int(request.channels)
+            goal.duration_ms = int(request.duration_ms)
+            return self._send_device_action_goal(
+                client,
+                goal,
+                f"audio capture action for '{device_id}'",
+            )
+
+        def _send_device_action_goal(
+            self,
+            client: object,
+            goal: object,
+            label: str,
+        ) -> Result:
+            if not client.wait_for_server(timeout_sec=0.1):
+                return _make_transport_result(f"firmware {label} is unavailable")
+
+            goal_future = client.send_goal_async(goal)
+            wait_result = self._wait_for_future(goal_future, label)
+            if wait_result is not None:
+                return wait_result
+            try:
+                device_goal_handle = goal_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} failed: {exc}")
+            if device_goal_handle is None or not getattr(device_goal_handle, "accepted", False):
+                return Result.rejected(
+                    "UNKNOWN_COMMAND",
+                    f"firmware {label} rejected the goal",
+                    recoverable=False,
+                )
+
+            result_future = device_goal_handle.get_result_async()
+            wait_result = self._wait_for_future(result_future, label)
+            if wait_result is not None:
+                return wait_result
+            try:
+                result_response = result_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} result failed: {exc}")
+            return _result_from_ros(result_response.result.result)
+
+        def _wait_for_future(self, future: object, label: str) -> Result | None:
+            deadline = time.monotonic() + self._device_command_timeout_sec
+            while not future.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if future.done():
+                return None
+            future.cancel()
+            return _make_timeout_result(f"firmware {label} timed out")
 
     rclpy.init(args=args)
     node = StackChanBridgeNode()

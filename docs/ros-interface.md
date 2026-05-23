@@ -305,6 +305,11 @@ Fields:
 - `mag`
 - `temperature`
 
+The current K151 bring-up publishes this stream at the firmware scheduler's
+10 Hz cadence when the CoreS3 IMU is available. High-level posture/activity
+events remain separate on `/stackchan/<device_id>/device/events`, preserving the
+rule that raw samples do not appear in `observe` or normal event payloads.
+
 ### `/stackchan/<device_id>/touch/state`
 
 Purpose: public bridge-facing three-zone touch state for the official StackChan K151 body touch panel.
@@ -591,6 +596,14 @@ Rules:
   diagnostic path.
 - Firmware normal diagnostics must not print raw `payload_json` values that can
   bypass bridge redaction.
+- K151 bring-up firmware sources high-level IMU, NFC, and IR/remote events from
+  device adapters while keeping raw IMU samples, raw NFC IDs/UIDs, and raw IR
+  codes out of public events. StackChan-BSP 1.1.0 has examples rather than
+  dedicated NFC/IR wrapper members: NFC follows the BSP `M5UnitUnifiedNFC` on
+  `M5.In_I2C` example, and IR follows the BSP `IRremoteESP8266` GPIO 10 receive
+  example. These adapters may expose only safe diagnostic metadata such as
+  bus/pin selection, I2C object availability, and counters. NFC uses `tag_ref`;
+  IR uses `remote_ref`.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -680,6 +693,9 @@ Rules:
 - Unknown patterns return `UNKNOWN_COMMAND`.
 - LED firmware policy owns brightness/current limits. LED work must be
   non-blocking and must not delay safety, fault, or motion neutral handling.
+- On connected hardware, the bridge forwards validated facade requests to
+  `/stackchan/<device_id>/device/led/set` and reports the firmware result.
+  Bridge-only LED simulation must not be reported as physical LED success.
 
 ### `/stackchan/<device_id>/cmd/get_status`
 
@@ -966,11 +982,22 @@ Rules:
 Purpose: play speech or prompt audio on the device speaker.
 
 Do not put large PCM payloads in a single service request. Coordinate playback with this action and send payload through `/stackchan/<device_id>/device/audio/chunks`.
+The bridge accepts and forwards the public action to
+`/stackchan/<device_id>/device/audio/play` only after firmware status reports
+`audio_playback` as available. Missing device action servers return structured
+transport or timeout results, not synthetic success.
 
-The bridge scaffold rejects playback goals with `UNSUPPORTED_FEATURE` until it
-can return success only after firmware-confirmed device transport acceptance.
+The bridge accepts playback goals only when firmware status reports
+`audio_playback` as available. Otherwise it rejects playback goals with
+`UNSUPPORTED_FEATURE` until it can return success only after
+firmware-confirmed device transport acceptance.
 Implementations must keep actual PCM chunks on the bounded audio chunk path and
 must not inline bytes in action results, MCP output, events, or normal logs.
+The CLI/bridge playback path may validate the action/capability before opening
+the local audio file, so unsupported hardware smokes can remain metadata-only.
+Once `audio_playback` is available, playback chunks use the accepted
+`command_id` and monotonic `sequence` values on
+`/stackchan/<device_id>/device/audio/chunks`.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -984,6 +1011,9 @@ Privacy and result rules:
   not that speaker output has completed. Playback start, queued depth,
   completion, underrun, and terminal failure should be observable through action
   feedback, status, or bounded events.
+- Device-side playback chunks are valid only for an active firmware-owned
+  playback session with a matching `command_id`. Firmware must reject orphaned
+  chunks rather than treating the chunk topic as a raw speaker-control command.
 - Playback underrun returns `AUDIO_UNDERRUN` and stops playback.
 - Mic overrun drops the current chunk and publishes `MIC_OVERRUN`; capture may
   continue unless the failure is terminal.
@@ -1048,9 +1078,13 @@ Baseline camera behavior:
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
   `recoverable=true` unless a later contract adds a narrower error code
 - timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
-- the bridge scaffold rejects capture goals with `UNSUPPORTED_FEATURE` until it
-  can return success only after firmware-confirmed device transport acceptance;
-  result transport must enforce the 96 KiB maximum before exposing metadata to
+- the bridge rejects capture goals with `UNSUPPORTED_FEATURE` until firmware
+  status reports `camera_snapshot` as available
+- after capability confirmation, the bridge forwards the goal to
+  `/stackchan/<device_id>/device/camera/capture`; missing, rejecting, or timed
+  out device action servers return structured transport/timeout/rejection
+  results instead of synthetic success
+- result transport must enforce the 96 KiB maximum before exposing metadata to
   callers
 
 ### `/stackchan/<device_id>/cmd/perform`
@@ -1117,12 +1151,17 @@ Feedback fields:
 - `message`
 
 Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
+The bridge accepts and forwards the public action to
+`/stackchan/<device_id>/device/audio/capture` only after firmware status reports
+`audio_capture` as available. Missing device action servers return structured
+transport or timeout results, not synthetic success.
 
-The bridge scaffold rejects microphone capture goals with `UNSUPPORTED_FEATURE`
-until it can return success only after firmware-confirmed device transport
-acceptance. Captured chunks remain on the bounded audio chunk path and must not
-be surfaced as raw bytes in action summaries, MCP output, events, or normal
-logs.
+The bridge accepts microphone capture goals only when firmware status reports
+`audio_capture` as available. Otherwise it rejects capture goals with
+`UNSUPPORTED_FEATURE` until it can return success only after
+firmware-confirmed device transport acceptance. Captured chunks remain on the
+bounded audio chunk path and must not be surfaced as raw bytes in action
+summaries, MCP output, events, or normal logs.
 
 Baseline chunk policy:
 

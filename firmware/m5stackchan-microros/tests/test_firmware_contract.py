@@ -41,7 +41,22 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
 
         microros_meta = (ROOT / "microros_stackchan.meta").read_text()
-        self.assertIn("-DRMW_UXRCE_MAX_SERVICES=3", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_SERVICES=16", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_PUBLISHERS=20", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_CLIENTS=8", microros_meta)
+        self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", microros_meta)
+        self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8", microros_meta)
+        self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8", microros_meta)
+        for helper_name in ("firmware_platformio.py", "firmware_container.py"):
+            helper = (REPO_ROOT / "scripts" / helper_name).read_text()
+            self.assertIn("-DRMW_UXRCE_MAX_SERVICES=16", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_PUBLISHERS=20", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_CLIENTS=8", helper)
+            self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", helper)
+            self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8", helper)
+            self.assertIn("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8", helper)
 
     def test_hardware_free_contract_matrix_has_coverage_targets(self) -> None:
         for label, relative_path in HARDWARE_FREE_CONTRACT_MATRIX.items():
@@ -220,9 +235,46 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("M5.Display.drawFastHLine", main)
         self.assertIn("render_face_display(\"neutral\");", main)
         self.assertIn("render_face_display(name);", main)
+
+    def test_led_commands_route_to_k151_rgb_adapter(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        meta = (ROOT / "microros_stackchan.meta").read_text()
+        smoke = (REPO_ROOT / "scripts" / "microros_agent_container.py").read_text()
+
+        self.assertIn("#include <stackchan_msgs/srv/set_led.h>", main)
+        self.assertIn("/stackchan/%s/device/led/set", main)
+        self.assertIn("rcl_service_t led_set_service", main)
+        self.assertIn("handle_led_set_service", main)
+        self.assertIn("io_expander.setLedCount(kRgbLedCount)", main)
+        self.assertIn("io_expander.setLedColor", main)
+        self.assertIn("io_expander.refreshLeds()", main)
+        self.assertIn('"progress"', main)
+        self.assertIn('"listening"', main)
+        self.assertIn("-DRMW_UXRCE_MAX_SERVICES=16", meta)
+        self.assertIn("--led-check", smoke)
+        self.assertIn("STACKCHAN_BRIDGE_LED_${{led_pattern}}_OK", smoke)
         self.assertIn("publish_status_heartbeat();", main)
         for face in ["happy", "thinking", "surprised", "sleepy", "error"]:
             self.assertIn(f'strcmp(name, "{face}") == 0', main)
+
+    def test_raw_imu_stream_publishes_on_device_topic(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        publishers = (ROOT / "include" / "stackchan" / "ros_publishers.hpp").read_text()
+        meta = (ROOT / "microros_stackchan.meta").read_text()
+
+        self.assertIn("#include <stackchan_msgs/msg/imu_raw.h>", main)
+        self.assertIn('constexpr const char* kDeviceImuRawTopicSuffix = "/device/imu/raw"', publishers)
+        self.assertIn("DevicePublisherTopic::ImuRaw", publishers)
+        self.assertIn("kDeviceImuRawQos", publishers)
+        self.assertIn("publish_imu_raw", publishers)
+        self.assertIn("stackchan_msgs__msg__ImuRaw imu_raw_ros_message", main)
+        self.assertIn("rcl_publisher_t imu_raw_ros_publisher", main)
+        self.assertIn("convert_imu_raw_message", main)
+        self.assertIn("publish_imu_raw_sample(sample, now_ms)", main)
+        self.assertIn("ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, ImuRaw)", main)
+        self.assertIn("-DRMW_UXRCE_MAX_PUBLISHERS=20", meta)
+        self.assertIn("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4", meta)
+        self.assertIn("-DRMW_UXRCE_MAX_HISTORY=16", meta)
 
     def test_calibration_maintenance_requires_operator_confirm_and_stays_out_of_default_paths(self) -> None:
         script = (ROOT.parents[1] / "scripts" / "firmware_platformio.py").read_text()
@@ -293,6 +345,33 @@ class FirmwareContractTests(unittest.TestCase):
         )
         subprocess.run([str(output)], check=True)
 
+    def test_audio_contract_cpp_harness(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler not available")
+
+        binary = ROOT / "tests" / "audio_contract_test"
+        source = ROOT / "tests" / "audio_contract_test.cpp"
+        if binary.exists():
+            binary.unlink()
+        if binary.with_suffix(".exe").exists():
+            binary.with_suffix(".exe").unlink()
+
+        output = binary.with_suffix(".exe") if compiler.lower().endswith("cl.exe") else binary
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-I",
+                str(ROOT / "include"),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        subprocess.run([str(output)], check=True)
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
@@ -303,7 +382,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("publish_status_heartbeat", main)
         self.assertIn("try_connect_microros_agent", main)
         self.assertIn("update_agent_connection(false)", main)
-        self.assertIn("if (!result.ok) {\n      update_agent_connection(false);", main)
+        self.assertIn("if (!result.ok && microros_publish_failures_exceeded())", main)
         self.assertNotIn("check_microros_agent_connection", main)
         self.assertNotIn("kAgentHealthCheckIntervalMs", main)
         self.assertIn("copy_bounded", main)
@@ -475,6 +554,114 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("AudioCaptureEvent::Started", audio)
         self.assertIn("AudioCaptureEvent::Finished", audio)
         self.assertIn("AudioCaptureEvent::Failed", audio)
+        self.assertIn("AudioPlaybackChunkGuard", audio)
+        self.assertIn('"audio playback chunk arrived without an accepted session"', audio)
+        self.assertIn('"AUDIO_UNDERRUN"', audio)
+
+    def test_firmware_status_reports_audio_capabilities(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("stackchan_msgs__msg__CapabilityStatus", main)
+        self.assertIn("status_capabilities_init", main)
+        self.assertIn('"audio_playback"', main)
+        self.assertIn('"audio_capture"', main)
+        self.assertIn("stackchan_audio_playback_initialized", main)
+        self.assertIn("stackchan_audio_capture_initialized", main)
+        self.assertIn("stackchan_audio_playback_transport_initialized", main)
+        self.assertIn("stackchan_audio_capture_transport_initialized", main)
+        self.assertIn("stackchan_led_initialized", main)
+        self.assertIn('"UNSUPPORTED_FEATURE"', main)
+
+    def test_firmware_reserves_action_feedback_strings(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("capacity > 160", main)
+        self.assertIn("char reserve[161]", main)
+        self.assertIn("memset(reserve, '.', capacity)", main)
+        self.assertIn(
+            "reserve_ros_string(&capture_audio_feedback_message.feedback.message, 160)",
+            main,
+        )
+        self.assertIn(
+            "reserve_ros_string(&capture_camera_feedback_message.feedback.message, 160)",
+            main,
+        )
+        self.assertNotIn("capacity > 36", main)
+
+    def test_serial_diagnostics_are_opt_in_on_microros_transport(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("#define STACKCHAN_SERIAL_DIAGNOSTICS 0", main)
+        self.assertIn("set_microros_serial_transports(Serial)", main)
+        self.assertIn("void stackchan_diag_print", main)
+        self.assertIn("void stackchan_diag_println", main)
+        self.assertNotIn("Serial.print(\"stackchan", main)
+        self.assertNotIn("Serial.println(\"stackchan", main)
+
+    def test_microros_publish_failures_are_debounced_before_disconnect(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("kMicrorosMaxConsecutivePublishFailures = 3", main)
+        self.assertIn("microros_consecutive_publish_failures", main)
+        self.assertIn("record_microros_publish_failure();", main)
+        self.assertIn("record_microros_publish_success();", main)
+        self.assertIn("!result.ok && microros_publish_failures_exceeded()", main)
+
+    def test_microros_minimal_bringup_profile_is_opt_in(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        helper = (REPO_ROOT / "scripts" / "firmware_platformio.py").read_text()
+
+        self.assertIn("#define STACKCHAN_MICROROS_MINIMAL_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP 0", main)
+        self.assertIn("#define STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP 0", main)
+        self.assertIn("Select only one micro-ROS bring-up profile", main)
+        self.assertIn("#if STACKCHAN_MICROROS_MINIMAL_BRINGUP", main)
+        self.assertIn("#if STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP", main)
+        self.assertIn("#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP", main)
+        self.assertIn("#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP", main)
+        self.assertIn("#if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP", main)
+        self.assertIn("status_publisher_init", main)
+        self.assertIn("stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)", main)
+        self.assertIn("--microros-minimal-bringup", helper)
+        self.assertIn("--microros-core-command-bringup", helper)
+        self.assertIn("--microros-core-raw-telemetry-bringup", helper)
+        self.assertIn("--microros-core-audio-chunk-bringup", helper)
+        self.assertIn("--microros-core-capture-audio-bringup", helper)
+        self.assertIn("--microros-core-capture-camera-bringup", helper)
+        self.assertIn("--microros-core-play-audio-bringup", helper)
+        self.assertIn("STACKCHAN_MICROROS_MINIMAL_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP=1", helper)
+        self.assertIn("STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP=1", helper)
+
+    def test_firmware_camera_capture_action_is_bounded_and_redacted(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("#include <esp_camera.h>", main)
+        self.assertIn("#include <img_converters.h>", main)
+        self.assertIn("#include <stackchan_msgs/action/capture_camera.h>", main)
+        self.assertIn("CaptureCamera_SendGoal_Request", main)
+        self.assertIn("build_capture_camera_action_name", main)
+        self.assertIn('"/stackchan/%s/device/camera/capture"', main)
+        self.assertIn("ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera)", main)
+        self.assertIn("stackchan_camera_snapshot_initialized = initialize_camera_adapter()", main)
+        self.assertIn("PIXFORMAT_RGB565", main)
+        self.assertIn("FRAMESIZE_QVGA", main)
+        self.assertIn("frame2jpg", main)
+        self.assertIn("stackchan::validate_camera_quality(goal.quality)", main)
+        self.assertIn("stackchan::kCameraMaxPayloadBytes", main)
+        self.assertIn("camera JPEG payload exceeds 96 KiB", main)
+        self.assertIn("clear_capture_camera_image_result", main)
+        self.assertIn("CameraCaptureFailed", main)
+        self.assertNotIn("Serial.print(jpeg_buffer", main)
+        self.assertNotIn("Serial.println(jpeg_buffer", main)
 
     def test_sensor_policy_uses_explicit_bounds_and_errors(self) -> None:
         sensors = (ROOT / "include" / "stackchan" / "sensors.hpp").read_text()
@@ -512,6 +699,72 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("DeviceEventKind::Tilted", sensors)
         self.assertIn("DeviceEventKind::FaceUp", sensors)
         self.assertIn("DeviceEventKind::FaceDown", sensors)
+
+    def test_k151_event_adapters_are_wired_without_raw_payload_logging(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
+        publishers = (ROOT / "include" / "stackchan" / "ros_publishers.hpp").read_text()
+        sweep = (REPO_ROOT / "scripts" / "microros_agent_container.py").read_text()
+
+        self.assertIn("#include <M5UnitUnifiedNFC.h>", main)
+        self.assertIn("#include <IRrecv.h>", main)
+        self.assertIn("stackchan::ImuEventEstimator imu_event_estimator", main)
+        self.assertIn("stackchan::TouchEventEstimator touch_event_estimator", main)
+        self.assertIn("stackchan::ProximityEventEstimator proximity_event_estimator", main)
+        self.assertIn("stackchan::LightEventEstimator light_event_estimator", main)
+        self.assertIn("stackchan::PowerEventEstimator power_event_estimator", main)
+        self.assertIn("stackchan::ButtonEventEstimator button_a_event_estimator", main)
+        self.assertIn("stackchan::ButtonEventEstimator button_b_event_estimator", main)
+        self.assertIn("stackchan::ButtonEventEstimator button_c_event_estimator", main)
+        self.assertIn("stackchan::NfcPresenceEstimator nfc_presence_estimator", main)
+        self.assertIn("M5.update();", main)
+        self.assertIn("sample_button_events(now_ms)", main)
+        self.assertIn("M5.BtnA.isPressed()", main)
+        self.assertIn("M5.BtnB.isPressed()", main)
+        self.assertIn("M5.BtnC.isPressed()", main)
+        self.assertIn("m5::nfc::NFCLayerA stackchan_nfc_a", main)
+        self.assertIn("initialize_nfc_adapter", main)
+        self.assertIn("m5::pin_name_t::in_i2c_sda", main)
+        self.assertIn("stackchan_nfc_i2c_present", main)
+        self.assertIn("in_i2c", main)
+        self.assertIn("M5.In_I2C", main)
+        self.assertIn("stackchan_nfc_bus", main)
+        self.assertIn("stackchan_nfc_detect_attempts", main)
+        self.assertIn("stackchan_nfc_detect_hits", main)
+        self.assertIn("stackchan_nfc_identify_failures", main)
+        self.assertIn("constexpr uint16_t kIrRecvPin = 10", main)
+        self.assertIn("stackchan_irrecv.enableIRIn()", main)
+        self.assertIn("stackchan_ir_decode_count", main)
+        self.assertIn("stackchan_ir_overflow_count", main)
+        self.assertIn("sample_imu_events", main)
+        self.assertIn("touch_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("proximity_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("light_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("power_event_estimator.update(telemetry, event_publisher)", main)
+        self.assertIn("sample_nfc_events", main)
+        self.assertIn("sample_ir_events", main)
+        self.assertIn("uidAsString", main)
+        self.assertIn("remote_command_received(now_ms, remote_summary)", main)
+        self.assertIn("should_sample_imu", publishers)
+        self.assertIn("should_sample_nfc", publishers)
+        self.assertIn("Result remote_button_pressed", events)
+        self.assertIn("Result remote_button_released", events)
+        self.assertIn("Result ir_transmit_started", events)
+        self.assertIn("Result ir_transmit_finished", events)
+        self.assertIn("Result ir_transmit_failed", events)
+        self.assertNotIn("ir-transmit", (REPO_ROOT / "apps" / "stackchanctl" / "src" / "stackchanctl" / "contract.py").read_text())
+        self.assertIn("StackChan-BSP", (ROOT / "platformio.ini").read_text())
+        self.assertNotIn("Serial.println(event.payload_json)", main)
+        self.assertNotIn("Serial.print(stackchan_ir_results.value)", main)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN", sweep)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN", sweep)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN", sweep)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN", sweep)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN", sweep)
+        self.assertIn('classify_event_stimulus "TOUCH"', sweep)
+        self.assertIn('classify_event_stimulus "PROXIMITY"', sweep)
+        self.assertIn('classify_event_stimulus "LIGHT"', sweep)
+        self.assertIn('classify_event_stimulus "POWER"', sweep)
 
     def test_device_event_contract_scaffold_names_and_bounds(self) -> None:
         events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()

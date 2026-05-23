@@ -1,27 +1,43 @@
 #include <Arduino.h>
+#include <IRrecv.h>
+#include <IRremoteESP8266.h>
+#include <IRutils.h>
 #include <M5Unified.hpp>
+#include <M5UnitUnified.h>
+#include <M5UnitUnifiedNFC.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <drivers/FTServo_Arduino/src/SCSCL.h>
 #include <drivers/PY32IOExpander/PY32IOExpander.hpp>
+#include <esp_camera.h>
 #include <utility/power/INA226_Class.hpp>
 #include <utils/touch_sensor/touch_sensor.h>
+#include <img_converters.h>
 #include <math.h>
 #include <micro_ros_platformio.h>
 #include <rcl/error_handling.h>
 #include <rcl/publisher.h>
 #include <rcl/service.h>
+#include <rcl/subscription.h>
 #include <rcl/time.h>
+#include <rcl_action/rcl_action.h>
 #include <rclc/node.h>
 #include <rclc/executor.h>
 #include <rclc/publisher.h>
 #include <rclc/rclc.h>
 #include <rclc/service.h>
+#include <rclc/subscription.h>
 #include <rmw/qos_profiles.h>
 #include <rmw_microros/ping.h>
 #include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <rosidl_runtime_c/string_functions.h>
+#include <stackchan_msgs/action/capture_audio.h>
+#include <stackchan_msgs/action/capture_camera.h>
+#include <stackchan_msgs/action/play_audio.h>
+#include <stackchan_msgs/msg/audio_chunk.h>
+#include <stackchan_msgs/msg/capability_status.h>
 #include <stackchan_msgs/msg/head_pose.h>
+#include <stackchan_msgs/msg/imu_raw.h>
 #include <stackchan_msgs/msg/light_raw.h>
 #include <stackchan_msgs/msg/power_status.h>
 #include <stackchan_msgs/msg/proximity_raw.h>
@@ -30,8 +46,11 @@
 #include <stackchan_msgs/msg/touch_state.h>
 #include <stackchan_msgs/srv/set_face.h>
 #include <stackchan_msgs/srv/set_head_pose.h>
+#include <stackchan_msgs/srv/set_led.h>
 #include <stackchan_msgs/srv/set_motion.h>
+#include <stdlib.h>
 #include <string.h>
+#include <vector>
 
 #include "stackchan/audio.hpp"
 #include "stackchan/calibration.hpp"
@@ -48,6 +67,56 @@
 
 #ifndef STACKCHAN_MICROROS_SERIAL_BAUD
 #define STACKCHAN_MICROROS_SERIAL_BAUD 115200
+#endif
+
+#ifndef STACKCHAN_SERIAL_DIAGNOSTICS
+#define STACKCHAN_SERIAL_DIAGNOSTICS 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_MINIMAL_BRINGUP
+#define STACKCHAN_MICROROS_MINIMAL_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+#define STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+#define STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP
+#define STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
+#define STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+#define STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+#define STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP 0
+#endif
+
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP && STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+#error "Select only one micro-ROS bring-up profile"
+#endif
+
+#define STACKCHAN_MICROROS_CORE_AUDIO_TOPIC_BRINGUP \
+  (STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP || STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP)
+#define STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP \
+  (STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP || STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP)
+#define STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP \
+  (STACKCHAN_MICROROS_CORE_AUDIO_CHUNK_BRINGUP || \
+   STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP || \
+   STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP || \
+   STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP)
+
+#if STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+#error "Core media diagnostic profiles extend the core raw telemetry bring-up profile"
 #endif
 
 #ifndef STACKCHAN_CALIBRATION_SEED_HOME_X
@@ -68,6 +137,24 @@
 
 namespace {
 
+template <typename T>
+void stackchan_diag_print(const T& value) {
+#if STACKCHAN_SERIAL_DIAGNOSTICS
+  Serial.print(value);
+#else
+  (void)value;
+#endif
+}
+
+template <typename T>
+void stackchan_diag_println(const T& value) {
+#if STACKCHAN_SERIAL_DIAGNOSTICS
+  Serial.println(value);
+#else
+  (void)value;
+#endif
+}
+
 stackchan::StateMachine state_machine;
 char current_face[16] = "neutral";
 char current_motion[16] = "idle";
@@ -77,12 +164,14 @@ unsigned long last_heartbeat_ms = 0;
 unsigned long last_agent_attempt_ms = 0;
 unsigned long microros_connected_since_ms = 0;
 unsigned long last_bringup_event_enqueue_ms = 0;
+constexpr uint8_t kMicrorosMaxConsecutivePublishFailures = 3;
 bool microros_connected = false;
 uint8_t microros_bringup_event_enqueue_count = 0;
 uint32_t microros_bringup_event_total_enqueue_count = 0;
 uint32_t microros_publish_attempt_count = 0;
 uint32_t microros_publish_ok_count = 0;
 uint32_t microros_publish_failed_count = 0;
+uint8_t microros_consecutive_publish_failures = 0;
 rcl_ret_t last_microros_publish_result = RCL_RET_OK;
 stackchan::CalibrationStore calibration_store;
 const stackchan::AudioChunkPolicy audio_policy = stackchan::baseline_audio_policy();
@@ -90,13 +179,21 @@ stackchan::EventPublisher event_publisher(STACKCHAN_DEVICE_ID);
 stackchan::DevicePublisherRegistry device_publishers;
 stackchan::TelemetryPublishScheduler telemetry_publish_scheduler;
 stackchan::TouchEventEstimator touch_event_estimator;
+stackchan::ButtonEventEstimator button_a_event_estimator;
+stackchan::ButtonEventEstimator button_b_event_estimator;
+stackchan::ButtonEventEstimator button_c_event_estimator;
 stackchan::ProximityEventEstimator proximity_event_estimator;
 stackchan::LightEventEstimator light_event_estimator;
 stackchan::PowerEventEstimator power_event_estimator;
+stackchan::ImuEventEstimator imu_event_estimator;
+stackchan::NfcPresenceEstimator nfc_presence_estimator;
 SCSCL servo_bus;
 m5::PY32IOExpander_Class io_expander;
 m5::TouchSensor_Class stackchan_touch_sensor;
 m5::INA226_Class stackchan_power_monitor(0x41);
+m5::unit::UnitUnified stackchan_units;
+m5::unit::UnitNFC stackchan_nfc_unit;
+m5::nfc::NFCLayerA stackchan_nfc_a(stackchan_nfc_unit);
 stackchan::Result calibration_load_result =
     stackchan::Result::rejected("CALIBRATION_INVALID", "calibration not loaded", true);
 stackchan::Result calibration_maintenance_result =
@@ -108,17 +205,28 @@ constexpr unsigned long kBringupEventDelayMs = 500;
 constexpr unsigned long kBringupEventRetryMs = 1000;
 constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
+constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 800;
+constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
+constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
+constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
+constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
 constexpr int kYawServoId = 1;
 constexpr int kPitchServoId = 2;
 constexpr int kYawDefaultZeroPos = 460;
 constexpr int kPitchDefaultZeroPos = 620;
 constexpr int kServoRawMin = 0;
 constexpr int kServoRawMax = 1000;
-constexpr int kServoTime = 20;
+constexpr int kServoTime = 50;
 constexpr int kServoSpeed = 0;
 constexpr int kServoUartBaud = 1000000;
 constexpr int kServoTxPin = 6;
 constexpr int kServoRxPin = 7;
+constexpr uint8_t kRgbLedCount = 12;
+constexpr uint16_t kIrRecvPin = 10;
+constexpr uint16_t kIrCaptureBufferSize = 1024;
+constexpr uint8_t kIrTimeoutMs = 15;
+constexpr uint16_t kIrMinUnknownSize = 12;
+constexpr uint8_t kIrTolerancePercentage = kTolerance;
 constexpr unsigned long kIoExpanderInitTimeoutMs = 1200;
 constexpr uint8_t kLtr553Address = 0x23;
 constexpr uint8_t kLtr553AlsContr = 0x80;
@@ -170,37 +278,141 @@ rcl_allocator_t microros_allocator;
 rclc_support_t microros_support;
 rcl_node_t microros_node;
 rcl_publisher_t event_ros_publisher;
+rcl_publisher_t imu_raw_ros_publisher;
 rcl_publisher_t light_raw_ros_publisher;
 rcl_publisher_t motion_pose_ros_publisher;
 rcl_publisher_t power_status_ros_publisher;
 rcl_publisher_t proximity_raw_ros_publisher;
 rcl_publisher_t status_ros_publisher;
 rcl_publisher_t touch_state_ros_publisher;
+rcl_publisher_t audio_chunk_ros_publisher;
+rcl_subscription_t audio_chunk_subscription;
+rcl_action_server_t capture_audio_action_server;
+rcl_action_server_t capture_camera_action_server;
+rcl_action_server_t play_audio_action_server;
 rcl_service_t face_set_service;
 rcl_service_t head_pose_set_service;
+rcl_service_t led_set_service;
 rcl_service_t motion_set_service;
 rclc_executor_t microros_executor;
 stackchan_msgs__msg__StackChanEvent event_ros_message;
 stackchan_msgs__msg__HeadPose motion_pose_ros_message;
+stackchan_msgs__msg__ImuRaw imu_raw_ros_message;
 stackchan_msgs__msg__LightRaw light_raw_ros_message;
 stackchan_msgs__msg__PowerStatus power_status_ros_message;
 stackchan_msgs__msg__ProximityRaw proximity_raw_ros_message;
 stackchan_msgs__msg__StackChanStatus status_ros_message;
 stackchan_msgs__msg__TouchState touch_state_ros_message;
+stackchan_msgs__msg__AudioChunk audio_chunk_ros_message;
+stackchan_msgs__msg__AudioChunk audio_capture_chunk_ros_message;
+stackchan_msgs__action__CaptureAudio_SendGoal_Request capture_audio_goal_request;
+stackchan_msgs__action__CaptureAudio_SendGoal_Response capture_audio_goal_response;
+stackchan_msgs__action__CaptureAudio_GetResult_Request capture_audio_result_request;
+stackchan_msgs__action__CaptureAudio_GetResult_Response capture_audio_result_response;
+stackchan_msgs__action__CaptureAudio_FeedbackMessage capture_audio_feedback_message;
+stackchan_msgs__action__CaptureCamera_SendGoal_Request capture_camera_goal_request;
+stackchan_msgs__action__CaptureCamera_SendGoal_Response capture_camera_goal_response;
+stackchan_msgs__action__CaptureCamera_GetResult_Request capture_camera_result_request;
+stackchan_msgs__action__CaptureCamera_GetResult_Response capture_camera_result_response;
+stackchan_msgs__action__CaptureCamera_FeedbackMessage capture_camera_feedback_message;
+stackchan_msgs__action__PlayAudio_SendGoal_Request play_audio_goal_request;
+stackchan_msgs__action__PlayAudio_SendGoal_Response play_audio_goal_response;
+stackchan_msgs__action__PlayAudio_GetResult_Request play_audio_result_request;
+stackchan_msgs__action__PlayAudio_GetResult_Response play_audio_result_response;
 stackchan_msgs__srv__SetFace_Request face_set_request;
 stackchan_msgs__srv__SetFace_Response face_set_response;
 stackchan_msgs__srv__SetHeadPose_Request head_pose_set_request;
 stackchan_msgs__srv__SetHeadPose_Response head_pose_set_response;
+stackchan_msgs__srv__SetLed_Request led_set_request;
+stackchan_msgs__srv__SetLed_Response led_set_response;
 stackchan_msgs__srv__SetMotion_Request motion_set_request;
 stackchan_msgs__srv__SetMotion_Response motion_set_response;
 char microros_node_namespace[64] = "";
 char face_set_service_name[96] = "";
 char head_pose_set_service_name[96] = "";
+char led_set_service_name[96] = "";
 char motion_set_service_name[96] = "";
+char audio_chunk_topic_name[96] = "";
+char capture_audio_action_name[96] = "";
+char capture_camera_action_name[96] = "";
+char play_audio_action_name[96] = "";
 bool microros_executor_initialized = false;
+bool capture_audio_action_server_initialized = false;
+bool capture_camera_action_server_initialized = false;
+bool play_audio_action_server_initialized = false;
 bool stackchan_touch_sensor_initialized = false;
 bool stackchan_power_monitor_initialized = false;
 bool ltr553_sensor_initialized = false;
+bool stackchan_led_initialized = false;
+bool stackchan_imu_initialized = false;
+bool stackchan_nfc_initialized = false;
+bool stackchan_ir_initialized = false;
+bool stackchan_audio_playback_initialized = false;
+bool stackchan_audio_capture_initialized = false;
+bool stackchan_audio_playback_transport_initialized = false;
+bool stackchan_audio_capture_transport_initialized = false;
+bool stackchan_camera_snapshot_initialized = false;
+camera_config_t stackchan_camera_config;
+sensor_t* stackchan_camera_sensor = nullptr;
+esp_err_t stackchan_camera_init_error = ESP_OK;
+char stackchan_nfc_bus[24] = "uninitialized";
+int8_t stackchan_nfc_sda_pin = -1;
+int8_t stackchan_nfc_scl_pin = -1;
+bool stackchan_nfc_i2c_present = false;
+uint32_t stackchan_nfc_detect_attempts = 0;
+uint32_t stackchan_nfc_detect_hits = 0;
+uint32_t stackchan_nfc_identify_failures = 0;
+uint32_t stackchan_ir_decode_count = 0;
+uint32_t stackchan_ir_overflow_count = 0;
+IRrecv stackchan_irrecv(kIrRecvPin, kIrCaptureBufferSize, kIrTimeoutMs, true);
+decode_results stackchan_ir_results;
+stackchan::AudioPlaybackChunkGuard audio_playback_guard;
+bool audio_capture_session_active = false;
+char audio_capture_command_id[37]{};
+uint32_t audio_capture_duration_ms = 0;
+uint32_t audio_capture_started_ms = 0;
+uint32_t audio_capture_last_chunk_ms = 0;
+uint32_t audio_capture_sequence = 0;
+uint32_t audio_capture_target_chunks = 0;
+uint32_t audio_capture_published_chunks = 0;
+uint8_t audio_capture_buffer_index = 0;
+bool audio_capture_recording_chunk = false;
+int16_t audio_capture_buffers[2][stackchan::kAudioChunkBytes / 2]{};
+rcl_action_goal_handle_t* capture_audio_active_goal_handle = nullptr;
+rcl_action_goal_info_t capture_audio_active_goal_info;
+rcl_action_goal_info_t capture_audio_terminal_goal_info;
+rmw_request_id_t capture_audio_result_request_header;
+stackchan::Result capture_audio_terminal_result =
+    stackchan::Result::accepted("audio capture idle");
+int8_t capture_audio_terminal_status = GOAL_STATE_UNKNOWN;
+bool capture_audio_goal_active = false;
+bool capture_audio_result_ready = false;
+bool capture_audio_result_request_pending = false;
+rcl_action_goal_handle_t* capture_camera_active_goal_handle = nullptr;
+rcl_action_goal_info_t capture_camera_active_goal_info;
+rcl_action_goal_info_t capture_camera_terminal_goal_info;
+rmw_request_id_t capture_camera_result_request_header;
+stackchan::Result capture_camera_terminal_result =
+    stackchan::Result::accepted("camera capture idle");
+int8_t capture_camera_terminal_status = GOAL_STATE_UNKNOWN;
+bool capture_camera_goal_active = false;
+bool capture_camera_result_ready = false;
+bool capture_camera_result_request_pending = false;
+rcl_action_goal_handle_t* play_audio_active_goal_handle = nullptr;
+rcl_action_goal_info_t play_audio_active_goal_info;
+rcl_action_goal_info_t play_audio_terminal_goal_info;
+rmw_request_id_t play_audio_result_request_header;
+stackchan::Result play_audio_terminal_result =
+    stackchan::Result::accepted("audio playback idle");
+int8_t play_audio_terminal_status = GOAL_STATE_UNKNOWN;
+bool play_audio_goal_active = false;
+bool play_audio_received_chunk = false;
+bool play_audio_result_ready = false;
+bool play_audio_result_request_pending = false;
+uint32_t play_audio_started_ms = 0;
+uint32_t play_audio_last_chunk_ms = 0;
+uint8_t play_audio_buffer_index = 0;
+int16_t play_audio_buffers[4][stackchan::kAudioMaxChunkBytes / 2]{};
 
 void publish_status_heartbeat();
 stackchan::Result validate_motion_servo_target(
@@ -222,6 +434,15 @@ bool is_known_face(const char* name) {
          strcmp(name, "surprised") == 0 ||
          strcmp(name, "sleepy") == 0 ||
          strcmp(name, "error") == 0;
+}
+
+bool is_known_led_pattern(const char* pattern) {
+  return strcmp(pattern, "off") == 0 ||
+         strcmp(pattern, "progress") == 0 ||
+         strcmp(pattern, "success") == 0 ||
+         strcmp(pattern, "warning") == 0 ||
+         strcmp(pattern, "error") == 0 ||
+         strcmp(pattern, "listening") == 0;
 }
 
 uint16_t face_color(uint8_t red, uint8_t green, uint8_t blue) {
@@ -380,6 +601,8 @@ stackchan::Result initialize_servo_adapter() {
   io_expander.setDirection(0, true);
   io_expander.setPullMode(0, true);
   io_expander.digitalWrite(0, true);
+  io_expander.setLedCount(kRgbLedCount);
+  stackchan_led_initialized = true;
   delay(200);
 
   if (!servo_bus.begin(UART_NUM_1, kServoUartBaud, kServoTxPin, kServoRxPin)) {
@@ -482,9 +705,71 @@ bool initialize_ltr553_sensor() {
   return ok;
 }
 
+bool initialize_nfc_adapter() {
+  stackchan_nfc_sda_pin = M5.getPin(m5::pin_name_t::in_i2c_sda);
+  stackchan_nfc_scl_pin = M5.getPin(m5::pin_name_t::in_i2c_scl);
+  if (stackchan_nfc_sda_pin < 0 || stackchan_nfc_scl_pin < 0) {
+    copy_bounded(stackchan_nfc_bus, sizeof(stackchan_nfc_bus), "in_i2c_unavailable");
+    return false;
+  }
+
+  stackchan_nfc_i2c_present = true;
+  copy_bounded(stackchan_nfc_bus, sizeof(stackchan_nfc_bus), "in_i2c");
+  return stackchan_units.add(stackchan_nfc_unit, M5.In_I2C) && stackchan_units.begin();
+}
+
+camera_config_t make_core_s3_camera_config() {
+  camera_config_t config{};
+  config.pin_pwdn = -1;
+  config.pin_reset = -1;
+  config.pin_xclk = -1;
+  config.pin_sccb_sda = 12;
+  config.pin_sccb_scl = 11;
+  config.pin_d7 = 47;
+  config.pin_d6 = 48;
+  config.pin_d5 = 16;
+  config.pin_d4 = 15;
+  config.pin_d3 = 42;
+  config.pin_d2 = 41;
+  config.pin_d1 = 40;
+  config.pin_d0 = 39;
+  config.pin_vsync = 46;
+  config.pin_href = 38;
+  config.pin_pclk = 45;
+  config.xclk_freq_hz = 20000000;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.pixel_format = PIXFORMAT_RGB565;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.jpeg_quality = 0;
+  config.fb_count = 2;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  config.sccb_i2c_port = -1;
+  return config;
+}
+
+bool initialize_camera_adapter() {
+  stackchan_camera_config = make_core_s3_camera_config();
+  M5.In_I2C.release();
+  stackchan_camera_init_error = esp_camera_init(&stackchan_camera_config);
+  if (stackchan_camera_init_error != ESP_OK) {
+    stackchan_camera_sensor = nullptr;
+    return false;
+  }
+  stackchan_camera_sensor = esp_camera_sensor_get();
+  if (stackchan_camera_sensor == nullptr) {
+    return false;
+  }
+  stackchan_camera_sensor->set_framesize(stackchan_camera_sensor, FRAMESIZE_QVGA);
+  return true;
+}
+
 void initialize_sensor_adapters() {
   stackchan_touch_sensor.begin();
   stackchan_touch_sensor_initialized = true;
+
+  stackchan_imu_initialized = M5.Imu.isEnabled();
 
   m5::INA226_Class::config_t config;
   config.shunt_res = 0.01f;
@@ -492,6 +777,17 @@ void initialize_sensor_adapters() {
   stackchan_power_monitor.config(config);
   stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
   ltr553_sensor_initialized = initialize_ltr553_sensor();
+
+  stackchan_nfc_initialized = initialize_nfc_adapter();
+
+  stackchan_irrecv.setUnknownThreshold(kIrMinUnknownSize);
+  stackchan_irrecv.setTolerance(kIrTolerancePercentage);
+  stackchan_irrecv.enableIRIn();
+  stackchan_ir_initialized = true;
+
+  stackchan_audio_playback_initialized = M5.Speaker.isEnabled();
+  stackchan_audio_capture_initialized = M5.Mic.isEnabled();
+  stackchan_camera_snapshot_initialized = initialize_camera_adapter();
 }
 
 stackchan::TouchStateTelemetry read_touch_state_telemetry(uint32_t now_ms) {
@@ -605,6 +901,134 @@ stackchan::PowerStatusTelemetry read_power_status_telemetry(uint32_t now_ms) {
   telemetry.brownout_risk =
       telemetry.voltage_v > 0.0f && telemetry.voltage_v <= stackchan::kBrownoutRiskVoltageV;
   return telemetry;
+}
+
+bool read_imu_sample(stackchan::ImuSample* sample) {
+  if (sample == nullptr || !stackchan_imu_initialized) {
+    return false;
+  }
+  if (!M5.Imu.update()) {
+    return false;
+  }
+  float accel_x = 0.0f;
+  float accel_y = 0.0f;
+  float accel_z = 0.0f;
+  float gyro_x = 0.0f;
+  float gyro_y = 0.0f;
+  float gyro_z = 0.0f;
+  if (!M5.Imu.getAccel(&accel_x, &accel_y, &accel_z) ||
+      !M5.Imu.getGyro(&gyro_x, &gyro_y, &gyro_z)) {
+    return false;
+  }
+  constexpr float kGravityMps2 = 9.80665f;
+  sample->accel_x = accel_x * kGravityMps2;
+  sample->accel_y = accel_y * kGravityMps2;
+  sample->accel_z = accel_z * kGravityMps2;
+  sample->gyro_x = gyro_x;
+  sample->gyro_y = gyro_y;
+  sample->gyro_z = gyro_z;
+  return true;
+}
+
+stackchan::Result publish_imu_raw_sample(
+    const stackchan::ImuSample& sample,
+    uint32_t now_ms) {
+  stackchan::ImuRawMsg telemetry{};
+  telemetry.device_id.assign(STACKCHAN_DEVICE_ID);
+  telemetry.stamp = stackchan::ros_time_from_ms(now_ms);
+  telemetry.accel_x = sample.accel_x;
+  telemetry.accel_y = sample.accel_y;
+  telemetry.accel_z = sample.accel_z;
+  telemetry.gyro_x = sample.gyro_x;
+  telemetry.gyro_y = sample.gyro_y;
+  telemetry.gyro_z = sample.gyro_z;
+  telemetry.mag_x = 0.0f;
+  telemetry.mag_y = 0.0f;
+  telemetry.mag_z = 0.0f;
+  telemetry.temperature = NAN;
+  return device_publishers.publish_imu_raw(telemetry);
+}
+
+stackchan::Result sample_imu_events(uint32_t now_ms) {
+  stackchan::ImuSample sample{};
+  if (!read_imu_sample(&sample)) {
+    return stackchan::Result::accepted("IMU unavailable");
+  }
+  stackchan::Result result = publish_imu_raw_sample(sample, now_ms);
+  if (!result.ok) {
+    return result;
+  }
+  return imu_event_estimator.update(sample, now_ms, event_publisher);
+}
+
+stackchan::Result sample_button_events(uint32_t now_ms) {
+  stackchan::Result result =
+      button_a_event_estimator.update(M5.BtnA.isPressed(), now_ms, event_publisher, "a");
+  if (!result.ok) {
+    return result;
+  }
+  result = button_b_event_estimator.update(M5.BtnB.isPressed(), now_ms, event_publisher, "b");
+  if (!result.ok) {
+    return result;
+  }
+  return button_c_event_estimator.update(M5.BtnC.isPressed(), now_ms, event_publisher, "c");
+}
+
+stackchan::Result sample_nfc_events(uint32_t now_ms) {
+  if (!stackchan_nfc_initialized) {
+    return stackchan::Result::accepted("NFC unavailable");
+  }
+  ++stackchan_nfc_detect_attempts;
+  stackchan_units.update();
+  std::vector<m5::nfc::a::PICC> piccs;
+  if (!stackchan_nfc_a.detect(piccs)) {
+    return nfc_presence_estimator.update(false, "", now_ms, event_publisher);
+  }
+  if (piccs.empty()) {
+    stackchan_nfc_a.deactivate();
+    return nfc_presence_estimator.update(false, "", now_ms, event_publisher);
+  }
+  ++stackchan_nfc_detect_hits;
+  for (auto& picc : piccs) {
+    if (stackchan_nfc_a.identify(picc)) {
+      const std::string uid = picc.uidAsString();
+      const stackchan::Result result =
+          nfc_presence_estimator.update(true, uid.c_str(), now_ms, event_publisher);
+      stackchan_nfc_a.deactivate();
+      return result;
+    }
+  }
+  ++stackchan_nfc_identify_failures;
+  stackchan_nfc_a.deactivate();
+  return nfc_presence_estimator.update(
+      true,
+      "",
+      now_ms,
+      event_publisher,
+      stackchan::NfcReadStatus::ReadFailed);
+}
+
+stackchan::Result sample_ir_events(uint32_t now_ms) {
+  if (!stackchan_ir_initialized || !stackchan_irrecv.decode(&stackchan_ir_results)) {
+    return stackchan::Result::accepted("no IR event");
+  }
+  ++stackchan_ir_decode_count;
+  if (stackchan_ir_results.overflow) {
+    ++stackchan_ir_overflow_count;
+  }
+  char remote_summary[48];
+  snprintf(
+      remote_summary,
+      sizeof(remote_summary),
+      "%s:%u",
+      typeToString(stackchan_ir_results.decode_type, false).c_str(),
+      static_cast<unsigned>(stackchan_ir_results.bits));
+  stackchan::Result result = event_publisher.remote_button_pressed(now_ms);
+  if (result.ok) {
+    result = event_publisher.remote_command_received(now_ms, remote_summary);
+  }
+  stackchan_irrecv.resume();
+  return result;
 }
 
 stackchan::Result move_servo_pair_to(int target_x_deg, int target_y_deg) {
@@ -981,14 +1405,31 @@ void reset_rcl_error() {
   }
 }
 
+void record_microros_publish_failure() {
+  ++microros_publish_failed_count;
+  if (microros_consecutive_publish_failures < 255) {
+    ++microros_consecutive_publish_failures;
+  }
+}
+
+void record_microros_publish_success() {
+  ++microros_publish_ok_count;
+  microros_consecutive_publish_failures = 0;
+}
+
+bool microros_publish_failures_exceeded() {
+  return microros_consecutive_publish_failures >=
+         kMicrorosMaxConsecutivePublishFailures;
+}
+
 bool rcl_ok(rcl_ret_t result, const char* step) {
   if (result == RCL_RET_OK) {
     return true;
   }
-  Serial.print("stackchan micro_ros_step=");
-  Serial.print(step);
-  Serial.print(" result=");
-  Serial.println(result);
+  stackchan_diag_print("stackchan micro_ros_step=");
+  stackchan_diag_print(step);
+  stackchan_diag_print(" result=");
+  stackchan_diag_println(result);
   reset_rcl_error();
   return false;
 }
@@ -1022,11 +1463,13 @@ bool assign_ros_string(rosidl_runtime_c__String* destination, const char* value)
 }
 
 bool reserve_ros_string(rosidl_runtime_c__String* destination, size_t capacity) {
-  static const char kReserve36[] = "....................................";
-  if (destination == nullptr || capacity > 36) {
+  if (destination == nullptr || capacity > 160) {
     return false;
   }
-  if (!rosidl_runtime_c__String__assignn(destination, kReserve36, capacity)) {
+  char reserve[161] = "";
+  memset(reserve, '.', capacity);
+  reserve[capacity] = '\0';
+  if (!rosidl_runtime_c__String__assignn(destination, reserve, capacity)) {
     return false;
   }
   destination->size = 0;
@@ -1041,6 +1484,14 @@ bool reserve_face_set_request_strings() {
          reserve_ros_string(&face_set_request.name, 32);
 }
 
+bool reserve_led_set_request_strings() {
+  return reserve_ros_string(&led_set_request.meta.device_id, 32) &&
+         reserve_ros_string(&led_set_request.meta.command_id, 36) &&
+         reserve_ros_string(&led_set_request.meta.source, 32) &&
+         reserve_ros_string(&led_set_request.pattern, 32) &&
+         reserve_ros_string(&led_set_request.color, 16);
+}
+
 bool reserve_motion_set_request_strings() {
   return reserve_ros_string(&motion_set_request.meta.device_id, 32) &&
          reserve_ros_string(&motion_set_request.meta.command_id, 36) &&
@@ -1052,6 +1503,58 @@ bool reserve_head_pose_set_request_strings() {
   return reserve_ros_string(&head_pose_set_request.meta.device_id, 32) &&
          reserve_ros_string(&head_pose_set_request.meta.command_id, 36) &&
          reserve_ros_string(&head_pose_set_request.meta.source, 32);
+}
+
+bool reserve_play_audio_goal_strings() {
+  return reserve_ros_string(&play_audio_goal_request.goal.meta.device_id, 32) &&
+         reserve_ros_string(&play_audio_goal_request.goal.meta.command_id, 36) &&
+         reserve_ros_string(&play_audio_goal_request.goal.meta.source, 32) &&
+         reserve_ros_string(&play_audio_goal_request.goal.format, 16) &&
+         reserve_ros_string(&play_audio_goal_request.goal.face_hint, 32) &&
+         reserve_ros_string(&play_audio_goal_request.goal.motion_hint, 32);
+}
+
+bool reserve_capture_audio_goal_strings() {
+  return reserve_ros_string(&capture_audio_goal_request.goal.meta.device_id, 32) &&
+         reserve_ros_string(&capture_audio_goal_request.goal.meta.command_id, 36) &&
+         reserve_ros_string(&capture_audio_goal_request.goal.meta.source, 32) &&
+         reserve_ros_string(&capture_audio_goal_request.goal.format, 16) &&
+         reserve_ros_string(&capture_audio_feedback_message.feedback.message, 160);
+}
+
+bool reserve_capture_camera_goal_strings() {
+  return reserve_ros_string(&capture_camera_goal_request.goal.meta.device_id, 32) &&
+         reserve_ros_string(&capture_camera_goal_request.goal.meta.command_id, 36) &&
+         reserve_ros_string(&capture_camera_goal_request.goal.meta.source, 32) &&
+         reserve_ros_string(&capture_camera_goal_request.goal.format, 16) &&
+         reserve_ros_string(&capture_camera_feedback_message.feedback.message, 160);
+}
+
+bool reserve_capture_camera_result_storage() {
+  rosidl_runtime_c__uint8__Sequence__fini(
+      &capture_camera_result_response.result.image.data);
+  return reserve_ros_string(&capture_camera_result_response.result.image.format, 16) &&
+         rosidl_runtime_c__uint8__Sequence__init(
+             &capture_camera_result_response.result.image.data,
+             stackchan::kCameraMaxPayloadBytes);
+}
+
+bool reserve_audio_chunk_message_storage() {
+  rosidl_runtime_c__uint8__Sequence__fini(&audio_chunk_ros_message.pcm);
+  return reserve_ros_string(&audio_chunk_ros_message.device_id, 32) &&
+         reserve_ros_string(&audio_chunk_ros_message.command_id, 36) &&
+         rosidl_runtime_c__uint8__Sequence__init(
+             &audio_chunk_ros_message.pcm,
+             stackchan::kAudioMaxChunkBytes);
+}
+
+bool reserve_audio_capture_chunk_message_storage() {
+  rosidl_runtime_c__uint8__Sequence__fini(&audio_capture_chunk_ros_message.pcm);
+  return reserve_ros_string(&audio_capture_chunk_ros_message.device_id, 32) &&
+         reserve_ros_string(&audio_capture_chunk_ros_message.command_id, 36) &&
+         rosidl_runtime_c__uint8__Sequence__init(
+             &audio_capture_chunk_ros_message.pcm,
+             stackchan::kAudioChunkBytes);
 }
 
 bool convert_event_message(
@@ -1096,6 +1599,50 @@ bool convert_command_result(
          assign_ros_string(&destination->message, source.message);
 }
 
+bool assign_capability_status(
+    stackchan_msgs__msg__CapabilityStatus* destination,
+    const char* name,
+    bool available,
+    bool active = false,
+    uint8_t queued = 0) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->active = active;
+  destination->queued = queued;
+  destination->last_update.sec = 0;
+  destination->last_update.nanosec = 0;
+  return assign_ros_string(&destination->name, name) &&
+         assign_ros_string(&destination->state, available ? "available" : "unavailable") &&
+         assign_ros_string(&destination->detail_code, available ? "" : "UNSUPPORTED_FEATURE");
+}
+
+bool assign_status_capabilities(stackchan_msgs__msg__StackChanStatus* destination) {
+  if (destination == nullptr || destination->capabilities.capacity < 6) {
+    return false;
+  }
+  destination->capabilities.size = 6;
+  return assign_capability_status(&destination->capabilities.data[0], "face", true) &&
+         assign_capability_status(&destination->capabilities.data[1], "motion", servo_adapter_init_result.ok) &&
+         assign_capability_status(&destination->capabilities.data[2], "led", stackchan_led_initialized) &&
+         assign_capability_status(
+             &destination->capabilities.data[3],
+             "audio_playback",
+             stackchan_audio_playback_transport_initialized,
+             audio_playback_guard.active(),
+             audio_playback_guard.active() ? 1 : 0) &&
+         assign_capability_status(
+             &destination->capabilities.data[4],
+             "audio_capture",
+             stackchan_audio_capture_transport_initialized,
+             audio_capture_session_active,
+             audio_capture_session_active ? 1 : 0) &&
+         assign_capability_status(
+             &destination->capabilities.data[5],
+             "camera_snapshot",
+             stackchan_camera_snapshot_initialized);
+}
+
 bool convert_status_message(
     const stackchan::StackChanStatusMsg& source,
     stackchan_msgs__msg__StackChanStatus* destination) {
@@ -1103,14 +1650,14 @@ bool convert_status_message(
     return false;
   }
   destination->connected = source.connected;
-  destination->capabilities.size = 0;
   return assign_ros_string(&destination->device_id, source.device_id.data) &&
          assign_ros_string(&destination->state, source.state.data) &&
          assign_ros_string(&destination->face, source.face.data) &&
          assign_ros_string(&destination->motion, source.motion.data) &&
          assign_ros_string(&destination->last_command_id, source.last_command_id.data) &&
          convert_result_message(source.last_error, &destination->last_error) &&
-         assign_ros_string(&destination->firmware_version, source.firmware_version.data);
+         assign_ros_string(&destination->firmware_version, source.firmware_version.data) &&
+         assign_status_capabilities(destination);
 }
 
 bool convert_head_pose_message(
@@ -1126,6 +1673,27 @@ bool convert_head_pose_message(
   destination->moving = source.moving;
   return assign_ros_string(&destination->device_id, source.device_id.data) &&
          assign_ros_string(&destination->frame, source.frame.data);
+}
+
+bool convert_imu_raw_message(
+    const stackchan::ImuRawMsg& source,
+    stackchan_msgs__msg__ImuRaw* destination) {
+  if (destination == nullptr) {
+    return false;
+  }
+  destination->stamp.sec = source.stamp.sec;
+  destination->stamp.nanosec = source.stamp.nanosec;
+  destination->accel.x = source.accel_x;
+  destination->accel.y = source.accel_y;
+  destination->accel.z = source.accel_z;
+  destination->gyro.x = source.gyro_x;
+  destination->gyro.y = source.gyro_y;
+  destination->gyro.z = source.gyro_z;
+  destination->mag.x = source.mag_x;
+  destination->mag.y = source.mag_y;
+  destination->mag.z = source.mag_z;
+  destination->temperature = source.temperature;
+  return assign_ros_string(&destination->device_id, source.device_id.data);
 }
 
 bool assign_uint8_sequence(
@@ -1253,6 +1821,15 @@ void build_head_pose_set_service_name() {
   head_pose_set_service_name[sizeof(head_pose_set_service_name) - 1] = '\0';
 }
 
+void build_led_set_service_name() {
+  snprintf(
+      led_set_service_name,
+      sizeof(led_set_service_name),
+      "/stackchan/%s/device/led/set",
+      STACKCHAN_DEVICE_ID);
+  led_set_service_name[sizeof(led_set_service_name) - 1] = '\0';
+}
+
 void build_motion_set_service_name() {
   snprintf(
       motion_set_service_name,
@@ -1262,9 +1839,50 @@ void build_motion_set_service_name() {
   motion_set_service_name[sizeof(motion_set_service_name) - 1] = '\0';
 }
 
+void build_audio_chunk_topic_name() {
+  snprintf(
+      audio_chunk_topic_name,
+      sizeof(audio_chunk_topic_name),
+      "/stackchan/%s/device/audio/chunks",
+      STACKCHAN_DEVICE_ID);
+  audio_chunk_topic_name[sizeof(audio_chunk_topic_name) - 1] = '\0';
+}
+
+void build_play_audio_action_name() {
+  snprintf(
+      play_audio_action_name,
+      sizeof(play_audio_action_name),
+      "/stackchan/%s/device/audio/play",
+      STACKCHAN_DEVICE_ID);
+  play_audio_action_name[sizeof(play_audio_action_name) - 1] = '\0';
+}
+
+void build_capture_audio_action_name() {
+  snprintf(
+      capture_audio_action_name,
+      sizeof(capture_audio_action_name),
+      "/stackchan/%s/device/audio/capture",
+      STACKCHAN_DEVICE_ID);
+  capture_audio_action_name[sizeof(capture_audio_action_name) - 1] = '\0';
+}
+
+void build_capture_camera_action_name() {
+  snprintf(
+      capture_camera_action_name,
+      sizeof(capture_camera_action_name),
+      "/stackchan/%s/device/camera/capture",
+      STACKCHAN_DEVICE_ID);
+  capture_camera_action_name[sizeof(capture_camera_action_name) - 1] = '\0';
+}
+
 void handle_face_set_service(const void* request, void* response);
 void handle_head_pose_set_service(const void* request, void* response);
+void handle_led_set_service(const void* request, void* response);
 void handle_motion_set_service(const void* request, void* response);
+void handle_audio_chunk_subscription(const void* message);
+void poll_capture_audio_action_server();
+void poll_capture_camera_action_server();
+void poll_play_audio_action_server();
 void publish_status_heartbeat();
 
 bool initialize_microros_entities() {
@@ -1272,27 +1890,53 @@ bool initialize_microros_entities() {
   memset(&microros_support, 0, sizeof(microros_support));
   microros_node = rcl_get_zero_initialized_node();
   event_ros_publisher = rcl_get_zero_initialized_publisher();
+  imu_raw_ros_publisher = rcl_get_zero_initialized_publisher();
   light_raw_ros_publisher = rcl_get_zero_initialized_publisher();
   motion_pose_ros_publisher = rcl_get_zero_initialized_publisher();
   power_status_ros_publisher = rcl_get_zero_initialized_publisher();
   proximity_raw_ros_publisher = rcl_get_zero_initialized_publisher();
   status_ros_publisher = rcl_get_zero_initialized_publisher();
   touch_state_ros_publisher = rcl_get_zero_initialized_publisher();
+  audio_chunk_ros_publisher = rcl_get_zero_initialized_publisher();
+  audio_chunk_subscription = rcl_get_zero_initialized_subscription();
+  capture_audio_action_server = rcl_action_get_zero_initialized_server();
+  capture_camera_action_server = rcl_action_get_zero_initialized_server();
+  play_audio_action_server = rcl_action_get_zero_initialized_server();
   face_set_service = rcl_get_zero_initialized_service();
   head_pose_set_service = rcl_get_zero_initialized_service();
+  led_set_service = rcl_get_zero_initialized_service();
   motion_set_service = rcl_get_zero_initialized_service();
   microros_executor = rclc_executor_get_zero_initialized_executor();
   memset(&event_ros_message, 0, sizeof(event_ros_message));
+  memset(&imu_raw_ros_message, 0, sizeof(imu_raw_ros_message));
   memset(&light_raw_ros_message, 0, sizeof(light_raw_ros_message));
   memset(&motion_pose_ros_message, 0, sizeof(motion_pose_ros_message));
   memset(&power_status_ros_message, 0, sizeof(power_status_ros_message));
   memset(&proximity_raw_ros_message, 0, sizeof(proximity_raw_ros_message));
   memset(&status_ros_message, 0, sizeof(status_ros_message));
   memset(&touch_state_ros_message, 0, sizeof(touch_state_ros_message));
+  memset(&audio_chunk_ros_message, 0, sizeof(audio_chunk_ros_message));
+  memset(&audio_capture_chunk_ros_message, 0, sizeof(audio_capture_chunk_ros_message));
+  memset(&capture_audio_goal_request, 0, sizeof(capture_audio_goal_request));
+  memset(&capture_audio_goal_response, 0, sizeof(capture_audio_goal_response));
+  memset(&capture_audio_result_request, 0, sizeof(capture_audio_result_request));
+  memset(&capture_audio_result_response, 0, sizeof(capture_audio_result_response));
+  memset(&capture_audio_feedback_message, 0, sizeof(capture_audio_feedback_message));
+  memset(&capture_camera_goal_request, 0, sizeof(capture_camera_goal_request));
+  memset(&capture_camera_goal_response, 0, sizeof(capture_camera_goal_response));
+  memset(&capture_camera_result_request, 0, sizeof(capture_camera_result_request));
+  memset(&capture_camera_result_response, 0, sizeof(capture_camera_result_response));
+  memset(&capture_camera_feedback_message, 0, sizeof(capture_camera_feedback_message));
+  memset(&play_audio_goal_request, 0, sizeof(play_audio_goal_request));
+  memset(&play_audio_goal_response, 0, sizeof(play_audio_goal_response));
+  memset(&play_audio_result_request, 0, sizeof(play_audio_result_request));
+  memset(&play_audio_result_response, 0, sizeof(play_audio_result_response));
   memset(&face_set_request, 0, sizeof(face_set_request));
   memset(&face_set_response, 0, sizeof(face_set_response));
   memset(&head_pose_set_request, 0, sizeof(head_pose_set_request));
   memset(&head_pose_set_response, 0, sizeof(head_pose_set_response));
+  memset(&led_set_request, 0, sizeof(led_set_request));
+  memset(&led_set_response, 0, sizeof(led_set_response));
   memset(&motion_set_request, 0, sizeof(motion_set_request));
   memset(&motion_set_response, 0, sizeof(motion_set_response));
 
@@ -1333,6 +1977,457 @@ bool initialize_microros_entities() {
               "status_publisher_init")) {
     return false;
   }
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+  if (!stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=status_message_init result=false");
+    return false;
+  }
+  stackchan_msgs__msg__CapabilityStatus__Sequence__fini(&status_ros_message.capabilities);
+  if (!stackchan_msgs__msg__CapabilityStatus__Sequence__init(&status_ros_message.capabilities, 6)) {
+    stackchan_diag_println("stackchan micro_ros_step=status_capabilities_init result=false");
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  microros_entities_initialized = true;
+  stackchan_audio_playback_transport_initialized = false;
+  stackchan_audio_capture_transport_initialized = false;
+  return true;
+#endif
+#if STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+  build_face_set_service_name();
+  if (!rcl_ok(rclc_service_init_default(
+                  &face_set_service,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetFace),
+                  face_set_service_name),
+              "face_set_service_init")) {
+    return false;
+  }
+  build_head_pose_set_service_name();
+  if (!rcl_ok(rclc_service_init_default(
+                  &head_pose_set_service,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetHeadPose),
+                  head_pose_set_service_name),
+              "head_pose_set_service_init")) {
+    return false;
+  }
+  build_led_set_service_name();
+  if (!rcl_ok(rclc_service_init_default(
+                  &led_set_service,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetLed),
+                  led_set_service_name),
+              "led_set_service_init")) {
+    return false;
+  }
+  build_motion_set_service_name();
+  if (!rcl_ok(rclc_service_init_default(
+                  &motion_set_service,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetMotion),
+                  motion_set_service_name),
+              "motion_set_service_init")) {
+    return false;
+  }
+#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+  {
+    rmw_qos_profile_t motion_pose_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::MotionPose);
+    if (!rcl_ok(rclc_publisher_init(
+                    &motion_pose_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, HeadPose),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::MotionPose),
+                    &motion_pose_qos),
+                "motion_pose_publisher_init")) {
+      return false;
+    }
+    rmw_qos_profile_t touch_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::TouchState);
+    if (!rcl_ok(rclc_publisher_init(
+                    &touch_state_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, TouchState),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::TouchState),
+                    &touch_qos),
+                "touch_state_publisher_init")) {
+      return false;
+    }
+    rmw_qos_profile_t imu_raw_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::ImuRaw);
+    if (!rcl_ok(rclc_publisher_init(
+                    &imu_raw_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, ImuRaw),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::ImuRaw),
+                    &imu_raw_qos),
+                "imu_raw_publisher_init")) {
+      return false;
+    }
+    rmw_qos_profile_t proximity_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::ProximityRaw);
+    if (!rcl_ok(rclc_publisher_init(
+                    &proximity_raw_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, ProximityRaw),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::ProximityRaw),
+                    &proximity_qos),
+                "proximity_raw_publisher_init")) {
+      return false;
+    }
+    rmw_qos_profile_t light_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::LightRaw);
+    if (!rcl_ok(rclc_publisher_init(
+                    &light_raw_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, LightRaw),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::LightRaw),
+                    &light_qos),
+                "light_raw_publisher_init")) {
+      return false;
+    }
+    rmw_qos_profile_t power_qos =
+        qos_profile_for(stackchan::DevicePublisherTopic::PowerStatus);
+    if (!rcl_ok(rclc_publisher_init(
+                    &power_status_ros_publisher,
+                    &microros_node,
+                    ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, PowerStatus),
+                    device_publishers.topic_name(stackchan::DevicePublisherTopic::PowerStatus),
+                    &power_qos),
+                "power_status_publisher_init")) {
+      return false;
+    }
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP
+  build_audio_chunk_topic_name();
+  rmw_qos_profile_t core_audio_chunk_qos = rmw_qos_profile_default;
+  core_audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  core_audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  core_audio_chunk_qos.depth = 8;
+#if STACKCHAN_MICROROS_CORE_AUDIO_TOPIC_BRINGUP
+  if (!rcl_ok(rclc_publisher_init(
+                  &audio_chunk_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
+                  audio_chunk_topic_name,
+                  &core_audio_chunk_qos),
+              "audio_chunk_publisher_init")) {
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+  if (!rcl_ok(rclc_subscription_init(
+                  &audio_chunk_subscription,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
+                  audio_chunk_topic_name,
+                  &core_audio_chunk_qos),
+              "audio_chunk_subscription_init")) {
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
+  build_capture_audio_action_name();
+  rcl_action_server_options_t core_capture_audio_options =
+      rcl_action_server_get_default_options();
+  core_capture_audio_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  core_capture_audio_options.feedback_topic_qos.depth = 2;
+  core_capture_audio_options.status_topic_qos.depth = 2;
+  core_capture_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureAudio),
+                  capture_audio_action_name,
+                  &core_capture_audio_options),
+              "capture_audio_action_server_init")) {
+    return false;
+  }
+  capture_audio_action_server_initialized = true;
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+  build_capture_camera_action_name();
+  rcl_action_server_options_t core_capture_camera_options =
+      rcl_action_server_get_default_options();
+  core_capture_camera_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  core_capture_camera_options.feedback_topic_qos.depth = 2;
+  core_capture_camera_options.status_topic_qos.depth = 2;
+  core_capture_camera_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_camera_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera),
+                  capture_camera_action_name,
+                  &core_capture_camera_options),
+              "capture_camera_action_server_init")) {
+    return false;
+  }
+  capture_camera_action_server_initialized = true;
+#endif
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+  build_play_audio_action_name();
+  rcl_action_server_options_t core_play_audio_options =
+      rcl_action_server_get_default_options();
+  core_play_audio_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  core_play_audio_options.feedback_topic_qos.depth = 2;
+  core_play_audio_options.status_topic_qos.depth = 2;
+  core_play_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &play_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, PlayAudio),
+                  play_audio_action_name,
+                  &core_play_audio_options),
+              "play_audio_action_server_init")) {
+    return false;
+  }
+  play_audio_action_server_initialized = true;
+#endif
+#endif
+  if (!stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=status_message_init result=false");
+    return false;
+  }
+  stackchan_msgs__msg__CapabilityStatus__Sequence__fini(&status_ros_message.capabilities);
+  if (!stackchan_msgs__msg__CapabilityStatus__Sequence__init(&status_ros_message.capabilities, 6)) {
+    stackchan_diag_println("stackchan micro_ros_step=status_capabilities_init result=false");
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+  if (!stackchan_msgs__msg__HeadPose__init(&motion_pose_ros_message) ||
+      !stackchan_msgs__msg__TouchState__init(&touch_state_ros_message) ||
+      !stackchan_msgs__msg__ImuRaw__init(&imu_raw_ros_message) ||
+      !stackchan_msgs__msg__ProximityRaw__init(&proximity_raw_ros_message) ||
+      !stackchan_msgs__msg__LightRaw__init(&light_raw_ros_message) ||
+      !stackchan_msgs__msg__PowerStatus__init(&power_status_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=raw_telemetry_messages_init result=false");
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+  if (!stackchan_msgs__msg__AudioChunk__init(&audio_chunk_ros_message) ||
+      !reserve_audio_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_chunk_message_init result=false");
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
+  if (!stackchan_msgs__msg__AudioChunk__init(&audio_capture_chunk_ros_message) ||
+      !reserve_audio_capture_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_capture_chunk_message_init result=false");
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__action__CaptureAudio_SendGoal_Request__init(&capture_audio_goal_request) ||
+      !stackchan_msgs__action__CaptureAudio_SendGoal_Response__init(&capture_audio_goal_response) ||
+      !stackchan_msgs__action__CaptureAudio_GetResult_Request__init(&capture_audio_result_request) ||
+      !stackchan_msgs__action__CaptureAudio_GetResult_Response__init(&capture_audio_result_response) ||
+      !stackchan_msgs__action__CaptureAudio_FeedbackMessage__init(&capture_audio_feedback_message) ||
+      !reserve_capture_audio_goal_strings()) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_audio_action_messages_init result=false");
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+  if (!stackchan_msgs__action__CaptureCamera_SendGoal_Request__init(&capture_camera_goal_request) ||
+      !stackchan_msgs__action__CaptureCamera_SendGoal_Response__init(&capture_camera_goal_response) ||
+      !stackchan_msgs__action__CaptureCamera_GetResult_Request__init(&capture_camera_result_request) ||
+      !stackchan_msgs__action__CaptureCamera_GetResult_Response__init(&capture_camera_result_response) ||
+      !stackchan_msgs__action__CaptureCamera_FeedbackMessage__init(&capture_camera_feedback_message) ||
+      !reserve_capture_camera_goal_strings() ||
+      !reserve_capture_camera_result_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_camera_action_messages_init result=false");
+    stackchan_msgs__action__CaptureCamera_FeedbackMessage__fini(&capture_camera_feedback_message);
+    stackchan_msgs__action__CaptureCamera_GetResult_Response__fini(&capture_camera_result_response);
+    stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+  if (!stackchan_msgs__action__PlayAudio_SendGoal_Request__init(&play_audio_goal_request) ||
+      !reserve_play_audio_goal_strings() ||
+      !stackchan_msgs__action__PlayAudio_SendGoal_Response__init(&play_audio_goal_response) ||
+      !stackchan_msgs__action__PlayAudio_GetResult_Request__init(&play_audio_result_request) ||
+      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=play_audio_action_messages_init result=false");
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+  if (!stackchan_msgs__srv__SetFace_Request__init(&face_set_request) ||
+      !reserve_face_set_request_strings() ||
+      !stackchan_msgs__srv__SetFace_Response__init(&face_set_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=face_set_messages_init result=false");
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__srv__SetHeadPose_Request__init(&head_pose_set_request) ||
+      !reserve_head_pose_set_request_strings() ||
+      !stackchan_msgs__srv__SetHeadPose_Response__init(&head_pose_set_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=head_pose_set_messages_init result=false");
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__srv__SetLed_Request__init(&led_set_request) ||
+      !reserve_led_set_request_strings() ||
+      !stackchan_msgs__srv__SetLed_Response__init(&led_set_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=led_set_messages_init result=false");
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__srv__SetMotion_Request__init(&motion_set_request) ||
+      !reserve_motion_set_request_strings() ||
+      !stackchan_msgs__srv__SetMotion_Response__init(&motion_set_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=motion_set_messages_init result=false");
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  size_t core_executor_handles = 4;
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+  ++core_executor_handles;
+#endif
+  if (!rcl_ok(rclc_executor_init(
+                  &microros_executor,
+                  &microros_support.context,
+                  core_executor_handles,
+                  &microros_allocator),
+              "executor_init")) {
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+  microros_executor_initialized = true;
+  if (!rcl_ok(rclc_executor_add_service(
+                  &microros_executor,
+                  &face_set_service,
+                  &face_set_request,
+                  &face_set_response,
+                  handle_face_set_service),
+              "executor_add_face_set_service") ||
+      !rcl_ok(rclc_executor_add_service(
+                  &microros_executor,
+                  &head_pose_set_service,
+                  &head_pose_set_request,
+                  &head_pose_set_response,
+                  handle_head_pose_set_service),
+              "executor_add_head_pose_set_service") ||
+      !rcl_ok(rclc_executor_add_service(
+                  &microros_executor,
+                  &led_set_service,
+                  &led_set_request,
+                  &led_set_response,
+                  handle_led_set_service),
+              "executor_add_led_set_service") ||
+      !rcl_ok(rclc_executor_add_service(
+                  &microros_executor,
+                  &motion_set_service,
+                  &motion_set_request,
+                  &motion_set_response,
+                  handle_motion_set_service),
+              "executor_add_motion_set_service")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+  if (!rcl_ok(rclc_executor_add_subscription(
+                  &microros_executor,
+                  &audio_chunk_subscription,
+                  &audio_chunk_ros_message,
+                  handle_audio_chunk_subscription,
+                  ON_NEW_DATA),
+              "executor_add_audio_chunk_subscription")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
+  microros_entities_initialized = true;
+  stackchan_audio_playback_transport_initialized =
+      STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP && stackchan_audio_playback_initialized;
+  stackchan_audio_capture_transport_initialized =
+      STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP && stackchan_audio_capture_initialized;
+  return true;
+#endif
   rmw_qos_profile_t motion_pose_qos =
       qos_profile_for(stackchan::DevicePublisherTopic::MotionPose);
   if (!rcl_ok(rclc_publisher_init(
@@ -1353,6 +2448,17 @@ bool initialize_microros_entities() {
                   device_publishers.topic_name(stackchan::DevicePublisherTopic::TouchState),
                   &touch_qos),
               "touch_state_publisher_init")) {
+    return false;
+  }
+  rmw_qos_profile_t imu_raw_qos =
+      qos_profile_for(stackchan::DevicePublisherTopic::ImuRaw);
+  if (!rcl_ok(rclc_publisher_init(
+                  &imu_raw_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, ImuRaw),
+                  device_publishers.topic_name(stackchan::DevicePublisherTopic::ImuRaw),
+                  &imu_raw_qos),
+              "imu_raw_publisher_init")) {
     return false;
   }
   rmw_qos_profile_t proximity_qos =
@@ -1388,6 +2494,86 @@ bool initialize_microros_entities() {
               "power_status_publisher_init")) {
     return false;
   }
+  build_audio_chunk_topic_name();
+  rmw_qos_profile_t audio_chunk_qos = rmw_qos_profile_default;
+  audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  audio_chunk_qos.depth = 8;
+  if (!rcl_ok(rclc_publisher_init(
+                  &audio_chunk_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
+                  audio_chunk_topic_name,
+                  &audio_chunk_qos),
+              "audio_chunk_publisher_init")) {
+    return false;
+  }
+  if (!rcl_ok(rclc_subscription_init(
+                  &audio_chunk_subscription,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
+                  audio_chunk_topic_name,
+                  &audio_chunk_qos),
+              "audio_chunk_subscription_init")) {
+    return false;
+  }
+  build_capture_audio_action_name();
+  rcl_action_server_options_t capture_audio_options =
+      rcl_action_server_get_default_options();
+  capture_audio_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  capture_audio_options.feedback_topic_qos.depth = 2;
+  capture_audio_options.status_topic_qos.depth = 2;
+  capture_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureAudio),
+                  capture_audio_action_name,
+                  &capture_audio_options),
+              "capture_audio_action_server_init")) {
+    return false;
+  }
+  capture_audio_action_server_initialized = true;
+  build_capture_camera_action_name();
+  rcl_action_server_options_t capture_camera_options =
+      rcl_action_server_get_default_options();
+  capture_camera_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  capture_camera_options.feedback_topic_qos.depth = 2;
+  capture_camera_options.status_topic_qos.depth = 2;
+  capture_camera_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &capture_camera_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera),
+                  capture_camera_action_name,
+                  &capture_camera_options),
+              "capture_camera_action_server_init")) {
+    return false;
+  }
+  capture_camera_action_server_initialized = true;
+  build_play_audio_action_name();
+  rcl_action_server_options_t play_audio_options =
+      rcl_action_server_get_default_options();
+  play_audio_options.feedback_topic_qos.reliability =
+      RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  play_audio_options.feedback_topic_qos.depth = 2;
+  play_audio_options.status_topic_qos.depth = 2;
+  play_audio_options.result_timeout.nanoseconds = RCL_MS_TO_NS(5000);
+  if (!rcl_ok(rcl_action_server_init(
+                  &play_audio_action_server,
+                  &microros_node,
+                  &microros_support.clock,
+                  ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, PlayAudio),
+                  play_audio_action_name,
+                  &play_audio_options),
+              "play_audio_action_server_init")) {
+    return false;
+  }
+  play_audio_action_server_initialized = true;
   build_face_set_service_name();
   if (!rcl_ok(rclc_service_init_default(
                   &face_set_service,
@@ -1406,6 +2592,15 @@ bool initialize_microros_entities() {
               "head_pose_set_service_init")) {
     return false;
   }
+  build_led_set_service_name();
+  if (!rcl_ok(rclc_service_init_default(
+                  &led_set_service,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, SetLed),
+                  led_set_service_name),
+              "led_set_service_init")) {
+    return false;
+  }
   build_motion_set_service_name();
   if (!rcl_ok(rclc_service_init_default(
                   &motion_set_service,
@@ -1416,29 +2611,46 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__msg__StackChanEvent__init(&event_ros_message)) {
-    Serial.println("stackchan micro_ros_step=event_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=event_message_init result=false");
     return false;
   }
   if (!stackchan_msgs__msg__HeadPose__init(&motion_pose_ros_message)) {
-    Serial.println("stackchan micro_ros_step=motion_pose_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=motion_pose_message_init result=false");
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
   if (!stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)) {
-    Serial.println("stackchan micro_ros_step=status_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=status_message_init result=false");
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  stackchan_msgs__msg__CapabilityStatus__Sequence__fini(&status_ros_message.capabilities);
+  if (!stackchan_msgs__msg__CapabilityStatus__Sequence__init(&status_ros_message.capabilities, 6)) {
+    stackchan_diag_println("stackchan micro_ros_step=status_capabilities_init result=false");
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
   if (!stackchan_msgs__msg__TouchState__init(&touch_state_ros_message)) {
-    Serial.println("stackchan micro_ros_step=touch_state_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=touch_state_message_init result=false");
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__ImuRaw__init(&imu_raw_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=imu_raw_message_init result=false");
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
   if (!stackchan_msgs__msg__ProximityRaw__init(&proximity_raw_ros_message)) {
-    Serial.println("stackchan micro_ros_step=proximity_raw_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=proximity_raw_message_init result=false");
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
     stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
@@ -1446,8 +2658,9 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__msg__LightRaw__init(&light_raw_ros_message)) {
-    Serial.println("stackchan micro_ros_step=light_raw_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=light_raw_message_init result=false");
     stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
     stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
@@ -1455,9 +2668,143 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__msg__PowerStatus__init(&power_status_ros_message)) {
-    Serial.println("stackchan micro_ros_step=power_status_message_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=power_status_message_init result=false");
     stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
     stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__AudioChunk__init(&audio_chunk_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_chunk_message_init result=false");
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!reserve_audio_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_chunk_message_reserve result=false");
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__msg__AudioChunk__init(&audio_capture_chunk_ros_message)) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_capture_chunk_message_init result=false");
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!reserve_audio_capture_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=audio_capture_chunk_message_reserve result=false");
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__action__CaptureAudio_SendGoal_Request__init(&capture_audio_goal_request) ||
+      !stackchan_msgs__action__CaptureAudio_SendGoal_Response__init(&capture_audio_goal_response) ||
+      !stackchan_msgs__action__CaptureAudio_GetResult_Request__init(&capture_audio_result_request) ||
+      !stackchan_msgs__action__CaptureAudio_GetResult_Response__init(&capture_audio_result_response) ||
+      !stackchan_msgs__action__CaptureAudio_FeedbackMessage__init(&capture_audio_feedback_message) ||
+      !reserve_capture_audio_goal_strings()) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_audio_action_messages_init result=false");
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__action__PlayAudio_SendGoal_Request__init(&play_audio_goal_request) ||
+      !reserve_play_audio_goal_strings() ||
+      !stackchan_msgs__action__PlayAudio_SendGoal_Response__init(&play_audio_goal_response) ||
+      !stackchan_msgs__action__PlayAudio_GetResult_Request__init(&play_audio_result_request) ||
+      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=play_audio_action_messages_init result=false");
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+    stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__action__CaptureCamera_SendGoal_Request__init(&capture_camera_goal_request) ||
+      !stackchan_msgs__action__CaptureCamera_SendGoal_Response__init(&capture_camera_goal_response) ||
+      !stackchan_msgs__action__CaptureCamera_GetResult_Request__init(&capture_camera_result_request) ||
+      !stackchan_msgs__action__CaptureCamera_GetResult_Response__init(&capture_camera_result_response) ||
+      !stackchan_msgs__action__CaptureCamera_FeedbackMessage__init(&capture_camera_feedback_message) ||
+      !reserve_capture_camera_goal_strings() ||
+      !reserve_capture_camera_result_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_camera_action_messages_init result=false");
+    stackchan_msgs__action__CaptureCamera_FeedbackMessage__fini(&capture_camera_feedback_message);
+    stackchan_msgs__action__CaptureCamera_GetResult_Response__fini(&capture_camera_result_response);
+    stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+    stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+    stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
     stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
@@ -1465,7 +2812,7 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__srv__SetFace_Request__init(&face_set_request)) {
-    Serial.println("stackchan micro_ros_step=face_set_request_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=face_set_request_init result=false");
     stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
     stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
@@ -1473,21 +2820,21 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!reserve_face_set_request_strings()) {
-    Serial.println("stackchan micro_ros_step=face_set_request_reserve result=false");
+    stackchan_diag_println("stackchan micro_ros_step=face_set_request_reserve result=false");
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
   if (!stackchan_msgs__srv__SetFace_Response__init(&face_set_response)) {
-    Serial.println("stackchan micro_ros_step=face_set_response_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=face_set_response_init result=false");
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
   if (!stackchan_msgs__srv__SetHeadPose_Request__init(&head_pose_set_request)) {
-    Serial.println("stackchan micro_ros_step=head_pose_set_request_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=head_pose_set_request_init result=false");
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
@@ -1496,7 +2843,7 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!reserve_head_pose_set_request_strings()) {
-    Serial.println("stackchan micro_ros_step=head_pose_set_request_reserve result=false");
+    stackchan_diag_println("stackchan micro_ros_step=head_pose_set_request_reserve result=false");
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
@@ -1506,7 +2853,42 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__srv__SetHeadPose_Response__init(&head_pose_set_response)) {
-    Serial.println("stackchan micro_ros_step=head_pose_set_response_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=head_pose_set_response_init result=false");
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__srv__SetLed_Request__init(&led_set_request)) {
+    stackchan_diag_println("stackchan micro_ros_step=led_set_request_init result=false");
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!reserve_led_set_request_strings()) {
+    stackchan_diag_println("stackchan micro_ros_step=led_set_request_reserve result=false");
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!stackchan_msgs__srv__SetLed_Response__init(&led_set_response)) {
+    stackchan_diag_println("stackchan micro_ros_step=led_set_response_init result=false");
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
@@ -1516,7 +2898,9 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__srv__SetMotion_Request__init(&motion_set_request)) {
-    Serial.println("stackchan micro_ros_step=motion_set_request_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=motion_set_request_init result=false");
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
     stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
@@ -1527,7 +2911,7 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!reserve_motion_set_request_strings()) {
-    Serial.println("stackchan micro_ros_step=motion_set_request_reserve result=false");
+    stackchan_diag_println("stackchan micro_ros_step=motion_set_request_reserve result=false");
     stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
     stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
@@ -1539,7 +2923,7 @@ bool initialize_microros_entities() {
     return false;
   }
   if (!stackchan_msgs__srv__SetMotion_Response__init(&motion_set_response)) {
-    Serial.println("stackchan micro_ros_step=motion_set_response_init result=false");
+    stackchan_diag_println("stackchan micro_ros_step=motion_set_response_init result=false");
     stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
     stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
@@ -1553,7 +2937,7 @@ bool initialize_microros_entities() {
   if (!rcl_ok(rclc_executor_init(
                   &microros_executor,
                   &microros_support.context,
-                  3,
+                  5,
                   &microros_allocator),
               "executor_init")) {
     stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
@@ -1606,6 +2990,28 @@ bool initialize_microros_entities() {
   }
   if (!rcl_ok(rclc_executor_add_service(
                   &microros_executor,
+                  &led_set_service,
+                  &led_set_request,
+                  &led_set_response,
+                  handle_led_set_service),
+              "executor_add_led_set_service")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
+  if (!rcl_ok(rclc_executor_add_service(
+                  &microros_executor,
                   &motion_set_service,
                   &motion_set_request,
                   &motion_set_response,
@@ -1624,12 +3030,166 @@ bool initialize_microros_entities() {
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
+  if (!rcl_ok(rclc_executor_add_subscription(
+                  &microros_executor,
+                  &audio_chunk_subscription,
+                  &audio_chunk_ros_message,
+                  handle_audio_chunk_subscription,
+                  ON_NEW_DATA),
+              "executor_add_audio_chunk_subscription")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__action__CaptureCamera_FeedbackMessage__fini(&capture_camera_feedback_message);
+    stackchan_msgs__action__CaptureCamera_GetResult_Response__fini(&capture_camera_result_response);
+    stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
   microros_entities_initialized = true;
+  stackchan_audio_playback_transport_initialized = stackchan_audio_playback_initialized;
+  stackchan_audio_capture_transport_initialized = stackchan_audio_capture_initialized;
   return true;
 }
 
 void destroy_microros_entities() {
   if (microros_entities_initialized) {
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+    {
+      stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+      rcl_ret_t fini_result =
+          rcl_publisher_fini(&status_ros_publisher, &microros_node);
+      fini_result = rcl_node_fini(&microros_node);
+      fini_result = rclc_support_fini(&microros_support);
+      (void)fini_result;
+      microros_entities_initialized = false;
+      microros_executor_initialized = false;
+      stackchan_audio_playback_transport_initialized = false;
+      stackchan_audio_capture_transport_initialized = false;
+      reset_rcl_error();
+      return;
+    }
+#endif
+#if STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+    {
+      if (microros_executor_initialized) {
+        rcl_ret_t executor_fini_result = rclc_executor_fini(&microros_executor);
+        (void)executor_fini_result;
+        microros_executor_initialized = false;
+      }
+      stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+      stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+      stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+      stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+      stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+      stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+      stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+      stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+      stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+      stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+      stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+      stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+      stackchan_msgs__action__CaptureCamera_FeedbackMessage__fini(&capture_camera_feedback_message);
+      stackchan_msgs__action__CaptureCamera_GetResult_Response__fini(&capture_camera_result_response);
+      stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
+      stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
+      stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
+      stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+      stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+      stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+      stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+      stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+      stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+#endif
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+      stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+#endif
+#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+      stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
+      stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
+      stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+      stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
+      stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
+      stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+#endif
+      stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+      rcl_ret_t fini_result =
+          rcl_service_fini(&motion_set_service, &microros_node);
+      fini_result = rcl_service_fini(&led_set_service, &microros_node);
+      fini_result = rcl_service_fini(&head_pose_set_service, &microros_node);
+      fini_result = rcl_service_fini(&face_set_service, &microros_node);
+#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+      fini_result = rcl_subscription_fini(&audio_chunk_subscription, &microros_node);
+#endif
+#if STACKCHAN_MICROROS_CORE_AUDIO_TOPIC_BRINGUP
+      fini_result = rcl_publisher_fini(&audio_chunk_ros_publisher, &microros_node);
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
+      if (capture_audio_action_server_initialized) {
+        fini_result = rcl_action_server_fini(&capture_audio_action_server, &microros_node);
+        capture_audio_action_server_initialized = false;
+      }
+#endif
+#if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+      if (capture_camera_action_server_initialized) {
+        fini_result = rcl_action_server_fini(&capture_camera_action_server, &microros_node);
+        capture_camera_action_server_initialized = false;
+      }
+#endif
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+      if (play_audio_action_server_initialized) {
+        fini_result = rcl_action_server_fini(&play_audio_action_server, &microros_node);
+        play_audio_action_server_initialized = false;
+      }
+#endif
+#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+      fini_result = rcl_publisher_fini(&power_status_ros_publisher, &microros_node);
+      fini_result = rcl_publisher_fini(&light_raw_ros_publisher, &microros_node);
+      fini_result = rcl_publisher_fini(&proximity_raw_ros_publisher, &microros_node);
+      fini_result = rcl_publisher_fini(&imu_raw_ros_publisher, &microros_node);
+      fini_result = rcl_publisher_fini(&touch_state_ros_publisher, &microros_node);
+      fini_result = rcl_publisher_fini(&motion_pose_ros_publisher, &microros_node);
+#endif
+      fini_result = rcl_publisher_fini(&status_ros_publisher, &microros_node);
+      fini_result = rcl_node_fini(&microros_node);
+      fini_result = rclc_support_fini(&microros_support);
+      (void)fini_result;
+      microros_entities_initialized = false;
+      stackchan_audio_playback_transport_initialized = false;
+      stackchan_audio_capture_transport_initialized = false;
+      audio_playback_guard.finish_session();
+      play_audio_goal_active = false;
+      play_audio_result_ready = false;
+      play_audio_result_request_pending = false;
+      reset_rcl_error();
+      return;
+    }
+#endif
     if (microros_executor_initialized) {
       rcl_ret_t fini_result = rclc_executor_fini(&microros_executor);
       (void)fini_result;
@@ -1637,31 +3197,80 @@ void destroy_microros_entities() {
     }
     stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
     stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
     stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__action__CaptureCamera_FeedbackMessage__fini(&capture_camera_feedback_message);
+    stackchan_msgs__action__CaptureCamera_GetResult_Response__fini(&capture_camera_result_response);
+    stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
+    stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
     stackchan_msgs__msg__PowerStatus__fini(&power_status_ros_message);
     stackchan_msgs__msg__LightRaw__fini(&light_raw_ros_message);
     stackchan_msgs__msg__ProximityRaw__fini(&proximity_raw_ros_message);
+    stackchan_msgs__msg__ImuRaw__fini(&imu_raw_ros_message);
     stackchan_msgs__msg__TouchState__fini(&touch_state_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     rcl_ret_t fini_result = rcl_publisher_fini(&event_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&imu_raw_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&light_raw_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&motion_pose_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&power_status_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&proximity_raw_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&status_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&touch_state_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&audio_chunk_ros_publisher, &microros_node);
+    fini_result = rcl_subscription_fini(&audio_chunk_subscription, &microros_node);
+    if (capture_audio_action_server_initialized) {
+      fini_result = rcl_action_server_fini(&capture_audio_action_server, &microros_node);
+      capture_audio_action_server_initialized = false;
+    }
+    if (capture_camera_action_server_initialized) {
+      fini_result = rcl_action_server_fini(&capture_camera_action_server, &microros_node);
+      capture_camera_action_server_initialized = false;
+    }
+    if (play_audio_action_server_initialized) {
+      fini_result = rcl_action_server_fini(&play_audio_action_server, &microros_node);
+      play_audio_action_server_initialized = false;
+    }
     fini_result = rcl_service_fini(&face_set_service, &microros_node);
     fini_result = rcl_service_fini(&head_pose_set_service, &microros_node);
+    fini_result = rcl_service_fini(&led_set_service, &microros_node);
     fini_result = rcl_service_fini(&motion_set_service, &microros_node);
     fini_result = rcl_node_fini(&microros_node);
     fini_result = rclc_support_fini(&microros_support);
     (void)fini_result;
     microros_entities_initialized = false;
+    stackchan_audio_playback_transport_initialized = false;
+    stackchan_audio_capture_transport_initialized = false;
+    audio_capture_session_active = false;
+    audio_capture_recording_chunk = false;
+    capture_audio_goal_active = false;
+    capture_audio_result_ready = false;
+    capture_audio_result_request_pending = false;
+    capture_camera_goal_active = false;
+    capture_camera_result_ready = false;
+    capture_camera_result_request_pending = false;
+    audio_playback_guard.finish_session();
+    play_audio_goal_active = false;
+    play_audio_result_ready = false;
+    play_audio_result_request_pending = false;
   }
   reset_rcl_error();
 }
@@ -1692,11 +3301,23 @@ bool firmware_publish_callback(
     return false;
   }
 
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+    (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP)
+  if (topic != stackchan::DevicePublisherTopic::Status) {
+    return true;
+  }
+#elif STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+  if (topic == stackchan::DevicePublisherTopic::Events) {
+    return true;
+  }
+#endif
+
   if (message == nullptr) {
-    Serial.print("stackchan firmware_publish topic=");
-    Serial.print(device_publishers.topic_name(topic));
-    Serial.print(" qos_depth=");
-    Serial.println(device_publishers.qos(topic).depth);
+    stackchan_diag_print("stackchan firmware_publish topic=");
+    stackchan_diag_print(device_publishers.topic_name(topic));
+    stackchan_diag_print(" qos_depth=");
+    stackchan_diag_println(device_publishers.qos(topic).depth);
+    record_microros_publish_failure();
     return false;
   }
 
@@ -1706,7 +3327,7 @@ bool firmware_publish_callback(
     const auto* event_message =
         static_cast<const stackchan::StackChanEventMsg*>(message);
     if (!convert_event_message(*event_message, &event_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &event_ros_message;
@@ -1715,7 +3336,7 @@ bool firmware_publish_callback(
     const auto* status_message =
         static_cast<const stackchan::StackChanStatusMsg*>(message);
     if (!convert_status_message(*status_message, &status_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &status_ros_message;
@@ -1724,7 +3345,7 @@ bool firmware_publish_callback(
     const auto* pose_message =
         static_cast<const stackchan::HeadPoseMsg*>(message);
     if (!convert_head_pose_message(*pose_message, &motion_pose_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &motion_pose_ros_message;
@@ -1733,16 +3354,25 @@ bool firmware_publish_callback(
     const auto* touch_message =
         static_cast<const stackchan::TouchStateMsg*>(message);
     if (!convert_touch_state_message(*touch_message, &touch_state_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &touch_state_ros_message;
     publisher = &touch_state_ros_publisher;
+  } else if (topic == stackchan::DevicePublisherTopic::ImuRaw) {
+    const auto* imu_message =
+        static_cast<const stackchan::ImuRawMsg*>(message);
+    if (!convert_imu_raw_message(*imu_message, &imu_raw_ros_message)) {
+      record_microros_publish_failure();
+      return false;
+    }
+    ros_message = &imu_raw_ros_message;
+    publisher = &imu_raw_ros_publisher;
   } else if (topic == stackchan::DevicePublisherTopic::ProximityRaw) {
     const auto* proximity_message =
         static_cast<const stackchan::ProximityRawMsg*>(message);
     if (!convert_proximity_raw_message(*proximity_message, &proximity_raw_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &proximity_raw_ros_message;
@@ -1751,7 +3381,7 @@ bool firmware_publish_callback(
     const auto* light_message =
         static_cast<const stackchan::LightRawMsg*>(message);
     if (!convert_light_raw_message(*light_message, &light_raw_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &light_raw_ros_message;
@@ -1760,27 +3390,28 @@ bool firmware_publish_callback(
     const auto* power_message =
         static_cast<const stackchan::PowerStatusMsg*>(message);
     if (!convert_power_status_message(*power_message, &power_status_ros_message)) {
-      ++microros_publish_failed_count;
+      record_microros_publish_failure();
       return false;
     }
     ros_message = &power_status_ros_message;
     publisher = &power_status_ros_publisher;
   } else {
-    Serial.print("stackchan firmware_publish topic=");
-    Serial.print(device_publishers.topic_name(topic));
-    Serial.print(" qos_depth=");
-    Serial.println(device_publishers.qos(topic).depth);
+    stackchan_diag_print("stackchan firmware_publish topic=");
+    stackchan_diag_print(device_publishers.topic_name(topic));
+    stackchan_diag_print(" qos_depth=");
+    stackchan_diag_println(device_publishers.qos(topic).depth);
+    record_microros_publish_failure();
     return false;
   }
   ++microros_publish_attempt_count;
   const rcl_ret_t result = rcl_publish(publisher, ros_message, nullptr);
   last_microros_publish_result = result;
   if (result != RCL_RET_OK) {
-    ++microros_publish_failed_count;
+    record_microros_publish_failure();
     reset_rcl_error();
     return false;
   }
-  ++microros_publish_ok_count;
+  record_microros_publish_success();
   return true;
 }
 
@@ -1803,11 +3434,13 @@ void update_agent_connection(bool connected) {
   }
   microros_connected = connected;
   if (connected) {
+    microros_consecutive_publish_failures = 0;
     state_machine.agent_connected();
     microros_connected_since_ms = millis();
     last_bringup_event_enqueue_ms = 0;
     microros_bringup_event_enqueue_count = 0;
   } else {
+    microros_consecutive_publish_failures = 0;
     microros_connected_since_ms = 0;
     last_bringup_event_enqueue_ms = 0;
     microros_bringup_event_enqueue_count = 0;
@@ -1816,6 +3449,10 @@ void update_agent_connection(bool connected) {
 }
 
 void queue_bringup_event_if_ready(unsigned long now) {
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+  (void)now;
+  return;
+#endif
   if (!microros_connected ||
       microros_bringup_event_enqueue_count >= kBringupEventMaxEnqueues ||
       microros_connected_since_ms == 0 ||
@@ -1890,6 +3527,1052 @@ stackchan::Result handle_face_command(
   return last_error;
 }
 
+stackchan::Result audio_playback_completed_result() {
+  return {true, stackchan::ResultState::Completed, "", "audio playback completed", false};
+}
+
+void fill_builtin_time_now(builtin_interfaces__msg__Time* destination) {
+  if (destination == nullptr) {
+    return;
+  }
+  destination->sec = millis() / 1000;
+  destination->nanosec = (millis() % 1000) * 1000000;
+}
+
+bool goal_id_matches(
+    const unique_identifier_msgs__msg__UUID& left,
+    const unique_identifier_msgs__msg__UUID& right) {
+  return memcmp(left.uuid, right.uuid, sizeof(left.uuid)) == 0;
+}
+
+void copy_goal_id(
+    unique_identifier_msgs__msg__UUID* destination,
+    const unique_identifier_msgs__msg__UUID& source) {
+  if (destination == nullptr) {
+    return;
+  }
+  memcpy(destination->uuid, source.uuid, sizeof(destination->uuid));
+}
+
+void copy_goal_info_from_request(
+    rcl_action_goal_info_t* destination,
+    const stackchan_msgs__action__PlayAudio_SendGoal_Request& request) {
+  if (destination == nullptr) {
+    return;
+  }
+  copy_goal_id(&destination->goal_id, request.goal_id);
+  fill_builtin_time_now(&destination->stamp);
+}
+
+void copy_goal_info_from_request(
+    rcl_action_goal_info_t* destination,
+    const stackchan_msgs__action__CaptureAudio_SendGoal_Request& request) {
+  if (destination == nullptr) {
+    return;
+  }
+  copy_goal_id(&destination->goal_id, request.goal_id);
+  fill_builtin_time_now(&destination->stamp);
+}
+
+void copy_goal_info_from_request(
+    rcl_action_goal_info_t* destination,
+    const stackchan_msgs__action__CaptureCamera_SendGoal_Request& request) {
+  if (destination == nullptr) {
+    return;
+  }
+  copy_goal_id(&destination->goal_id, request.goal_id);
+  fill_builtin_time_now(&destination->stamp);
+}
+
+stackchan::Result audio_capture_completed_result() {
+  return {true, stackchan::ResultState::Completed, "", "audio capture completed", false};
+}
+
+stackchan::Result audio_capture_failed_result(const char* message) {
+  return stackchan::Result::rejected(
+      "AUDIO_CAPTURE_FAILED",
+      message == nullptr ? "audio capture failed" : message,
+      true);
+}
+
+stackchan::Result camera_capture_completed_result() {
+  return {true, stackchan::ResultState::Completed, "", "camera capture completed", false};
+}
+
+stackchan::Result camera_capture_failed_result(const char* message) {
+  return stackchan::Result::rejected(
+      "CAMERA_CAPTURE_FAILED",
+      message == nullptr ? "camera capture failed" : message,
+      true);
+}
+
+void clear_capture_camera_image_result() {
+  assign_ros_string(&capture_camera_result_response.result.image.format, "jpeg");
+  capture_camera_result_response.result.image.data.size = 0;
+}
+
+bool capture_camera_goal_valid(
+    const stackchan_msgs__action__CaptureCamera_Goal& goal,
+    stackchan::Result* result) {
+  const char* goal_device_id =
+      goal.meta.device_id.data != nullptr ? goal.meta.device_id.data : "";
+  const char* goal_format = goal.format.data != nullptr ? goal.format.data : "";
+  if (strcmp(goal_device_id, STACKCHAN_DEVICE_ID) != 0) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNKNOWN_COMMAND",
+          "camera capture goal device_id mismatch",
+          true);
+    }
+    return false;
+  }
+  if (!stackchan_camera_snapshot_initialized) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "camera snapshot is not available",
+          false);
+    }
+    return false;
+  }
+  if (strcmp(goal_format, "jpeg") != 0 ||
+      goal.width != stackchan::kCameraWidth ||
+      goal.height != stackchan::kCameraHeight) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "camera capture goal format is unsupported",
+          false);
+    }
+    return false;
+  }
+  const stackchan::Result quality_result =
+      stackchan::validate_camera_quality(goal.quality);
+  if (!quality_result.ok) {
+    if (result != nullptr) {
+      *result = quality_result;
+    }
+    return false;
+  }
+  if (capture_camera_goal_active || capture_camera_result_ready) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "FIRMWARE_BUSY",
+          "camera capture already active",
+          true);
+    }
+    return false;
+  }
+  if (result != nullptr) {
+    *result = stackchan::Result::accepted("camera capture goal accepted");
+  }
+  return true;
+}
+
+void finish_capture_camera_goal(const stackchan::Result& result, int8_t action_status) {
+  if (capture_camera_goal_active && capture_camera_active_goal_handle != nullptr) {
+    rcl_ok(
+        rcl_action_update_goal_state(
+            capture_camera_active_goal_handle,
+            result.ok ? GOAL_EVENT_SUCCEED : GOAL_EVENT_ABORT),
+        "capture_camera_update_terminal_goal_state");
+    rcl_ok(
+        rcl_action_notify_goal_done(&capture_camera_action_server),
+        "capture_camera_notify_goal_done");
+  }
+  capture_camera_terminal_goal_info = capture_camera_active_goal_info;
+  capture_camera_terminal_result = result;
+  capture_camera_terminal_status = action_status;
+  capture_camera_result_ready = true;
+  capture_camera_goal_active = false;
+  capture_camera_active_goal_handle = nullptr;
+  if (!result.ok) {
+    event_publisher.publish(
+        stackchan::DeviceEventKind::CameraCaptureFailed,
+        millis(),
+        last_command_id);
+  }
+}
+
+void send_capture_camera_result_if_ready() {
+  if (!capture_camera_result_ready || !capture_camera_result_request_pending) {
+    return;
+  }
+  if (!goal_id_matches(
+          capture_camera_result_request.goal_id,
+          capture_camera_terminal_goal_info.goal_id)) {
+    return;
+  }
+  capture_camera_result_response.status = capture_camera_terminal_status;
+  if (!convert_command_result(
+          capture_camera_terminal_result,
+          &capture_camera_result_response.result.result)) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_camera_result_assign result=false");
+    return;
+  }
+  if (!capture_camera_terminal_result.ok) {
+    clear_capture_camera_image_result();
+  }
+  if (rcl_ok(rcl_action_send_result_response(
+                 &capture_camera_action_server,
+                 &capture_camera_result_request_header,
+                 &capture_camera_result_response),
+             "capture_camera_send_result_response")) {
+    capture_camera_result_request_pending = false;
+    capture_camera_result_ready = false;
+    clear_capture_camera_image_result();
+  }
+}
+
+void publish_capture_camera_feedback(float progress, const char* message) {
+  copy_goal_id(
+      &capture_camera_feedback_message.goal_id,
+      capture_camera_active_goal_info.goal_id);
+  capture_camera_feedback_message.feedback.progress = progress;
+  assign_ros_string(
+      &capture_camera_feedback_message.feedback.message,
+      message == nullptr ? "" : message);
+  rcl_ok(
+      rcl_action_publish_feedback(
+          &capture_camera_action_server,
+          &capture_camera_feedback_message),
+      "capture_camera_publish_feedback");
+}
+
+bool set_capture_camera_image_result(const uint8_t* data, size_t length) {
+  if (data == nullptr || length == 0 ||
+      length > stackchan::kCameraMaxPayloadBytes ||
+      capture_camera_result_response.result.image.data.capacity < length) {
+    return false;
+  }
+  assign_ros_string(&capture_camera_result_response.result.image.format, "jpeg");
+  memcpy(capture_camera_result_response.result.image.data.data, data, length);
+  capture_camera_result_response.result.image.data.size = length;
+  return true;
+}
+
+stackchan::Result capture_camera_frame_to_result(uint8_t quality) {
+  const uint32_t started_ms = millis();
+  camera_fb_t* frame = esp_camera_fb_get();
+  if (frame == nullptr) {
+    return camera_capture_failed_result("camera frame capture failed");
+  }
+  if (frame->width != stackchan::kCameraWidth ||
+      frame->height != stackchan::kCameraHeight) {
+    esp_camera_fb_return(frame);
+    return camera_capture_failed_result("camera frame dimensions are unsupported");
+  }
+  if (frame->format == PIXFORMAT_JPEG) {
+    const size_t jpeg_length = frame->len;
+    if (millis() - started_ms > kCameraCaptureTimeoutMs) {
+      esp_camera_fb_return(frame);
+      return camera_capture_failed_result("camera capture timed out");
+    }
+    if (jpeg_length > stackchan::kCameraMaxPayloadBytes) {
+      esp_camera_fb_return(frame);
+      return camera_capture_failed_result("camera JPEG payload exceeds 96 KiB");
+    }
+    if (!set_capture_camera_image_result(frame->buf, jpeg_length)) {
+      esp_camera_fb_return(frame);
+      return camera_capture_failed_result("camera JPEG result buffer is unavailable");
+    }
+    esp_camera_fb_return(frame);
+    return camera_capture_completed_result();
+  }
+
+  uint8_t* jpeg_buffer = nullptr;
+  size_t jpeg_length = 0;
+  const bool encoded = frame2jpg(frame, quality, &jpeg_buffer, &jpeg_length);
+  esp_camera_fb_return(frame);
+  if (!encoded || jpeg_buffer == nullptr || jpeg_length == 0) {
+    if (jpeg_buffer != nullptr) {
+      free(jpeg_buffer);
+    }
+    return camera_capture_failed_result("camera JPEG encode failed");
+  }
+  if (millis() - started_ms > kCameraCaptureTimeoutMs) {
+    free(jpeg_buffer);
+    return camera_capture_failed_result("camera capture timed out");
+  }
+  if (jpeg_length > stackchan::kCameraMaxPayloadBytes) {
+    free(jpeg_buffer);
+    return camera_capture_failed_result("camera JPEG payload exceeds 96 KiB");
+  }
+  if (!set_capture_camera_image_result(jpeg_buffer, jpeg_length)) {
+    free(jpeg_buffer);
+    return camera_capture_failed_result("camera JPEG result buffer is unavailable");
+  }
+  free(jpeg_buffer);
+  return camera_capture_completed_result();
+}
+
+void start_capture_camera_goal(
+    rcl_action_goal_handle_t* goal_handle,
+    const stackchan_msgs__action__CaptureCamera_SendGoal_Request& request) {
+  capture_camera_active_goal_handle = goal_handle;
+  copy_goal_info_from_request(&capture_camera_active_goal_info, request);
+  capture_camera_goal_active = true;
+  rcl_ok(
+      rcl_action_update_goal_state(capture_camera_active_goal_handle, GOAL_EVENT_EXECUTE),
+      "capture_camera_update_execute_goal_state");
+  copy_bounded(
+      last_command_id,
+      sizeof(last_command_id),
+      request.goal.meta.command_id.data != nullptr
+          ? request.goal.meta.command_id.data
+          : "");
+  clear_capture_camera_image_result();
+  publish_capture_camera_feedback(0.0f, "capture started");
+  publish_status_heartbeat();
+  const stackchan::Result result =
+      capture_camera_frame_to_result(request.goal.quality);
+  publish_capture_camera_feedback(result.ok ? 1.0f : 0.0f, result.message);
+  const int8_t action_status =
+      result.ok
+          ? static_cast<int8_t>(GOAL_STATE_SUCCEEDED)
+          : static_cast<int8_t>(GOAL_STATE_ABORTED);
+  finish_capture_camera_goal(result, action_status);
+  send_capture_camera_result_if_ready();
+}
+
+void poll_capture_camera_goal_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_goal_request(
+      &capture_camera_action_server,
+      &request_header,
+      &capture_camera_goal_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "capture_camera_take_goal_request");
+    return;
+  }
+
+  rcl_action_goal_info_t goal_info =
+      rcl_action_get_zero_initialized_goal_info();
+  copy_goal_info_from_request(&goal_info, capture_camera_goal_request);
+  if (capture_camera_goal_active || capture_camera_result_ready) {
+    capture_camera_goal_response.accepted = false;
+    capture_camera_goal_response.stamp = goal_info.stamp;
+    rcl_ok(
+        rcl_action_send_goal_response(
+            &capture_camera_action_server,
+            &request_header,
+            &capture_camera_goal_response),
+        "capture_camera_send_busy_goal_response");
+    return;
+  }
+  rcl_action_goal_handle_t* goal_handle =
+      rcl_action_accept_new_goal(&capture_camera_action_server, &goal_info);
+  capture_camera_goal_response.accepted = goal_handle != nullptr;
+  capture_camera_goal_response.stamp = goal_info.stamp;
+  rcl_ok(
+      rcl_action_send_goal_response(
+          &capture_camera_action_server,
+          &request_header,
+          &capture_camera_goal_response),
+      "capture_camera_send_goal_response");
+  if (goal_handle == nullptr) {
+    reset_rcl_error();
+    return;
+  }
+
+  stackchan::Result validation_result;
+  if (!capture_camera_goal_valid(capture_camera_goal_request.goal, &validation_result)) {
+    capture_camera_active_goal_handle = goal_handle;
+    copy_goal_info_from_request(&capture_camera_active_goal_info, capture_camera_goal_request);
+    capture_camera_goal_active = true;
+    rcl_ok(
+        rcl_action_update_goal_state(capture_camera_active_goal_handle, GOAL_EVENT_EXECUTE),
+        "capture_camera_update_invalid_goal_state");
+    clear_capture_camera_image_result();
+    finish_capture_camera_goal(validation_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  start_capture_camera_goal(goal_handle, capture_camera_goal_request);
+}
+
+void poll_capture_camera_result_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_result_request(
+      &capture_camera_action_server,
+      &request_header,
+      &capture_camera_result_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "capture_camera_take_result_request");
+    return;
+  }
+  capture_camera_result_request_header = request_header;
+  capture_camera_result_request_pending = true;
+  send_capture_camera_result_if_ready();
+}
+
+void poll_capture_camera_action_server() {
+  if (!capture_camera_action_server_initialized) {
+    return;
+  }
+  poll_capture_camera_goal_request();
+  poll_capture_camera_result_request();
+  send_capture_camera_result_if_ready();
+}
+
+bool capture_audio_goal_valid(
+    const stackchan_msgs__action__CaptureAudio_Goal& goal,
+    stackchan::Result* result) {
+  const char* goal_device_id =
+      goal.meta.device_id.data != nullptr ? goal.meta.device_id.data : "";
+  const char* goal_format = goal.format.data != nullptr ? goal.format.data : "";
+  if (strcmp(goal_device_id, STACKCHAN_DEVICE_ID) != 0) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNKNOWN_COMMAND",
+          "audio capture goal device_id mismatch",
+          true);
+    }
+    return false;
+  }
+  if (!stackchan_audio_capture_initialized) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "microphone is not available",
+          false);
+    }
+    return false;
+  }
+  if (strcmp(goal_format, "pcm_s16le") != 0 ||
+      goal.sample_rate != stackchan::kAudioSampleRate ||
+      goal.channels != stackchan::kAudioChannels) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "audio capture goal format is unsupported",
+          false);
+    }
+    return false;
+  }
+  if (goal.duration_ms == 0 || goal.duration_ms > kAudioCaptureMaxDurationMs) {
+    if (result != nullptr) {
+      *result = audio_capture_failed_result(
+          "audio capture duration must be between 1 and 15000 ms");
+    }
+    return false;
+  }
+  if (audio_capture_session_active) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "FIRMWARE_BUSY",
+          "audio capture already active",
+          true);
+    }
+    return false;
+  }
+  if (result != nullptr) {
+    *result = stackchan::Result::accepted("audio capture goal accepted");
+  }
+  return true;
+}
+
+void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_status) {
+  if (capture_audio_goal_active && capture_audio_active_goal_handle != nullptr) {
+    rcl_ok(
+        rcl_action_update_goal_state(
+            capture_audio_active_goal_handle,
+            result.ok ? GOAL_EVENT_SUCCEED : GOAL_EVENT_ABORT),
+        "capture_audio_update_terminal_goal_state");
+    rcl_ok(
+        rcl_action_notify_goal_done(&capture_audio_action_server),
+        "capture_audio_notify_goal_done");
+  }
+  capture_audio_terminal_goal_info = capture_audio_active_goal_info;
+  capture_audio_terminal_result = result;
+  capture_audio_terminal_status = action_status;
+  capture_audio_result_ready = true;
+  capture_audio_goal_active = false;
+  capture_audio_active_goal_handle = nullptr;
+  audio_capture_session_active = false;
+  audio_capture_recording_chunk = false;
+  char finished_command_id[37]{};
+  copy_bounded(finished_command_id, sizeof(finished_command_id), audio_capture_command_id);
+  if (result.ok) {
+    stackchan::publish_audio_capture_event(
+        event_publisher,
+        stackchan::AudioCaptureEvent::Finished,
+        millis(),
+        finished_command_id);
+  } else {
+    stackchan::publish_audio_capture_event(
+        event_publisher,
+        stackchan::AudioCaptureEvent::Failed,
+        millis(),
+        finished_command_id);
+  }
+  copy_bounded(audio_capture_command_id, sizeof(audio_capture_command_id), "");
+}
+
+void send_capture_audio_result_if_ready() {
+  if (!capture_audio_result_ready || !capture_audio_result_request_pending) {
+    return;
+  }
+  if (!goal_id_matches(
+          capture_audio_result_request.goal_id,
+          capture_audio_terminal_goal_info.goal_id)) {
+    return;
+  }
+  capture_audio_result_response.status = capture_audio_terminal_status;
+  if (!convert_command_result(
+          capture_audio_terminal_result,
+          &capture_audio_result_response.result.result)) {
+    stackchan_diag_println("stackchan micro_ros_step=capture_audio_result_assign result=false");
+    return;
+  }
+  if (rcl_ok(rcl_action_send_result_response(
+                 &capture_audio_action_server,
+                 &capture_audio_result_request_header,
+                 &capture_audio_result_response),
+             "capture_audio_send_result_response")) {
+    capture_audio_result_request_pending = false;
+    capture_audio_result_ready = false;
+  }
+}
+
+void publish_capture_audio_feedback(float progress, const char* message) {
+  copy_goal_id(
+      &capture_audio_feedback_message.goal_id,
+      capture_audio_active_goal_info.goal_id);
+  capture_audio_feedback_message.feedback.progress = progress;
+  assign_ros_string(
+      &capture_audio_feedback_message.feedback.message,
+      message == nullptr ? "" : message);
+  rcl_ok(
+      rcl_action_publish_feedback(
+          &capture_audio_action_server,
+          &capture_audio_feedback_message),
+      "capture_audio_publish_feedback");
+}
+
+bool publish_capture_audio_chunk(const int16_t* samples, size_t sample_count) {
+  if (samples == nullptr ||
+      sample_count == 0 ||
+      sample_count > kAudioCaptureChunkSamples ||
+      audio_capture_chunk_ros_message.pcm.capacity < sample_count * 2) {
+    return false;
+  }
+  assign_ros_string(&audio_capture_chunk_ros_message.device_id, STACKCHAN_DEVICE_ID);
+  assign_ros_string(&audio_capture_chunk_ros_message.command_id, audio_capture_command_id);
+  audio_capture_chunk_ros_message.direction = stackchan_msgs__msg__AudioChunk__CAPTURE;
+  audio_capture_chunk_ros_message.sequence = audio_capture_sequence;
+  audio_capture_chunk_ros_message.format = stackchan_msgs__msg__AudioChunk__PCM_S16LE;
+  audio_capture_chunk_ros_message.sample_rate = stackchan::kAudioSampleRate;
+  audio_capture_chunk_ros_message.channels = stackchan::kAudioChannels;
+  audio_capture_chunk_ros_message.pcm.size = sample_count * 2;
+  for (size_t index = 0; index < sample_count; ++index) {
+    const uint16_t value = static_cast<uint16_t>(samples[index]);
+    const size_t byte_index = index * 2;
+    audio_capture_chunk_ros_message.pcm.data[byte_index] =
+        static_cast<uint8_t>(value & 0xFF);
+    audio_capture_chunk_ros_message.pcm.data[byte_index + 1] =
+        static_cast<uint8_t>((value >> 8) & 0xFF);
+  }
+  const rcl_ret_t publish_result =
+      rcl_publish(&audio_chunk_ros_publisher, &audio_capture_chunk_ros_message, nullptr);
+  if (publish_result != RCL_RET_OK) {
+    last_microros_publish_result = publish_result;
+    reset_rcl_error();
+    return false;
+  }
+  ++audio_capture_sequence;
+  ++audio_capture_published_chunks;
+  const float progress =
+      audio_capture_target_chunks == 0
+          ? 1.0f
+          : static_cast<float>(audio_capture_published_chunks) /
+                static_cast<float>(audio_capture_target_chunks);
+  publish_capture_audio_feedback(progress > 1.0f ? 1.0f : progress, "capturing");
+  return true;
+}
+
+bool start_next_capture_audio_chunk() {
+  if (!audio_capture_session_active ||
+      audio_capture_recording_chunk ||
+      audio_capture_published_chunks >= audio_capture_target_chunks) {
+    return true;
+  }
+  int16_t* samples = audio_capture_buffers[audio_capture_buffer_index];
+  if (!M5.Mic.record(samples, kAudioCaptureChunkSamples, stackchan::kAudioSampleRate, false)) {
+    return false;
+  }
+  audio_capture_recording_chunk = true;
+  audio_capture_last_chunk_ms = millis();
+  return true;
+}
+
+void step_capture_audio_session() {
+  if (!audio_capture_session_active) {
+    send_capture_audio_result_if_ready();
+    return;
+  }
+  if (audio_capture_recording_chunk && M5.Mic.isRecording() == 0) {
+    int16_t* samples = audio_capture_buffers[audio_capture_buffer_index];
+    if (!publish_capture_audio_chunk(samples, kAudioCaptureChunkSamples)) {
+      stackchan::publish_mic_overrun_event(
+          event_publisher,
+          millis(),
+          audio_capture_command_id);
+      finish_capture_audio_goal(stackchan::mic_overrun(), GOAL_STATE_ABORTED);
+      send_capture_audio_result_if_ready();
+      return;
+    }
+    audio_capture_buffer_index = (audio_capture_buffer_index + 1) % 2;
+    audio_capture_recording_chunk = false;
+  }
+  if (audio_capture_published_chunks >= audio_capture_target_chunks) {
+    publish_capture_audio_feedback(1.0f, "capture complete");
+    finish_capture_audio_goal(audio_capture_completed_result(), GOAL_STATE_SUCCEEDED);
+    send_capture_audio_result_if_ready();
+    return;
+  }
+  if (!audio_capture_recording_chunk && !start_next_capture_audio_chunk()) {
+    finish_capture_audio_goal(
+        audio_capture_failed_result("microphone record request failed"),
+        GOAL_STATE_ABORTED);
+  }
+  send_capture_audio_result_if_ready();
+}
+
+void start_capture_audio_goal(
+    rcl_action_goal_handle_t* goal_handle,
+    const stackchan_msgs__action__CaptureAudio_SendGoal_Request& request) {
+  capture_audio_active_goal_handle = goal_handle;
+  copy_goal_info_from_request(&capture_audio_active_goal_info, request);
+  capture_audio_goal_active = true;
+  rcl_ok(
+      rcl_action_update_goal_state(capture_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
+      "capture_audio_update_execute_goal_state");
+  copy_bounded(
+      audio_capture_command_id,
+      sizeof(audio_capture_command_id),
+      request.goal.meta.command_id.data != nullptr
+          ? request.goal.meta.command_id.data
+          : "");
+  copy_bounded(last_command_id, sizeof(last_command_id), audio_capture_command_id);
+  audio_capture_duration_ms = request.goal.duration_ms;
+  audio_capture_target_chunks =
+      (audio_capture_duration_ms + stackchan::kAudioChunkMs - 1) /
+      stackchan::kAudioChunkMs;
+  if (audio_capture_target_chunks == 0) {
+    audio_capture_target_chunks = 1;
+  }
+  audio_capture_started_ms = millis();
+  audio_capture_last_chunk_ms = audio_capture_started_ms;
+  audio_capture_sequence = 0;
+  audio_capture_published_chunks = 0;
+  audio_capture_buffer_index = 0;
+  audio_capture_recording_chunk = false;
+  audio_capture_session_active = true;
+  stackchan::publish_audio_capture_event(
+      event_publisher,
+      stackchan::AudioCaptureEvent::Started,
+      audio_capture_started_ms,
+      audio_capture_command_id);
+  publish_capture_audio_feedback(0.0f, "capture started");
+  publish_status_heartbeat();
+  if (!start_next_capture_audio_chunk()) {
+    finish_capture_audio_goal(
+        audio_capture_failed_result("microphone record request failed"),
+        GOAL_STATE_ABORTED);
+  }
+}
+
+void poll_capture_audio_goal_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_goal_request(
+      &capture_audio_action_server,
+      &request_header,
+      &capture_audio_goal_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "capture_audio_take_goal_request");
+    return;
+  }
+
+  rcl_action_goal_info_t goal_info =
+      rcl_action_get_zero_initialized_goal_info();
+  copy_goal_info_from_request(&goal_info, capture_audio_goal_request);
+  if (audio_capture_session_active) {
+    capture_audio_goal_response.accepted = false;
+    capture_audio_goal_response.stamp = goal_info.stamp;
+    rcl_ok(
+        rcl_action_send_goal_response(
+            &capture_audio_action_server,
+            &request_header,
+            &capture_audio_goal_response),
+        "capture_audio_send_busy_goal_response");
+    return;
+  }
+  rcl_action_goal_handle_t* goal_handle =
+      rcl_action_accept_new_goal(&capture_audio_action_server, &goal_info);
+  capture_audio_goal_response.accepted = goal_handle != nullptr;
+  capture_audio_goal_response.stamp = goal_info.stamp;
+  rcl_ok(
+      rcl_action_send_goal_response(
+          &capture_audio_action_server,
+          &request_header,
+          &capture_audio_goal_response),
+      "capture_audio_send_goal_response");
+  if (goal_handle == nullptr) {
+    reset_rcl_error();
+    return;
+  }
+
+  stackchan::Result validation_result;
+  if (!capture_audio_goal_valid(capture_audio_goal_request.goal, &validation_result)) {
+    capture_audio_active_goal_handle = goal_handle;
+    copy_goal_info_from_request(&capture_audio_active_goal_info, capture_audio_goal_request);
+    capture_audio_goal_active = true;
+    rcl_ok(
+        rcl_action_update_goal_state(capture_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
+        "capture_audio_update_invalid_goal_state");
+    finish_capture_audio_goal(validation_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  start_capture_audio_goal(goal_handle, capture_audio_goal_request);
+}
+
+void poll_capture_audio_result_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_result_request(
+      &capture_audio_action_server,
+      &request_header,
+      &capture_audio_result_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "capture_audio_take_result_request");
+    return;
+  }
+  capture_audio_result_request_header = request_header;
+  capture_audio_result_request_pending = true;
+  send_capture_audio_result_if_ready();
+}
+
+void poll_capture_audio_action_server() {
+  if (!capture_audio_action_server_initialized) {
+    return;
+  }
+  poll_capture_audio_goal_request();
+  poll_capture_audio_result_request();
+  step_capture_audio_session();
+}
+
+bool play_audio_goal_valid(
+    const stackchan_msgs__action__PlayAudio_Goal& goal,
+    stackchan::Result* result) {
+  const char* goal_device_id =
+      goal.meta.device_id.data != nullptr ? goal.meta.device_id.data : "";
+  const char* goal_format = goal.format.data != nullptr ? goal.format.data : "";
+  if (strcmp(goal_device_id, STACKCHAN_DEVICE_ID) != 0) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNKNOWN_COMMAND",
+          "audio playback goal device_id mismatch",
+          true);
+    }
+    return false;
+  }
+  if (!stackchan_audio_playback_initialized) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "speaker is not available",
+          false);
+    }
+    return false;
+  }
+  if (strcmp(goal_format, "pcm_s16le") != 0 ||
+      goal.sample_rate != stackchan::kAudioSampleRate ||
+      goal.channels != stackchan::kAudioChannels) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "UNSUPPORTED_FEATURE",
+          "audio playback goal format is unsupported",
+          false);
+    }
+    return false;
+  }
+  if (audio_playback_guard.active()) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "FIRMWARE_BUSY",
+          "audio playback already active",
+          true);
+    }
+    return false;
+  }
+  if (result != nullptr) {
+    *result = stackchan::Result::accepted("audio playback goal accepted");
+  }
+  return true;
+}
+
+void finish_play_audio_goal(const stackchan::Result& result, int8_t action_status) {
+  if (play_audio_goal_active && play_audio_active_goal_handle != nullptr) {
+    rcl_ok(
+        rcl_action_update_goal_state(
+            play_audio_active_goal_handle,
+            result.ok ? GOAL_EVENT_SUCCEED : GOAL_EVENT_ABORT),
+        "play_audio_update_terminal_goal_state");
+    rcl_ok(
+        rcl_action_notify_goal_done(&play_audio_action_server),
+        "play_audio_notify_goal_done");
+  }
+  play_audio_terminal_goal_info = play_audio_active_goal_info;
+  play_audio_terminal_result = result;
+  play_audio_terminal_status = action_status;
+  play_audio_result_ready = true;
+  play_audio_goal_active = false;
+  play_audio_active_goal_handle = nullptr;
+  play_audio_received_chunk = false;
+  audio_playback_guard.finish_session();
+}
+
+void send_play_audio_result_if_ready() {
+  if (!play_audio_result_ready || !play_audio_result_request_pending) {
+    return;
+  }
+  if (!goal_id_matches(
+          play_audio_result_request.goal_id,
+          play_audio_terminal_goal_info.goal_id)) {
+    return;
+  }
+  play_audio_result_response.status = play_audio_terminal_status;
+  if (!convert_command_result(
+          play_audio_terminal_result,
+          &play_audio_result_response.result.result)) {
+    stackchan_diag_println("stackchan micro_ros_step=play_audio_result_assign result=false");
+    return;
+  }
+  if (rcl_ok(rcl_action_send_result_response(
+                 &play_audio_action_server,
+                 &play_audio_result_request_header,
+                 &play_audio_result_response),
+             "play_audio_send_result_response")) {
+    play_audio_result_request_pending = false;
+    play_audio_result_ready = false;
+  }
+}
+
+void maybe_finish_play_audio_session() {
+  if (!play_audio_goal_active) {
+    send_play_audio_result_if_ready();
+    return;
+  }
+  const uint32_t now_ms = millis();
+  if (!play_audio_received_chunk &&
+      now_ms - play_audio_started_ms >= kAudioPlaybackNoChunkTimeoutMs) {
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+  } else if (play_audio_received_chunk &&
+             now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs &&
+             !M5.Speaker.isPlaying(0)) {
+    finish_play_audio_goal(audio_playback_completed_result(), GOAL_STATE_SUCCEEDED);
+  }
+  send_play_audio_result_if_ready();
+}
+
+void start_play_audio_goal(
+    rcl_action_goal_handle_t* goal_handle,
+    const stackchan_msgs__action__PlayAudio_SendGoal_Request& request) {
+  play_audio_active_goal_handle = goal_handle;
+  copy_goal_info_from_request(&play_audio_active_goal_info, request);
+  play_audio_goal_active = true;
+  rcl_ok(
+      rcl_action_update_goal_state(play_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
+      "play_audio_update_execute_goal_state");
+  const stackchan::Result start_result =
+      audio_playback_guard.start_session(
+          request.goal.meta.command_id.data != nullptr
+              ? request.goal.meta.command_id.data
+              : "");
+  if (!start_result.ok) {
+    finish_play_audio_goal(start_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  copy_bounded(
+      last_command_id,
+      sizeof(last_command_id),
+      request.goal.meta.command_id.data != nullptr
+          ? request.goal.meta.command_id.data
+          : "");
+  play_audio_received_chunk = false;
+  play_audio_started_ms = millis();
+  play_audio_last_chunk_ms = play_audio_started_ms;
+  publish_status_heartbeat();
+}
+
+void poll_play_audio_goal_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_goal_request(
+      &play_audio_action_server,
+      &request_header,
+      &play_audio_goal_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "play_audio_take_goal_request");
+    return;
+  }
+
+  rcl_action_goal_info_t goal_info =
+      rcl_action_get_zero_initialized_goal_info();
+  copy_goal_info_from_request(&goal_info, play_audio_goal_request);
+  if (audio_playback_guard.active()) {
+    play_audio_goal_response.accepted = false;
+    play_audio_goal_response.stamp = goal_info.stamp;
+    rcl_ok(
+        rcl_action_send_goal_response(
+            &play_audio_action_server,
+            &request_header,
+            &play_audio_goal_response),
+        "play_audio_send_busy_goal_response");
+    return;
+  }
+  rcl_action_goal_handle_t* goal_handle =
+      rcl_action_accept_new_goal(&play_audio_action_server, &goal_info);
+  play_audio_goal_response.accepted = goal_handle != nullptr;
+  play_audio_goal_response.stamp = goal_info.stamp;
+  rcl_ok(
+      rcl_action_send_goal_response(
+          &play_audio_action_server,
+          &request_header,
+          &play_audio_goal_response),
+      "play_audio_send_goal_response");
+  if (goal_handle == nullptr) {
+    reset_rcl_error();
+    return;
+  }
+
+  stackchan::Result validation_result;
+  if (!play_audio_goal_valid(play_audio_goal_request.goal, &validation_result)) {
+    play_audio_active_goal_handle = goal_handle;
+    copy_goal_info_from_request(&play_audio_active_goal_info, play_audio_goal_request);
+    play_audio_goal_active = true;
+    rcl_ok(
+        rcl_action_update_goal_state(play_audio_active_goal_handle, GOAL_EVENT_EXECUTE),
+        "play_audio_update_invalid_goal_state");
+    finish_play_audio_goal(validation_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  start_play_audio_goal(goal_handle, play_audio_goal_request);
+}
+
+void poll_play_audio_result_request() {
+  rmw_request_id_t request_header;
+  rcl_ret_t take_result = rcl_action_take_result_request(
+      &play_audio_action_server,
+      &request_header,
+      &play_audio_result_request);
+  if (take_result == RCL_RET_ACTION_SERVER_TAKE_FAILED) {
+    reset_rcl_error();
+    return;
+  }
+  if (take_result != RCL_RET_OK) {
+    rcl_ok(take_result, "play_audio_take_result_request");
+    return;
+  }
+  play_audio_result_request_header = request_header;
+  play_audio_result_request_pending = true;
+  send_play_audio_result_if_ready();
+}
+
+void poll_play_audio_action_server() {
+  if (!play_audio_action_server_initialized) {
+    return;
+  }
+  poll_play_audio_goal_request();
+  poll_play_audio_result_request();
+  maybe_finish_play_audio_session();
+}
+
+void handle_audio_chunk_subscription(const void* message) {
+  if (message == nullptr || !play_audio_goal_active) {
+    return;
+  }
+  const auto* chunk = static_cast<const stackchan_msgs__msg__AudioChunk*>(message);
+  if (chunk->direction != stackchan_msgs__msg__AudioChunk__PLAYBACK) {
+    return;
+  }
+  const char* chunk_command_id =
+      chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  stackchan::AudioPlaybackChunk playback_chunk{
+      chunk_command_id,
+      stackchan::AudioDirection::Playback,
+      static_cast<stackchan::AudioFormat>(chunk->format),
+      chunk->sample_rate,
+      chunk->channels,
+      chunk->sequence,
+      static_cast<uint16_t>(chunk->pcm.size),
+  };
+  const stackchan::Result validation_result =
+      audio_playback_guard.validate_chunk(playback_chunk);
+  if (!validation_result.ok) {
+    if (strcmp(validation_result.error_code, "AUDIO_UNDERRUN") == 0) {
+      stackchan::publish_audio_underrun_event(
+          event_publisher,
+          millis(),
+          chunk_command_id);
+    }
+    finish_play_audio_goal(validation_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  if (chunk->pcm.size % 2 != 0 ||
+      chunk->pcm.size > stackchan::kAudioMaxChunkBytes) {
+    finish_play_audio_goal(
+        stackchan::Result::rejected(
+            "MALFORMED_AUDIO_CHUNK",
+            "audio playback chunk byte length is invalid",
+            true),
+        GOAL_STATE_ABORTED);
+    return;
+  }
+  int16_t* samples = play_audio_buffers[play_audio_buffer_index];
+  play_audio_buffer_index =
+      (play_audio_buffer_index + 1) %
+      (sizeof(play_audio_buffers) / sizeof(play_audio_buffers[0]));
+  const size_t sample_count = chunk->pcm.size / 2;
+  for (size_t index = 0; index < sample_count; ++index) {
+    const size_t byte_index = index * 2;
+    samples[index] = static_cast<int16_t>(
+        static_cast<uint16_t>(chunk->pcm.data[byte_index]) |
+        (static_cast<uint16_t>(chunk->pcm.data[byte_index + 1]) << 8));
+  }
+  if (!M5.Speaker.playRaw(
+          samples,
+          sample_count,
+          stackchan::kAudioSampleRate,
+          false,
+          1,
+          0,
+          false)) {
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+    return;
+  }
+  play_audio_received_chunk = true;
+  play_audio_last_chunk_ms = millis();
+}
+
 void handle_face_set_service(const void* request, void* response) {
   const auto* face_request =
       static_cast<const stackchan_msgs__srv__SetFace_Request*>(request);
@@ -1918,7 +4601,98 @@ void handle_face_set_service(const void* request, void* response) {
   }
 
   if (!convert_command_result(result, &face_response->result)) {
-    Serial.println("stackchan micro_ros_step=face_set_response_assign result=false");
+    stackchan_diag_println("stackchan micro_ros_step=face_set_response_assign result=false");
+  }
+}
+
+void led_rgb_for_pattern(const char* pattern, uint8_t* red, uint8_t* green, uint8_t* blue) {
+  if (red == nullptr || green == nullptr || blue == nullptr) {
+    return;
+  }
+  *red = 0;
+  *green = 0;
+  *blue = 0;
+  if (strcmp(pattern, "progress") == 0) {
+    *blue = 80;
+  } else if (strcmp(pattern, "success") == 0) {
+    *green = 80;
+  } else if (strcmp(pattern, "warning") == 0) {
+    *red = 80;
+    *green = 48;
+  } else if (strcmp(pattern, "error") == 0) {
+    *red = 96;
+  } else if (strcmp(pattern, "listening") == 0) {
+    *green = 48;
+    *blue = 80;
+  }
+}
+
+stackchan::Result apply_led_pattern(const char* pattern) {
+  if (!stackchan_led_initialized) {
+    return stackchan::Result::rejected(
+        "UNSUPPORTED_FEATURE",
+        "K151 RGB LED adapter is unavailable",
+        true);
+  }
+  uint8_t red = 0;
+  uint8_t green = 0;
+  uint8_t blue = 0;
+  led_rgb_for_pattern(pattern, &red, &green, &blue);
+  for (uint8_t index = 0; index < kRgbLedCount; ++index) {
+    io_expander.setLedColor(index, red, green, blue);
+  }
+  io_expander.refreshLeds();
+  return stackchan::Result::accepted("LED pattern accepted");
+}
+
+stackchan::Result handle_led_command(
+    const stackchan::CommandMeta& meta,
+    const char* pattern) {
+  if (meta.priority == stackchan::Priority::Safety) {
+    last_error = stackchan::Result::rejected(
+        "INVALID_PRIORITY",
+        "SAFETY priority is reserved for firmware-internal fault handling");
+    return last_error;
+  }
+  if (!is_known_led_pattern(pattern)) {
+    last_error = stackchan::Result::rejected("UNKNOWN_COMMAND", "unknown LED pattern");
+    return last_error;
+  }
+  copy_bounded(last_command_id, sizeof(last_command_id), meta.command_id);
+  last_error = apply_led_pattern(pattern);
+  publish_status_heartbeat();
+  return last_error;
+}
+
+void handle_led_set_service(const void* request, void* response) {
+  const auto* led_request =
+      static_cast<const stackchan_msgs__srv__SetLed_Request*>(request);
+  auto* led_response =
+      static_cast<stackchan_msgs__srv__SetLed_Response*>(response);
+  if (led_request == nullptr || led_response == nullptr) {
+    return;
+  }
+
+  stackchan::Result result =
+      stackchan::Result::rejected("INVALID_DEVICE_ID", "request device_id mismatch");
+  if (request_matches_device_id(led_request->meta.device_id)) {
+    const stackchan::CommandMeta meta{
+        STACKCHAN_DEVICE_ID,
+        led_request->meta.command_id.data == nullptr
+            ? ""
+            : led_request->meta.command_id.data,
+        led_request->meta.source.data == nullptr
+            ? ""
+            : led_request->meta.source.data,
+        "",
+        priority_from_ros(led_request->meta.priority)};
+    result = handle_led_command(
+        meta,
+        led_request->pattern.data == nullptr ? "" : led_request->pattern.data);
+  }
+
+  if (!convert_command_result(result, &led_response->result)) {
+    stackchan_diag_println("stackchan micro_ros_step=led_set_response_assign result=false");
   }
 }
 
@@ -2107,7 +4881,7 @@ void handle_head_pose_set_service(const void* request, void* response) {
   }
 
   if (!convert_command_result(result, &pose_response->result)) {
-    Serial.println("stackchan micro_ros_step=head_pose_set_response_assign result=false");
+    stackchan_diag_println("stackchan micro_ros_step=head_pose_set_response_assign result=false");
   }
 }
 
@@ -2119,8 +4893,8 @@ void spin_command_executor() {
   }
   const rcl_ret_t result = rclc_executor_spin_some(&microros_executor, RCL_MS_TO_NS(5));
   if (result != RCL_RET_OK && result != RCL_RET_TIMEOUT) {
-    Serial.print("stackchan micro_ros_step=executor_spin result=");
-    Serial.println(result);
+    stackchan_diag_print("stackchan micro_ros_step=executor_spin result=");
+    stackchan_diag_println(result);
     reset_rcl_error();
   }
 }
@@ -2215,7 +4989,7 @@ void handle_motion_set_service(const void* request, void* response) {
   }
 
   if (!convert_command_result(result, &motion_response->result)) {
-    Serial.println("stackchan micro_ros_step=motion_set_response_assign result=false");
+    stackchan_diag_println("stackchan micro_ros_step=motion_set_response_assign result=false");
   }
 }
 
@@ -2231,48 +5005,85 @@ void publish_status_heartbeat() {
         last_error,
         "bringup"};
     const stackchan::Result result = device_publishers.publish_status(telemetry);
-    if (!result.ok) {
+    if (!result.ok && microros_publish_failures_exceeded()) {
       update_agent_connection(false);
     }
     return;
   }
-  Serial.print("stackchan status device_id=");
-  Serial.print(STACKCHAN_DEVICE_ID);
-  Serial.print(" face=");
-  Serial.print(current_face);
-  Serial.print(" motion=");
-  Serial.print(current_motion);
-  Serial.print(" last_command_id=");
-  Serial.print(last_command_id);
-  Serial.print(" ok=");
-  Serial.print(last_error.ok ? "true" : "false");
-  Serial.print(" error_code=");
-  Serial.print(last_error.error_code);
-  Serial.print(" micro_ros_pub_attempts=");
-  Serial.print(microros_publish_attempt_count);
-  Serial.print(" micro_ros_pub_ok=");
-  Serial.print(microros_publish_ok_count);
-  Serial.print(" micro_ros_pub_failed=");
-  Serial.print(microros_publish_failed_count);
-  Serial.print(" last_rcl_publish=");
-  Serial.print(last_microros_publish_result);
-  Serial.print(" bringup_events_enqueued=");
-  Serial.print(microros_bringup_event_enqueue_count);
-  Serial.print(" bringup_events_total=");
-  Serial.print(microros_bringup_event_total_enqueue_count);
-  Serial.print(" audio_sample_rate=");
-  Serial.print(audio_policy.sample_rate);
-  Serial.print(" imu_min_hz=");
-  Serial.print(stackchan::kImuMinHz);
-  Serial.print(" events_topic=");
+  stackchan_diag_print("stackchan status device_id=");
+  stackchan_diag_print(STACKCHAN_DEVICE_ID);
+  stackchan_diag_print(" face=");
+  stackchan_diag_print(current_face);
+  stackchan_diag_print(" motion=");
+  stackchan_diag_print(current_motion);
+  stackchan_diag_print(" last_command_id=");
+  stackchan_diag_print(last_command_id);
+  stackchan_diag_print(" ok=");
+  stackchan_diag_print(last_error.ok ? "true" : "false");
+  stackchan_diag_print(" error_code=");
+  stackchan_diag_print(last_error.error_code);
+  stackchan_diag_print(" micro_ros_pub_attempts=");
+  stackchan_diag_print(microros_publish_attempt_count);
+  stackchan_diag_print(" micro_ros_pub_ok=");
+  stackchan_diag_print(microros_publish_ok_count);
+  stackchan_diag_print(" micro_ros_pub_failed=");
+  stackchan_diag_print(microros_publish_failed_count);
+  stackchan_diag_print(" last_rcl_publish=");
+  stackchan_diag_print(last_microros_publish_result);
+  stackchan_diag_print(" bringup_events_enqueued=");
+  stackchan_diag_print(microros_bringup_event_enqueue_count);
+  stackchan_diag_print(" bringup_events_total=");
+  stackchan_diag_print(microros_bringup_event_total_enqueue_count);
+  stackchan_diag_print(" audio_sample_rate=");
+  stackchan_diag_print(audio_policy.sample_rate);
+  stackchan_diag_print(" imu_min_hz=");
+  stackchan_diag_print(stackchan::kImuMinHz);
+  stackchan_diag_print(" imu_events=");
+  stackchan_diag_print(stackchan_imu_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" nfc_events=");
+  stackchan_diag_print(stackchan_nfc_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" nfc_bus=");
+  stackchan_diag_print(stackchan_nfc_bus);
+  stackchan_diag_print(" nfc_sda=");
+  stackchan_diag_print(static_cast<int>(stackchan_nfc_sda_pin));
+  stackchan_diag_print(" nfc_scl=");
+  stackchan_diag_print(static_cast<int>(stackchan_nfc_scl_pin));
+  stackchan_diag_print(" nfc_i2c_present=");
+  stackchan_diag_print(stackchan_nfc_i2c_present ? "true" : "false");
+  stackchan_diag_print(" nfc_detect_attempts=");
+  stackchan_diag_print(stackchan_nfc_detect_attempts);
+  stackchan_diag_print(" nfc_detect_hits=");
+  stackchan_diag_print(stackchan_nfc_detect_hits);
+  stackchan_diag_print(" nfc_identify_failures=");
+  stackchan_diag_print(stackchan_nfc_identify_failures);
+  stackchan_diag_print(" remote_ir=");
+  stackchan_diag_print(stackchan_ir_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" ir_rx_pin=");
+  stackchan_diag_print(kIrRecvPin);
+  stackchan_diag_print(" ir_decodes=");
+  stackchan_diag_print(stackchan_ir_decode_count);
+  stackchan_diag_print(" ir_overflows=");
+  stackchan_diag_print(stackchan_ir_overflow_count);
+  stackchan_diag_print(" audio_playback=");
+  stackchan_diag_print(stackchan_audio_playback_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" audio_capture=");
+  stackchan_diag_print(stackchan_audio_capture_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" camera_snapshot=");
+  stackchan_diag_print(stackchan_camera_snapshot_initialized ? "available" : "unavailable");
+  stackchan_diag_print(" events_topic=");
   if (device_publishers.initialized()) {
-    Serial.println(device_publishers.topic_name(stackchan::DevicePublisherTopic::Events));
+    stackchan_diag_println(device_publishers.topic_name(stackchan::DevicePublisherTopic::Events));
   } else {
-    Serial.println("unavailable");
+    stackchan_diag_println("unavailable");
   }
 }
 
 void publish_runtime_telemetry(uint32_t now_ms) {
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+    (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP)
+  (void)now_ms;
+  return;
+#endif
   if (!microros_connected || !microros_entities_initialized) {
     return;
   }
@@ -2283,7 +5094,9 @@ void publish_runtime_telemetry(uint32_t now_ms) {
         device_publishers.publish_touch_state(telemetry);
     if (!publish_result.ok) {
       last_error = publish_result;
-      update_agent_connection(false);
+      if (microros_publish_failures_exceeded()) {
+        update_agent_connection(false);
+      }
       return;
     }
     const stackchan::Result event_result =
@@ -2300,7 +5113,9 @@ void publish_runtime_telemetry(uint32_t now_ms) {
         device_publishers.publish_proximity_raw(telemetry);
     if (!publish_result.ok) {
       last_error = publish_result;
-      update_agent_connection(false);
+      if (microros_publish_failures_exceeded()) {
+        update_agent_connection(false);
+      }
       return;
     }
     const stackchan::Result event_result =
@@ -2316,7 +5131,9 @@ void publish_runtime_telemetry(uint32_t now_ms) {
         device_publishers.publish_light_raw(telemetry);
     if (!publish_result.ok) {
       last_error = publish_result;
-      update_agent_connection(false);
+      if (microros_publish_failures_exceeded()) {
+        update_agent_connection(false);
+      }
       return;
     }
     const stackchan::Result event_result =
@@ -2332,7 +5149,9 @@ void publish_runtime_telemetry(uint32_t now_ms) {
         device_publishers.publish_power_status(telemetry);
     if (!publish_result.ok) {
       last_error = publish_result;
-      update_agent_connection(false);
+      if (microros_publish_failures_exceeded()) {
+        update_agent_connection(false);
+      }
       return;
     }
     const stackchan::Result event_result =
@@ -2341,6 +5160,30 @@ void publish_runtime_telemetry(uint32_t now_ms) {
       last_error = event_result;
     }
   }
+
+  if (telemetry_publish_scheduler.should_sample_imu(now_ms)) {
+    const stackchan::Result event_result = sample_imu_events(now_ms);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+
+  const stackchan::Result button_event_result = sample_button_events(now_ms);
+  if (!button_event_result.ok && strcmp(button_event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+    last_error = button_event_result;
+  }
+
+  if (telemetry_publish_scheduler.should_sample_nfc(now_ms)) {
+    const stackchan::Result event_result = sample_nfc_events(now_ms);
+    if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+      last_error = event_result;
+    }
+  }
+
+  const stackchan::Result ir_event_result = sample_ir_events(now_ms);
+  if (!ir_event_result.ok && strcmp(ir_event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
+    last_error = ir_event_result;
+  }
 }
 
 }  // namespace
@@ -2348,27 +5191,49 @@ void publish_runtime_telemetry(uint32_t now_ms) {
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
   servo_adapter_init_result = initialize_servo_adapter();
-  Serial.print("stackchan servo_adapter_init ok=");
-  Serial.print(servo_adapter_init_result.ok ? "true" : "false");
-  Serial.print(" error_code=");
-  Serial.println(servo_adapter_init_result.error_code);
+  stackchan_diag_print("stackchan servo_adapter_init ok=");
+  stackchan_diag_print(servo_adapter_init_result.ok ? "true" : "false");
+  stackchan_diag_print(" error_code=");
+  stackchan_diag_println(servo_adapter_init_result.error_code);
   initialize_sensor_adapters();
-  Serial.print("stackchan touch_sensor_init ok=");
-  Serial.println(stackchan_touch_sensor_initialized ? "true" : "false");
-  Serial.print("stackchan power_monitor_init ok=");
-  Serial.println(stackchan_power_monitor_initialized ? "true" : "false");
-  Serial.print("stackchan ltr553_sensor_init ok=");
-  Serial.println(ltr553_sensor_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan touch_sensor_init ok=");
+  stackchan_diag_println(stackchan_touch_sensor_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan power_monitor_init ok=");
+  stackchan_diag_println(stackchan_power_monitor_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan ltr553_sensor_init ok=");
+  stackchan_diag_println(ltr553_sensor_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan imu_event_init ok=");
+  stackchan_diag_println(stackchan_imu_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan nfc_event_init ok=");
+  stackchan_diag_println(stackchan_nfc_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan nfc_event_bus=");
+  stackchan_diag_print(stackchan_nfc_bus);
+  stackchan_diag_print(" sda=");
+  stackchan_diag_print(static_cast<int>(stackchan_nfc_sda_pin));
+  stackchan_diag_print(" scl=");
+  stackchan_diag_println(static_cast<int>(stackchan_nfc_scl_pin));
+  stackchan_diag_print("stackchan nfc_event_i2c_present=");
+  stackchan_diag_println(stackchan_nfc_i2c_present ? "true" : "false");
+  stackchan_diag_print("stackchan ir_event_init ok=");
+  stackchan_diag_println(stackchan_ir_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan ir_event_rx_pin=");
+  stackchan_diag_println(kIrRecvPin);
+  stackchan_diag_print("stackchan audio_playback_probe ok=");
+  stackchan_diag_println(stackchan_audio_playback_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan audio_capture_probe ok=");
+  stackchan_diag_println(stackchan_audio_capture_initialized ? "true" : "false");
+  stackchan_diag_print("stackchan camera_snapshot_probe ok=");
+  stackchan_diag_println(stackchan_camera_snapshot_initialized ? "true" : "false");
   calibration_maintenance_result = apply_calibration_maintenance_action();
-  Serial.print("stackchan calibration_maintenance ok=");
-  Serial.print(calibration_maintenance_result.ok ? "true" : "false");
-  Serial.print(" error_code=");
-  Serial.println(calibration_maintenance_result.error_code);
+  stackchan_diag_print("stackchan calibration_maintenance ok=");
+  stackchan_diag_print(calibration_maintenance_result.ok ? "true" : "false");
+  stackchan_diag_print(" error_code=");
+  stackchan_diag_println(calibration_maintenance_result.error_code);
   calibration_load_result = load_calibration_from_nvs();
-  Serial.print("stackchan calibration_load ok=");
-  Serial.print(calibration_load_result.ok ? "true" : "false");
-  Serial.print(" error_code=");
-  Serial.println(calibration_load_result.error_code);
+  stackchan_diag_print("stackchan calibration_load ok=");
+  stackchan_diag_print(calibration_load_result.ok ? "true" : "false");
+  stackchan_diag_print(" error_code=");
+  stackchan_diag_println(calibration_load_result.error_code);
   update_servo_health_cache(millis(), true);
   stackchan::Result publisher_result = device_publishers.initialize(STACKCHAN_DEVICE_ID);
   if (!publisher_result.ok) {
@@ -2382,6 +5247,7 @@ void setup() {
 
 void loop() {
   const unsigned long now = millis();
+  M5.update();
   step_motion_scheduler(now);
   update_servo_health_cache(now);
 
@@ -2399,6 +5265,9 @@ void loop() {
   // high-priority event drain, then low-rate telemetry once real adapters exist.
   // Do not publish synthetic pose/status samples as real device telemetry.
   spin_command_executor();
+  poll_capture_audio_action_server();
+  poll_capture_camera_action_server();
+  poll_play_audio_action_server();
   queue_bringup_event_if_ready(now);
   drain_device_events();
   publish_runtime_telemetry(static_cast<uint32_t>(now));

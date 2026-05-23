@@ -666,6 +666,26 @@ class EventPublisher {
     return publish(DeviceEventKind::RemoteCommandReceived, stamp_ms, "", payload);
   }
 
+  Result remote_button_pressed(uint32_t stamp_ms) {
+    return publish(DeviceEventKind::RemoteButtonPressed, stamp_ms);
+  }
+
+  Result remote_button_released(uint32_t stamp_ms) {
+    return publish(DeviceEventKind::RemoteButtonReleased, stamp_ms);
+  }
+
+  Result ir_transmit_started(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitStarted, stamp_ms, command_id);
+  }
+
+  Result ir_transmit_finished(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitFinished, stamp_ms, command_id);
+  }
+
+  Result ir_transmit_failed(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitFailed, stamp_ms, command_id);
+  }
+
  private:
   char device_id_[kEventDeviceIdMaxLength + 1]{};
   DeviceEvent queue_[kEventQueueCapacity]{};
