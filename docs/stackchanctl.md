@@ -543,11 +543,13 @@ Audio CLI and MCP results expose metadata only: `device_id`, `command_id`,
 channels, and structured `error` fields. They must not include PCM payloads,
 speech text, transcript text, or raw audio bytes.
 
-Playback and capture share `/stackchan/<device_id>/device/audio/chunks` only
-through `device_id`, `command_id`, `direction`, and monotonic `sequence`.
-Backpressure is not acknowledged per chunk. Malformed chunks, wrong direction,
-wrong command id, sequence gaps, overrun, underrun, and disconnects are
-structured command results or events.
+Playback chunks use `/stackchan/<device_id>/device/audio/playback/chunks`;
+capture chunks use `/stackchan/<device_id>/device/audio/chunks`. Both paths are
+keyed by `device_id`, `command_id`, `direction`, and monotonic `sequence`.
+Both topics use best-effort, volatile, keep-last-8 QoS. Backpressure is not
+acknowledged per chunk. Malformed chunks, wrong direction, wrong command id,
+sequence gaps, overrun, underrun, and disconnects are structured command results
+or events.
 
 The bridge backend accepts audio play/capture only after firmware status reports
 `audio_playback` or `audio_capture` as available. Devices without
@@ -558,8 +560,8 @@ When `audio_playback` is available, the bridge backend sends the public
 `PlayAudio` action and publishes bounded playback chunks with the same
 `command_id` on `/stackchan/<device_id>/cmd/audio/chunks`. The bridge buffers
 those command-ingress chunks and relays them to
-`/stackchan/<device_id>/device/audio/chunks` only after it observes the
-firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
+`/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
+the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
 Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
 bridge; the bridge owns device-session arming and must not rely on a fixed
 sleep before forwarding to firmware. Invalid or unsupported input files return

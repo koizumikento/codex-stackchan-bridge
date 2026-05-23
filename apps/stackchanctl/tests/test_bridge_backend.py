@@ -898,6 +898,21 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual([message.sequence for message in publisher.messages], [0, 1, 2])
         self.assertTrue(all(message.direction == 1 for message in publisher.messages))
 
+    def test_bridge_backend_audio_chunk_qos_is_best_effort(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "stackchanctl"
+            / "backends"
+            / "bridge.py"
+        ).read_text()
+
+        self.assertIn("self._audio_chunk_qos = QoSProfile(depth=8)", source)
+        self.assertIn(
+            "self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT",
+            source,
+        )
+
     def test_play_audio_waits_for_chunk_subscription_before_publishing(self) -> None:
         action = FakeActionClient()
         node = FakeNode()

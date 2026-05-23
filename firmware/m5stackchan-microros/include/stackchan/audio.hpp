@@ -122,6 +122,13 @@ class AudioPlaybackChunkGuard {
 
   bool active() const { return active_; }
   uint32_t expected_sequence() const { return expected_sequence_; }
+  bool duplicate_chunk(const AudioPlaybackChunk& chunk) const {
+    return active_ &&
+           chunk.command_id != nullptr &&
+           strcmp(chunk.command_id, command_id_) == 0 &&
+           chunk.direction == AudioDirection::Playback &&
+           chunk.sequence < expected_sequence_;
+  }
 
  private:
   bool active_ = false;

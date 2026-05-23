@@ -24,6 +24,10 @@ DEFAULT_LIVENESS_TIMEOUT_SEC = 3.5
 LIVENESS_CHECK_INTERVAL_SEC = 1.0
 AUDIO_PLAYBACK_DIRECTION = 1
 AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 256
+AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3
+AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03
+AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
+AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
 
 
 def _audio_chunk_pcm_size(message: object) -> int:
@@ -612,7 +616,7 @@ def main(args: list[str] | None = None) -> None:
             )
             self._device_audio_chunk_publishers[device_id] = self.create_publisher(
                 RosAudioChunk,
-                f"/stackchan/{device_id}/device/audio/chunks",
+                f"/stackchan/{device_id}/device/audio/playback/chunks",
                 best_effort_depth_8,
             )
             self.create_service(
@@ -1269,8 +1273,32 @@ def main(args: list[str] | None = None) -> None:
                 f"device_id={device_id!r} command_id={command_id!r} "
                 f"buffered={len(buffered)} received={stats['received']}"
             )
-            for message in buffered:
+            self._wait_for_device_audio_playback_subscription(device_id, command_id)
+            for index, message in enumerate(buffered):
                 self._publish_device_audio_chunk(device_id, message)
+                if index == 0 and int(getattr(message, "sequence", 0)) == 0:
+                    for _retry_index in range(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT - 1):
+                        time.sleep(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC)
+                        self._publish_device_audio_chunk(device_id, message)
+
+        def _wait_for_device_audio_playback_subscription(
+            self,
+            device_id: str,
+            command_id: str,
+        ) -> None:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            if publisher is None or not hasattr(publisher, "get_subscription_count"):
+                return
+            deadline = time.monotonic() + AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC
+            match_count = int(publisher.get_subscription_count())
+            while match_count <= 0 and time.monotonic() < deadline:
+                time.sleep(AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC)
+                match_count = int(publisher.get_subscription_count())
+            self.get_logger().info(
+                "audio playback relay subscription match "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"subscriptions={match_count}"
+            )
 
         def _finish_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
             key = (device_id, command_id)

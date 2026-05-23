@@ -213,20 +213,26 @@ Expected states:
 - `fault`: a safety or hardware error needs to be reported.
 
 Audio playback and capture are action-coordinated behaviors. Firmware accepts
-the action goal first, then treats `/stackchan/<device_id>/device/audio/chunks`
-as a bounded payload path for the matching `command_id`. Playback must tolerate
-normal best-effort chunk pacing but report `AUDIO_UNDERRUN` if no valid
-playback chunk arrives before the device-side no-chunk timeout. Microphone
-capture must return a structured `AUDIO_CAPTURE_FAILED` terminal result if a
-recording chunk stalls, rather than leaving the bridge to time out without a
-firmware result. Capture uses the baseline 20 ms chunk size for hardware
-bring-up because the current micro-ROS serial path handled 640 byte publishes
-more reliably than max-size 40 ms chunks.
+the action goal first, then treats
+`/stackchan/<device_id>/device/audio/playback/chunks` as the bounded playback
+payload input path for the matching `command_id`. Microphone capture publishes
+bounded capture chunks on `/stackchan/<device_id>/device/audio/chunks`.
+Playback and capture topics are intentionally separated so firmware does not
+publish and subscribe on the same audio chunk topic over the micro-ROS serial
+transport. Playback must tolerate normal best-effort chunk pacing but report
+`AUDIO_UNDERRUN` if no valid playback chunk arrives before the device-side
+no-chunk timeout. Microphone capture must return a structured
+`AUDIO_CAPTURE_FAILED` terminal result if a recording chunk stalls, rather than
+leaving the bridge to time out without a firmware result. Capture uses the
+baseline 20 ms chunk size for hardware bring-up because the current micro-ROS
+serial path handled 640 byte publishes more reliably than max-size 40 ms
+chunks.
 
 CLI-origin playback chunks enter the bridge on
 `/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe chunks
-after the bridge has relayed them to `/stackchan/<device_id>/device/audio/chunks`
-for an accepted firmware-owned playback action goal.
+after the bridge has relayed them to
+`/stackchan/<device_id>/device/audio/playback/chunks` for an accepted
+firmware-owned playback action goal.
 
 Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
 driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
@@ -440,6 +446,13 @@ Baseline audio path:
 - Audio transport starts with PCM 16 kHz mono 16-bit.
 - Playback and capture use actions coordinated with bounded audio chunks.
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
+- Audio chunk topics use best-effort, volatile, keep-last-8 QoS. Playback chunks
+  use `/stackchan/<device_id>/device/audio/playback/chunks`; capture chunks use
+  `/stackchan/<device_id>/device/audio/chunks`. The bridge may briefly wait for
+  the firmware playback subscription to match, then retry the first PLAYBACK
+  chunk a bounded number of times after action acceptance; firmware must ignore
+  duplicate chunks whose sequence is already accepted for the active
+  `command_id`.
 - Chunk streams are keyed by `device_id`, `command_id`, `direction`, and a
   sequence that is monotonic per command and direction.
 - At most one playback and one capture session may be active per device.

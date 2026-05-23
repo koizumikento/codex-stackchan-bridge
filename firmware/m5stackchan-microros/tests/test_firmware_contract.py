@@ -600,11 +600,17 @@ class FirmwareContractTests(unittest.TestCase):
 
     def test_audio_capture_chunk_timeout_returns_structured_result(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
+        audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
 
         self.assertIn("kAudioCaptureChunkTimeoutMs", main)
         self.assertIn("kAudioCaptureChunkMs = stackchan::kAudioChunkMs", main)
         self.assertIn("stackchan::kAudioChunkBytes", main)
         self.assertIn("kAudioPlaybackNoChunkTimeoutMs = 6000", main)
+        self.assertIn("audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT", main)
+        self.assertIn("audio_playback_chunk_topic_name", main)
+        self.assertIn('"/stackchan/%s/device/audio/playback/chunks"', main)
+        self.assertIn("duplicate_chunk", audio)
+        self.assertIn('"chunk_duplicate_ignored"', main)
         self.assertIn("audio_playback_diag", main)
         self.assertIn("play_audio_chunks_seen", main)
         self.assertIn("play_audio_chunks_accepted", main)

@@ -337,6 +337,7 @@ char head_pose_set_service_name[96] = "";
 char led_set_service_name[96] = "";
 char motion_set_service_name[96] = "";
 char audio_chunk_topic_name[96] = "";
+char audio_playback_chunk_topic_name[96] = "";
 char capture_audio_action_name[96] = "";
 char capture_camera_action_name[96] = "";
 char play_audio_action_name[96] = "";
@@ -1958,6 +1959,15 @@ void build_audio_chunk_topic_name() {
   audio_chunk_topic_name[sizeof(audio_chunk_topic_name) - 1] = '\0';
 }
 
+void build_audio_playback_chunk_topic_name() {
+  snprintf(
+      audio_playback_chunk_topic_name,
+      sizeof(audio_playback_chunk_topic_name),
+      "/stackchan/%s/device/audio/playback/chunks",
+      STACKCHAN_DEVICE_ID);
+  audio_playback_chunk_topic_name[sizeof(audio_playback_chunk_topic_name) - 1] = '\0';
+}
+
 void build_play_audio_action_name() {
   snprintf(
       play_audio_action_name,
@@ -2275,6 +2285,7 @@ bool initialize_microros_entities() {
 #endif
 #if STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP
   build_audio_chunk_topic_name();
+  build_audio_playback_chunk_topic_name();
   rmw_qos_profile_t core_audio_chunk_qos = rmw_qos_profile_default;
   core_audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   core_audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
@@ -2295,7 +2306,7 @@ bool initialize_microros_entities() {
                   &audio_chunk_subscription,
                   &microros_node,
                   ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
-                  audio_chunk_topic_name,
+                  audio_playback_chunk_topic_name,
                   &core_audio_chunk_qos),
               "audio_chunk_subscription_init")) {
     return false;
@@ -2621,6 +2632,7 @@ bool initialize_microros_entities() {
     return false;
   }
   build_audio_chunk_topic_name();
+  build_audio_playback_chunk_topic_name();
   rmw_qos_profile_t audio_chunk_qos = rmw_qos_profile_default;
   audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
@@ -2638,7 +2650,7 @@ bool initialize_microros_entities() {
                   &audio_chunk_subscription,
                   &microros_node,
                   ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
-                  audio_chunk_topic_name,
+                  audio_playback_chunk_topic_name,
                   &audio_chunk_qos),
               "audio_chunk_subscription_init")) {
     return false;
@@ -4653,6 +4665,15 @@ void handle_audio_chunk_subscription(const void* message) {
       chunk->sequence,
       static_cast<uint16_t>(chunk->pcm.size),
   };
+  if (audio_playback_guard.duplicate_chunk(playback_chunk)) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_duplicate_ignored",
+        chunk_command_id,
+        chunk->sequence,
+        static_cast<uint32_t>(chunk->pcm.size),
+        "OK");
+    return;
+  }
   const stackchan::Result validation_result =
       audio_playback_guard.validate_chunk(playback_chunk);
   if (!validation_result.ok) {

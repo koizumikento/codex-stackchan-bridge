@@ -758,9 +758,11 @@ timing updates, device `default`, COM3 through host serial TCP bridge:
   device-goal acceptance instead of timed from the CLI.
 - Follow-up implementation changes the playback payload ingress to
   `/stackchan/default/cmd/audio/chunks`; the bridge buffers these chunks and
-  relays them to `/stackchan/default/device/audio/chunks` only after firmware
-  accepts `/stackchan/default/device/audio/play`. Re-run the media smoke before
-  marking playback complete.
+  initially relayed them to `/stackchan/default/device/audio/chunks` only after
+  firmware accepts `/stackchan/default/device/audio/play`. Later retry smoke
+  narrowed the remaining issue to firmware chunk callback delivery, so playback
+  input is being split to `/stackchan/default/device/audio/playback/chunks`.
+  Re-run the media smoke before marking playback complete.
 - Camera capture still returned `TIMEOUT`. Firmware now prefers native JPEG and
   the loop order keeps audio ahead of camera, but camera acquisition/result
   delivery still needs a focused nonblocking or bounded-driver follow-up.
@@ -808,6 +810,92 @@ uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sw
 - Redaction remained green:
   `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
   `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`.
+
+2026-05-23 playback relay diagnostic smoke after uploading `eb1cd21` diagnostic
+firmware to COM3. The first upload attempt at the default high-speed stub path
+failed with `No serial data received`; retrying through the repository
+PlatformIO helper with `--upload-speed 115200 --no-stub` succeeded.
+
+```powershell
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 30 --stimulus-window-seconds 0 --media-audio-capture-seconds 0.02 --media-camera-quality 50
+```
+
+- Audio playback still returned structured `AUDIO_UNDERRUN`:
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=0`.
+- Bridge relay diagnostics show the first chunk was not lost in the bridge:
+  `buffered=1`, `received=1`, `published=1`, `dropped=0`, `pending=0`, with
+  `sequence=0`, `bytes=640`, `format=1`, `sample_rate=16000`, and
+  `channels=1`.
+- Relay activation to finish took about 6.2 seconds, matching firmware
+  `kAudioPlaybackNoChunkTimeoutMs = 6000`. The remaining failure is therefore
+  narrowed to firmware playback consumer delivery or arming on
+  `/stackchan/default/device/audio/chunks`, not bridge command-ingress timing or
+  speaker `playRaw` failure.
+- Audio capture passed: `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`.
+- Camera capture passed: `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`.
+- Event/log redaction remained green:
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`.
+
+2026-05-23 bounded first-chunk retry smoke after uploading the retry/duplicate
+diagnostic firmware to COM3 with the same low-speed no-stub PlatformIO helper
+path:
+
+```powershell
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 30 --stimulus-window-seconds 0 --media-audio-capture-seconds 0.02 --media-camera-quality 50
+```
+
+- Audio playback still returned structured `AUDIO_UNDERRUN`:
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=0`.
+- Bridge relay diagnostics show the first chunk was published three times with
+  no bridge drops: `received=1`, `buffered=1`, `published=3`, `dropped=0`, and
+  `pending=0`.
+- Firmware-visible `chunk_accepted` or `chunk_duplicate_ignored` diagnostics
+  were not observed in the smoke logs. Retry therefore did not prove delivery to
+  the firmware chunk callback.
+- Audio capture passed: `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`.
+- Camera capture passed: `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`.
+- Event/log redaction remained green:
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. Device/public event
+  topic sampling timed out in this run, but `stackchanctl events list` returned
+  cleanly.
+- Follow-up implementation separates playback chunk input onto
+  `/stackchan/default/device/audio/playback/chunks` while leaving capture output
+  on `/stackchan/default/device/audio/chunks`, avoiding firmware same-topic
+  publish/subscribe on the micro-ROS serial path. Re-run this smoke before
+  marking playback complete.
+
+2026-05-23 playback split-topic and subscription-match smokes:
+
+- Split-topic firmware was uploaded successfully through the same no-stub
+  PlatformIO helper path. ROS graph included
+  `/stackchan/default/device/audio/playback/chunks`.
+- With split-topic best-effort QoS, audio playback still returned
+  `AUDIO_UNDERRUN`. The bridge observed `subscriptions=1` before publishing and
+  still finished with `received=1`, `buffered=1`, `published=3`, `dropped=0`,
+  and `pending=0`.
+- Audio capture and camera capture remained healthy in the split-topic
+  best-effort smoke:
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`.
+- A follow-up attempt making only playback input reliable was uploaded and
+  tested, but it regressed media actions to `TIMEOUT` for playback, capture, and
+  camera. Do not keep that QoS direction; use best-effort split-topic as the
+  safer baseline.
+- The remaining playback failure is no longer explained by bridge buffering,
+  action-goal acceptance timing, topic matching, or firmware same-topic
+  publish/subscribe. Next implementation should avoid relying on a separate
+  PC-to-firmware chunk topic for the first payload, for example by explicitly
+  designing a small first-chunk handoff in the playback action contract or a
+  firmware-owned pull/ack path.
 
 ## Cleanup
 
