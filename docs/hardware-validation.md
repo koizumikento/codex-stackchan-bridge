@@ -771,6 +771,38 @@ timing updates, device `default`, COM3 through host serial TCP bridge:
 - Redaction remained green: no audio PCM, speech text, JPEG bytes/base64, NFC
   tag IDs, or IR raw-code markers appeared in normal output/log scans.
 
+2026-05-23 bridge relay/result-classification smoke, device `default`, COM3
+through host serial TCP bridge, after rebuilding `stackchan_bridge` in the
+container with playback command-ingress relay and camera timeout
+classification:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 30 --stimulus-window-seconds 0 --media-audio-capture-seconds 0.02 --media-camera-quality 50
+```
+
+- ROS graph included both `/stackchan/default/cmd/audio/chunks` and
+  `/stackchan/default/device/audio/chunks`.
+- Audio playback still returned structured `AUDIO_UNDERRUN`:
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=0`. The next implementation
+  needs payload-free diagnostics on the bridge relay and firmware playback
+  consumer to determine whether the first PLAYBACK chunk reaches the active
+  `command_id`.
+- Audio capture one-chunk smoke still passed:
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`.
+- Camera capture no longer surfaced an unclassified CLI `TIMEOUT`; it returned
+  bounded `CAMERA_CAPTURE_FAILED` with message `firmware camera capture action
+  for 'default' timed out`.
+- Low-rate touch, IMU, proximity, light, and power samples appeared on device
+  and public relay topics; `power status` returned `ok=true`.
+- No manual stimulus window was run. Passive IMU, light, and IR events were
+  observed, but button/touch/proximity/power/NFC manual-stimulus statuses remain
+  `NOT_RUN`.
+- Redaction remained green:
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear
