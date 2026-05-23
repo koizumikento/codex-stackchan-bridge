@@ -955,6 +955,41 @@ KOIZUMI-112 diagnostic firmware update:
   320 byte first-goal payload prevents the playback goal request from being
   taken by firmware.
 
+2026-05-24 KOIZUMI-113 pull/ack playback smoke:
+
+- Implemented the bridge-owned pull helper
+  `/stackchan/default/audio/playback/next_chunk` and firmware client-side pull
+  path, then built ROS packages and both firmware profiles successfully.
+- Uploaded the play-audio bring-up profile through the PlatformIO helper:
+  `uv run --no-project python scripts/firmware_platformio.py upload --port COM3
+  --upload-speed 115200 --no-stub --microros-core-play-audio-bringup`.
+- With a host serial TCP bridge on COM3 and the same-container
+  `tcp-pty-sensor-sweep`, the micro-ROS Agent connected to firmware and device
+  topics sampled for touch, IMU, proximity, light, and power. The graph also
+  exposed `/stackchan/default/audio/playback/next_chunk`.
+- The same-container smoke could not validate bridge/CLI playback because the
+  `microros/micro-ros-agent:jazzy` image combines a 2025-era ROS runtime with
+  newer apt-installed ROS Python/type-support packages. `stackchan_bridge_node`
+  and `stackchanctl` failed with a Fast-CDR symbol mismatch before commands
+  reached the bridge.
+- A split-container diagnostic kept the Agent in
+  `microros/micro-ros-agent:jazzy` and ran bridge/CLI in
+  `codex-stackchan-ros2:jazzy`. This avoided the ABI crash and showed firmware
+  graph resources, but Docker Desktop did not deliver DDS samples such as
+  `/stackchan/default/device/status` to the ROS 2 container. The bridge therefore
+  reported `TRANSPORT_DISCONNECTED`, so face and audio commands were rejected
+  before firmware command execution.
+- Re-uploaded the default firmware profile through the same PlatformIO helper
+  and repeated the split-container diagnostic. The graph exposed default
+  firmware topics/services, but `/stackchan/default/device/status` and touch
+  samples still did not arrive across containers, matching the known Docker
+  Desktop cross-container DDS caveat.
+- KOIZUMI-113 is therefore implementation-complete and hardware-connected at
+  the Agent/topic discovery level, but not playback-complete. The next physical
+  risk is a dedicated, reproducible same-container Agent/bridge smoke image or
+  host-side ROS environment that keeps micro-ROS Agent and Python bridge
+  dependencies ABI-aligned.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

@@ -236,7 +236,11 @@ CLI-origin playback chunks enter the bridge on
 `/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe topic
 chunks after the bridge has relayed them to
 `/stackchan/<device_id>/device/audio/playback/chunks` for an accepted
-firmware-owned playback action goal.
+firmware-owned playback action goal. Current firmware also supports the
+bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper and may
+pull the next chunk by `command_id` and sequence after action acceptance. The
+pull response is still validated as a normal `AudioChunk(direction=PLAYBACK)`;
+the helper is transport plumbing, not a raw audio command surface.
 
 Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
 driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
@@ -457,9 +461,10 @@ Baseline audio path:
   the CLI baseline keeps playback payload on the chunk topic until hardware
   validation proves this does not starve action results. The bridge may briefly
   wait for the firmware playback subscription before forwarding chunks;
-  firmware must ignore duplicate chunks whose sequence is already accepted for
-  the active
-  `command_id`.
+  firmware may pull chunks through
+  `/stackchan/<device_id>/audio/playback/next_chunk` when topic delivery is
+  unreliable, and firmware must ignore duplicate chunks whose sequence is
+  already accepted for the active `command_id`.
 - Chunk streams are keyed by `device_id`, `command_id`, `direction`, and a
   sequence that is monotonic per command and direction.
 - At most one playback and one capture session may be active per device.

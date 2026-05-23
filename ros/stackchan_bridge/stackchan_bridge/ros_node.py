@@ -434,6 +434,7 @@ def main(args: list[str] | None = None) -> None:
             GetStatus,
             GetTranscript,
             ListEvents,
+            NextAudioChunk,
             NextEvent,
             SetFace,
             SetHeadPose,
@@ -618,6 +619,16 @@ def main(args: list[str] | None = None) -> None:
                 RosAudioChunk,
                 f"/stackchan/{device_id}/device/audio/playback/chunks",
                 best_effort_depth_8,
+            )
+            self.create_service(
+                NextAudioChunk,
+                f"/stackchan/{device_id}/audio/playback/next_chunk",
+                lambda request, response, device_id=device_id: self._handle_next_audio_chunk(
+                    device_id,
+                    request,
+                    response,
+                ),
+                callback_group=self._command_callback_group,
             )
             self.create_service(
                 ListEvents,
@@ -1235,6 +1246,15 @@ def main(args: list[str] | None = None) -> None:
                 stats["received"] += 1
                 if key in self._active_playback_sessions:
                     publish_now = True
+                    buffer = self._pending_playback_chunks.setdefault(key, [])
+                    if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
+                        stats["dropped"] += 1
+                        self.get_logger().warning(
+                            f"dropping playback chunk for command_id={command_id!r}: bridge buffer is full"
+                        )
+                        return
+                    buffer.append(message)
+                    stats["buffered"] += 1
                 else:
                     buffer = self._pending_playback_chunks.setdefault(key, [])
                     if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
@@ -1263,7 +1283,7 @@ def main(args: list[str] | None = None) -> None:
             with self._playback_chunk_lock:
                 self._closed_playback_sessions.discard(key)
                 self._active_playback_sessions.add(key)
-                buffered = self._pending_playback_chunks.pop(key, [])
+                buffered = list(self._pending_playback_chunks.get(key, []))
                 stats = self._playback_relay_stats.setdefault(
                     key,
                     {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
@@ -1280,6 +1300,63 @@ def main(args: list[str] | None = None) -> None:
                     for _retry_index in range(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT - 1):
                         time.sleep(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC)
                         self._publish_device_audio_chunk(device_id, message)
+
+        def _handle_next_audio_chunk(
+            self,
+            device_id: str,
+            request: object,
+            response: object,
+        ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            key = (device_id, meta.command_id)
+            next_sequence = int(getattr(request, "next_sequence", 0))
+            chunk = None
+            buffered_chunks = 0
+            with self._playback_chunk_lock:
+                queue = self._pending_playback_chunks.setdefault(key, [])
+                while queue and int(getattr(queue[0], "sequence", 0)) < next_sequence:
+                    queue.pop(0)
+                if queue and int(getattr(queue[0], "sequence", 0)) == next_sequence:
+                    chunk = queue.pop(0)
+                buffered_chunks = len(queue)
+                active = key in self._active_playback_sessions
+                closed = key in self._closed_playback_sessions
+            if not active and not closed:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "FIRMWARE_BUSY",
+                        "audio playback pull requested before session activation",
+                        recoverable=True,
+                    ),
+                )
+                response.has_chunk = False
+                response.end_of_stream = False
+                response.buffered_chunks = buffered_chunks
+                return response
+            _copy_result(response.result, Result.accepted("audio playback chunk pull ok"))
+            response.has_chunk = chunk is not None
+            response.end_of_stream = closed and chunk is None and buffered_chunks == 0
+            response.buffered_chunks = buffered_chunks
+            if chunk is not None:
+                self._copy_audio_chunk_response(response.chunk, chunk)
+                if next_sequence == 0:
+                    self.get_logger().info(
+                        "audio playback pull served first chunk "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"bytes={_audio_chunk_pcm_size(chunk)} buffered={buffered_chunks}"
+                    )
+            return response
+
+        def _copy_audio_chunk_response(self, target: object, source: object) -> None:
+            target.device_id = getattr(source, "device_id", "")
+            target.command_id = getattr(source, "command_id", "")
+            target.direction = int(getattr(source, "direction", 0))
+            target.sequence = int(getattr(source, "sequence", 0))
+            target.format = int(getattr(source, "format", 0))
+            target.sample_rate = int(getattr(source, "sample_rate", 0))
+            target.channels = int(getattr(source, "channels", 0))
+            target.pcm = bytes(getattr(source, "pcm", b""))
 
         def _wait_for_device_audio_playback_subscription(
             self,

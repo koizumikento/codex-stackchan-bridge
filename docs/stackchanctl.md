@@ -562,6 +562,10 @@ on `/stackchan/<device_id>/cmd/audio/chunks` starting at sequence `0`. The
 bridge buffers those command-ingress chunks and relays them to
 `/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
 the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
+The bridge also serves the same buffered chunks through
+`/stackchan/<device_id>/audio/playback/next_chunk`; current firmware pulls from
+that helper after action acceptance and still validates sequence, format, and
+payload bounds before speaker playback.
 Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
 bridge; the bridge owns device-session arming and must not rely on a fixed
 sleep before forwarding to firmware. Invalid or unsupported input files return

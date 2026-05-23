@@ -15,6 +15,7 @@
 #include <img_converters.h>
 #include <math.h>
 #include <micro_ros_platformio.h>
+#include <rcl/client.h>
 #include <rcl/error_handling.h>
 #include <rcl/publisher.h>
 #include <rcl/service.h>
@@ -22,6 +23,7 @@
 #include <rcl/time.h>
 #include <rcl_action/rcl_action.h>
 #include <rclc/node.h>
+#include <rclc/client.h>
 #include <rclc/executor.h>
 #include <rclc/publisher.h>
 #include <rclc/rclc.h>
@@ -48,6 +50,7 @@
 #include <stackchan_msgs/srv/set_head_pose.h>
 #include <stackchan_msgs/srv/set_led.h>
 #include <stackchan_msgs/srv/set_motion.h>
+#include <stackchan_msgs/srv/next_audio_chunk.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
@@ -207,6 +210,8 @@ constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
 constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
+constexpr unsigned long kAudioPlaybackPullIntervalMs = 20;
+constexpr unsigned long kAudioPlaybackPullTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
 constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
@@ -291,6 +296,7 @@ rcl_publisher_t status_ros_publisher;
 rcl_publisher_t touch_state_ros_publisher;
 rcl_publisher_t audio_chunk_ros_publisher;
 rcl_subscription_t audio_chunk_subscription;
+rcl_client_t audio_playback_chunk_client;
 rcl_action_server_t capture_audio_action_server;
 rcl_action_server_t capture_camera_action_server;
 rcl_action_server_t play_audio_action_server;
@@ -323,6 +329,8 @@ stackchan_msgs__action__PlayAudio_SendGoal_Request play_audio_goal_request;
 stackchan_msgs__action__PlayAudio_SendGoal_Response play_audio_goal_response;
 stackchan_msgs__action__PlayAudio_GetResult_Request play_audio_result_request;
 stackchan_msgs__action__PlayAudio_GetResult_Response play_audio_result_response;
+stackchan_msgs__srv__NextAudioChunk_Request audio_playback_chunk_request;
+stackchan_msgs__srv__NextAudioChunk_Response audio_playback_chunk_response;
 stackchan_msgs__srv__SetFace_Request face_set_request;
 stackchan_msgs__srv__SetFace_Response face_set_response;
 stackchan_msgs__srv__SetHeadPose_Request head_pose_set_request;
@@ -338,6 +346,7 @@ char led_set_service_name[96] = "";
 char motion_set_service_name[96] = "";
 char audio_chunk_topic_name[96] = "";
 char audio_playback_chunk_topic_name[96] = "";
+char audio_playback_chunk_service_name[96] = "";
 char capture_audio_action_name[96] = "";
 char capture_camera_action_name[96] = "";
 char play_audio_action_name[96] = "";
@@ -417,6 +426,11 @@ bool play_audio_goal_active = false;
 bool play_audio_received_chunk = false;
 bool play_audio_result_ready = false;
 bool play_audio_result_request_pending = false;
+bool play_audio_chunk_client_initialized = false;
+bool play_audio_chunk_request_pending = false;
+int64_t play_audio_chunk_request_sequence_number = 0;
+uint32_t play_audio_next_pull_sequence = 0;
+uint32_t play_audio_last_pull_request_ms = 0;
 uint32_t play_audio_started_ms = 0;
 uint32_t play_audio_last_chunk_ms = 0;
 uint8_t play_audio_buffer_index = 0;
@@ -1643,6 +1657,21 @@ bool reserve_play_audio_goal_strings() {
          reserve_ros_string(&play_audio_goal_request.goal.motion_hint, 32);
 }
 
+bool reserve_audio_playback_chunk_service_storage() {
+  rosidl_runtime_c__uint8__Sequence__fini(
+      &audio_playback_chunk_response.chunk.pcm);
+  return reserve_ros_string(&audio_playback_chunk_request.meta.device_id, 32) &&
+         reserve_ros_string(&audio_playback_chunk_request.meta.command_id, 36) &&
+         reserve_ros_string(&audio_playback_chunk_request.meta.source, 32) &&
+         reserve_ros_string(&audio_playback_chunk_response.result.error_code, 48) &&
+         reserve_ros_string(&audio_playback_chunk_response.result.message, 160) &&
+         reserve_ros_string(&audio_playback_chunk_response.chunk.device_id, 32) &&
+         reserve_ros_string(&audio_playback_chunk_response.chunk.command_id, 36) &&
+         rosidl_runtime_c__uint8__Sequence__init(
+             &audio_playback_chunk_response.chunk.pcm,
+             stackchan::kAudioMaxChunkBytes);
+}
+
 bool reserve_capture_audio_goal_strings() {
   return reserve_ros_string(&capture_audio_goal_request.goal.meta.device_id, 32) &&
          reserve_ros_string(&capture_audio_goal_request.goal.meta.command_id, 36) &&
@@ -1726,6 +1755,16 @@ bool convert_command_result(
   destination->recoverable = source.recoverable;
   return assign_ros_string(&destination->error_code, source.error_code) &&
          assign_ros_string(&destination->message, source.message);
+}
+
+stackchan::Result result_from_ros(const stackchan_msgs__msg__Result& source) {
+  return {
+      source.ok,
+      static_cast<stackchan::ResultState>(source.state),
+      source.error_code.data != nullptr ? source.error_code.data : "",
+      source.message.data != nullptr ? source.message.data : "",
+      source.recoverable,
+  };
 }
 
 bool assign_capability_status(
@@ -2016,6 +2055,15 @@ void build_audio_playback_chunk_topic_name() {
   audio_playback_chunk_topic_name[sizeof(audio_playback_chunk_topic_name) - 1] = '\0';
 }
 
+void build_audio_playback_chunk_service_name() {
+  snprintf(
+      audio_playback_chunk_service_name,
+      sizeof(audio_playback_chunk_service_name),
+      "/stackchan/%s/audio/playback/next_chunk",
+      STACKCHAN_DEVICE_ID);
+  audio_playback_chunk_service_name[sizeof(audio_playback_chunk_service_name) - 1] = '\0';
+}
+
 void build_play_audio_action_name() {
   snprintf(
       play_audio_action_name,
@@ -2108,6 +2156,7 @@ void handle_head_pose_set_service(const void* request, void* response);
 void handle_led_set_service(const void* request, void* response);
 void handle_motion_set_service(const void* request, void* response);
 void handle_audio_chunk_subscription(const void* message);
+void handle_audio_playback_chunk_response(const void* response);
 void accept_play_audio_pcm_chunk(
     const char* chunk_command_id,
     uint32_t sequence,
@@ -2135,12 +2184,15 @@ bool initialize_microros_entities() {
   touch_state_ros_publisher = rcl_get_zero_initialized_publisher();
   audio_chunk_ros_publisher = rcl_get_zero_initialized_publisher();
   audio_chunk_subscription = rcl_get_zero_initialized_subscription();
+  audio_playback_chunk_client = rcl_get_zero_initialized_client();
   capture_audio_action_server = rcl_action_get_zero_initialized_server();
   capture_camera_action_server = rcl_action_get_zero_initialized_server();
   play_audio_action_server = rcl_action_get_zero_initialized_server();
   capture_audio_action_init_failed = false;
   capture_camera_action_init_failed = false;
   play_audio_action_init_failed = false;
+  play_audio_chunk_client_initialized = false;
+  play_audio_chunk_request_pending = false;
   face_set_service = rcl_get_zero_initialized_service();
   head_pose_set_service = rcl_get_zero_initialized_service();
   led_set_service = rcl_get_zero_initialized_service();
@@ -2170,6 +2222,8 @@ bool initialize_microros_entities() {
   memset(&play_audio_goal_response, 0, sizeof(play_audio_goal_response));
   memset(&play_audio_result_request, 0, sizeof(play_audio_result_request));
   memset(&play_audio_result_response, 0, sizeof(play_audio_result_response));
+  memset(&audio_playback_chunk_request, 0, sizeof(audio_playback_chunk_request));
+  memset(&audio_playback_chunk_response, 0, sizeof(audio_playback_chunk_response));
   memset(&face_set_request, 0, sizeof(face_set_request));
   memset(&face_set_response, 0, sizeof(face_set_response));
   memset(&head_pose_set_request, 0, sizeof(head_pose_set_request));
@@ -2342,6 +2396,7 @@ bool initialize_microros_entities() {
 #if STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP
   build_audio_chunk_topic_name();
   build_audio_playback_chunk_topic_name();
+  build_audio_playback_chunk_service_name();
   rmw_qos_profile_t core_audio_chunk_qos = rmw_qos_profile_default;
   core_audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   core_audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
@@ -2377,6 +2432,15 @@ bool initialize_microros_entities() {
       "capture_camera_action_server_init");
 #endif
 #if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+  if (!rcl_ok(rclc_client_init_default(
+                  &audio_playback_chunk_client,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, NextAudioChunk),
+                  audio_playback_chunk_service_name),
+              "audio_playback_chunk_client_init")) {
+    return false;
+  }
+  play_audio_chunk_client_initialized = true;
   (void)try_initialize_play_audio_action_server(
       "play_audio_action_server_init");
 #endif
@@ -2466,8 +2530,13 @@ bool initialize_microros_entities() {
       !reserve_play_audio_goal_strings() ||
       !stackchan_msgs__action__PlayAudio_SendGoal_Response__init(&play_audio_goal_response) ||
       !stackchan_msgs__action__PlayAudio_GetResult_Request__init(&play_audio_result_request) ||
-      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response)) {
+      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response) ||
+      !stackchan_msgs__srv__NextAudioChunk_Request__init(&audio_playback_chunk_request) ||
+      !stackchan_msgs__srv__NextAudioChunk_Response__init(&audio_playback_chunk_response) ||
+      !reserve_audio_playback_chunk_service_storage()) {
     stackchan_diag_println("stackchan micro_ros_step=play_audio_action_messages_init result=false");
+    stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+    stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
     stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
     stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
     stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
@@ -2526,6 +2595,9 @@ bool initialize_microros_entities() {
   }
   size_t core_executor_handles = 4;
 #if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP
+  ++core_executor_handles;
+#endif
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
   ++core_executor_handles;
 #endif
   if (!rcl_ok(rclc_executor_init(
@@ -2610,10 +2682,38 @@ bool initialize_microros_entities() {
     return false;
   }
 #endif
+#if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+  if (!rcl_ok(rclc_executor_add_client(
+                  &microros_executor,
+                  &audio_playback_chunk_client,
+                  &audio_playback_chunk_response,
+                  handle_audio_playback_chunk_response),
+              "executor_add_audio_playback_chunk_client")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+    stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetLed_Response__fini(&led_set_response);
+    stackchan_msgs__srv__SetLed_Request__fini(&led_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
+#endif
   microros_entities_initialized = true;
   stackchan_audio_playback_transport_initialized =
       STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP &&
       play_audio_action_server_initialized &&
+      play_audio_chunk_client_initialized &&
       stackchan_audio_playback_initialized;
   stackchan_audio_capture_transport_initialized =
       STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP &&
@@ -2689,6 +2789,7 @@ bool initialize_microros_entities() {
   }
   build_audio_chunk_topic_name();
   build_audio_playback_chunk_topic_name();
+  build_audio_playback_chunk_service_name();
   rmw_qos_profile_t audio_chunk_qos = rmw_qos_profile_default;
   audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
@@ -2711,6 +2812,15 @@ bool initialize_microros_entities() {
               "audio_chunk_subscription_init")) {
     return false;
   }
+  if (!rcl_ok(rclc_client_init_default(
+                  &audio_playback_chunk_client,
+                  &microros_node,
+                  ROSIDL_GET_SRV_TYPE_SUPPORT(stackchan_msgs, srv, NextAudioChunk),
+                  audio_playback_chunk_service_name),
+              "audio_playback_chunk_client_init")) {
+    return false;
+  }
+  play_audio_chunk_client_initialized = true;
   (void)try_initialize_capture_audio_action_server(
       "capture_audio_action_server_init");
   (void)try_initialize_capture_camera_action_server(
@@ -2901,8 +3011,13 @@ bool initialize_microros_entities() {
       !reserve_play_audio_goal_strings() ||
       !stackchan_msgs__action__PlayAudio_SendGoal_Response__init(&play_audio_goal_response) ||
       !stackchan_msgs__action__PlayAudio_GetResult_Request__init(&play_audio_result_request) ||
-      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response)) {
+      !stackchan_msgs__action__PlayAudio_GetResult_Response__init(&play_audio_result_response) ||
+      !stackchan_msgs__srv__NextAudioChunk_Request__init(&audio_playback_chunk_request) ||
+      !stackchan_msgs__srv__NextAudioChunk_Response__init(&audio_playback_chunk_response) ||
+      !reserve_audio_playback_chunk_service_storage()) {
     stackchan_diag_println("stackchan micro_ros_step=play_audio_action_messages_init result=false");
+    stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+    stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
     stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
     stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
     stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
@@ -3080,7 +3195,7 @@ bool initialize_microros_entities() {
   if (!rcl_ok(rclc_executor_init(
                   &microros_executor,
                   &microros_support.context,
-                  5,
+                  6,
                   &microros_allocator),
               "executor_init")) {
     stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
@@ -3209,9 +3324,38 @@ bool initialize_microros_entities() {
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
+  if (!rcl_ok(rclc_executor_add_client(
+                  &microros_executor,
+                  &audio_playback_chunk_client,
+                  &audio_playback_chunk_response,
+                  handle_audio_playback_chunk_response),
+              "executor_add_audio_playback_chunk_client")) {
+    rclc_executor_fini(&microros_executor);
+    microros_executor_initialized = false;
+    stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+    stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__srv__SetMotion_Response__fini(&motion_set_response);
+    stackchan_msgs__srv__SetMotion_Request__fini(&motion_set_request);
+    stackchan_msgs__srv__SetHeadPose_Response__fini(&head_pose_set_response);
+    stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
+    stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
+    stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    stackchan_msgs__msg__HeadPose__fini(&motion_pose_ros_message);
+    stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
+    return false;
+  }
   microros_entities_initialized = true;
   stackchan_audio_playback_transport_initialized =
-      play_audio_action_server_initialized && stackchan_audio_playback_initialized;
+      play_audio_action_server_initialized &&
+      play_audio_chunk_client_initialized &&
+      stackchan_audio_playback_initialized;
   stackchan_audio_capture_transport_initialized =
       capture_audio_action_server_initialized && stackchan_audio_capture_initialized;
   return true;
@@ -3251,6 +3395,8 @@ void destroy_microros_entities() {
       stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
       stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
 #if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+      stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+      stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
       stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
       stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
       stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
@@ -3307,6 +3453,10 @@ void destroy_microros_entities() {
       }
 #endif
 #if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
+      if (play_audio_chunk_client_initialized) {
+        fini_result = rcl_client_fini(&audio_playback_chunk_client, &microros_node);
+        play_audio_chunk_client_initialized = false;
+      }
       if (play_audio_action_server_initialized) {
         fini_result = rcl_action_server_fini(&play_audio_action_server, &microros_node);
         play_audio_action_server_initialized = false;
@@ -3331,6 +3481,7 @@ void destroy_microros_entities() {
       play_audio_goal_active = false;
       play_audio_result_ready = false;
       play_audio_result_request_pending = false;
+      play_audio_chunk_request_pending = false;
       reset_rcl_error();
       return;
     }
@@ -3348,6 +3499,8 @@ void destroy_microros_entities() {
     stackchan_msgs__srv__SetHeadPose_Request__fini(&head_pose_set_request);
     stackchan_msgs__srv__SetFace_Response__fini(&face_set_response);
     stackchan_msgs__srv__SetFace_Request__fini(&face_set_request);
+    stackchan_msgs__srv__NextAudioChunk_Response__fini(&audio_playback_chunk_response);
+    stackchan_msgs__srv__NextAudioChunk_Request__fini(&audio_playback_chunk_request);
     stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
     stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
     stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
@@ -3394,6 +3547,10 @@ void destroy_microros_entities() {
       fini_result = rcl_action_server_fini(&play_audio_action_server, &microros_node);
       play_audio_action_server_initialized = false;
     }
+    if (play_audio_chunk_client_initialized) {
+      fini_result = rcl_client_fini(&audio_playback_chunk_client, &microros_node);
+      play_audio_chunk_client_initialized = false;
+    }
     fini_result = rcl_service_fini(&face_set_service, &microros_node);
     fini_result = rcl_service_fini(&head_pose_set_service, &microros_node);
     fini_result = rcl_service_fini(&led_set_service, &microros_node);
@@ -3416,6 +3573,7 @@ void destroy_microros_entities() {
     play_audio_goal_active = false;
     play_audio_result_ready = false;
     play_audio_result_request_pending = false;
+    play_audio_chunk_request_pending = false;
   }
   reset_rcl_error();
 }
@@ -4539,6 +4697,7 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
   play_audio_goal_active = false;
   play_audio_active_goal_handle = nullptr;
   play_audio_received_chunk = false;
+  play_audio_chunk_request_pending = false;
   audio_playback_guard.finish_session();
 }
 
@@ -4593,12 +4752,71 @@ void send_play_audio_result_if_ready() {
   }
 }
 
+void request_next_play_audio_chunk() {
+  if (!play_audio_goal_active ||
+      !play_audio_chunk_client_initialized ||
+      play_audio_chunk_request_pending) {
+    return;
+  }
+  const uint32_t now_ms = millis();
+  if (play_audio_last_pull_request_ms != 0 &&
+      now_ms - play_audio_last_pull_request_ms < kAudioPlaybackPullIntervalMs) {
+    return;
+  }
+  assign_ros_string(&audio_playback_chunk_request.meta.device_id, STACKCHAN_DEVICE_ID);
+  assign_ros_string(
+      &audio_playback_chunk_request.meta.command_id,
+      play_audio_diagnostic_command_id);
+  assign_ros_string(&audio_playback_chunk_request.meta.source, "firmware");
+  audio_playback_chunk_request.meta.created_at.sec = now_ms / 1000;
+  audio_playback_chunk_request.meta.created_at.nanosec =
+      (now_ms % 1000) * 1000000;
+  audio_playback_chunk_request.meta.priority =
+      static_cast<uint8_t>(stackchan::Priority::Normal);
+  audio_playback_chunk_request.next_sequence = play_audio_next_pull_sequence;
+  const rcl_ret_t send_result = rcl_send_request(
+      &audio_playback_chunk_client,
+      &audio_playback_chunk_request,
+      &play_audio_chunk_request_sequence_number);
+  if (send_result == RCL_RET_OK) {
+    play_audio_chunk_request_pending = true;
+    play_audio_last_pull_request_ms = now_ms;
+    return;
+  }
+  reset_rcl_error();
+  log_play_audio_chunk_diagnostic(
+      "pull_request_failed",
+      play_audio_diagnostic_command_id,
+      play_audio_next_pull_sequence,
+      0,
+      "TRANSPORT_DISCONNECTED");
+}
+
+void clear_stale_play_audio_chunk_request() {
+  if (!play_audio_chunk_request_pending) {
+    return;
+  }
+  const uint32_t now_ms = millis();
+  if (now_ms - play_audio_last_pull_request_ms < kAudioPlaybackPullTimeoutMs) {
+    return;
+  }
+  play_audio_chunk_request_pending = false;
+  log_play_audio_chunk_diagnostic(
+      "pull_response_timeout",
+      play_audio_diagnostic_command_id,
+      play_audio_next_pull_sequence,
+      0,
+      "TIMEOUT");
+}
+
 void maybe_finish_play_audio_session() {
   if (!play_audio_goal_active) {
     send_play_audio_result_if_ready();
     return;
   }
   const uint32_t now_ms = millis();
+  clear_stale_play_audio_chunk_request();
+  request_next_play_audio_chunk();
   if (!play_audio_received_chunk &&
       now_ms - play_audio_started_ms >= kAudioPlaybackNoChunkTimeoutMs) {
     log_play_audio_session_diagnostic(
@@ -4648,6 +4866,10 @@ void start_play_audio_goal(
       sizeof(last_command_id),
       command_id);
   play_audio_received_chunk = false;
+  play_audio_chunk_request_pending = false;
+  play_audio_chunk_request_sequence_number = 0;
+  play_audio_next_pull_sequence = 0;
+  play_audio_last_pull_request_ms = 0;
   play_audio_started_ms = millis();
   play_audio_last_chunk_ms = play_audio_started_ms;
   if (request.goal.first_chunk_present) {
@@ -4899,6 +5121,9 @@ void accept_play_audio_pcm_chunk(
   }
   play_audio_received_chunk = true;
   play_audio_last_chunk_ms = millis();
+  if (sequence >= play_audio_next_pull_sequence) {
+    play_audio_next_pull_sequence = sequence + 1;
+  }
 }
 
 void handle_audio_chunk_subscription(const void* message) {
@@ -4922,6 +5147,40 @@ void handle_audio_chunk_subscription(const void* message) {
   }
   accept_play_audio_pcm_chunk(
       chunk_command_id,
+      chunk->sequence,
+      chunk->format,
+      chunk->sample_rate,
+      chunk->channels,
+      chunk->pcm.data,
+      chunk->pcm.size);
+}
+
+void handle_audio_playback_chunk_response(const void* response) {
+  play_audio_chunk_request_pending = false;
+  if (response == nullptr || !play_audio_goal_active) {
+    return;
+  }
+  const auto* chunk_response =
+      static_cast<const stackchan_msgs__srv__NextAudioChunk_Response*>(response);
+  if (!chunk_response->result.ok) {
+    const stackchan::Result result = result_from_ros(chunk_response->result);
+    log_play_audio_chunk_diagnostic(
+        "pull_response_rejected",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        result.error_code);
+    if (strcmp(result.error_code, "FIRMWARE_BUSY") != 0) {
+      finish_play_audio_goal(result, GOAL_STATE_ABORTED);
+    }
+    return;
+  }
+  if (!chunk_response->has_chunk) {
+    return;
+  }
+  const auto* chunk = &chunk_response->chunk;
+  accept_play_audio_pcm_chunk(
+      chunk->command_id.data != nullptr ? chunk->command_id.data : "",
       chunk->sequence,
       chunk->format,
       chunk->sample_rate,

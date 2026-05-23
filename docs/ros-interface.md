@@ -614,6 +614,10 @@ bridge buffers chunks by `device_id` and `command_id`, then relays them to
 firmware-owned playback action goal is accepted. A local diagnostic mode may
 move sequence `0` into the public `PlayAudio` goal instead of this ingress
 topic while the first-payload handoff is being validated.
+The bridge also exposes
+`/stackchan/<device_id>/audio/playback/next_chunk` so firmware can pull the
+next bounded chunk after action acceptance when serial micro-ROS topic delivery
+is unreliable.
 
 Fields and bounds are the same as
 `/stackchan/<device_id>/device/audio/playback/chunks`.
@@ -646,6 +650,40 @@ Before relaying buffered topic chunks, the bridge may wait briefly for the
 firmware subscription to be matched because the topic is best-effort and
 volatile. Firmware must ignore duplicate chunks whose sequence is already
 accepted for the active `command_id`.
+
+### `/stackchan/<device_id>/audio/playback/next_chunk`
+
+Purpose: bridge-owned playback helper service used by firmware to request the
+next CLI-origin playback chunk for an already accepted
+`/stackchan/<device_id>/device/audio/play` session. This is not a Codex command
+surface and does not live under `/cmd`; it is also not firmware-owned and does
+not live under `/device`.
+
+Request fields:
+
+- `meta`
+- `next_sequence`
+
+Response fields:
+
+- `result`
+- `has_chunk`
+- `chunk`
+- `end_of_stream`
+- `buffered_chunks`
+
+Rules:
+
+- `meta.device_id` and `meta.command_id` identify the active playback session.
+- The bridge returns at most one `AudioChunk(direction=PLAYBACK)` with bounded
+  PCM payload.
+- `has_chunk=false` with an accepted `result` means no matching chunk is
+  currently buffered; firmware may retry on a bounded cadence.
+- `end_of_stream=true` is advisory and only applies after the bridge has closed
+  the matching playback relay session.
+- Firmware still validates `device_id`, `command_id`, direction, format,
+  sequence, and payload size before playback. The service is a transport
+  helper, not a raw speaker control.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -1055,6 +1093,10 @@ payload path is enabled, topic chunks start at the next sequence instead. The
 bridge may buffer bounded chunks for a pending command, but it must forward
 them to `/stackchan/<device_id>/device/audio/playback/chunks` only while the
 matching firmware-owned playback session is active.
+Firmware may alternatively pull the next buffered chunk through the
+bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper after
+action acceptance. This helper keeps PCM out of action goals while avoiding
+best-effort topic delivery as the only playback ingress.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout large
 enough for goal acceptance, firmware buffering, chunk transfer, and terminal

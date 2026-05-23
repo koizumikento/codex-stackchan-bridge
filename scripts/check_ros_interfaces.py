@@ -26,6 +26,7 @@ EXPECTED_INTERFACES = [
     "srv/GetTranscript.srv",
     "srv/GetStatus.srv",
     "srv/ListEvents.srv",
+    "srv/NextAudioChunk.srv",
     "srv/NextEvent.srv",
     "srv/SetFace.srv",
     "srv/SetHeadPose.srv",
@@ -86,6 +87,15 @@ SERVICE_FIELDS = {
         "stackchan_msgs/Result result",
         "stackchan_msgs/StackChanEvent[<=1] events",
         "string<=36 cursor",
+    ],
+    "NextAudioChunk.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "uint32 next_sequence",
+        "stackchan_msgs/Result result",
+        "bool has_chunk",
+        "stackchan_msgs/AudioChunk chunk",
+        "bool end_of_stream",
+        "uint32 buffered_chunks",
     ],
     "ClearEventCursor.srv": [
         "stackchan_msgs/CommandMeta meta",

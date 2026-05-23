@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetTranscript.srv"
   "srv/GetStatus.srv"
   "srv/ListEvents.srv"
+  "srv/NextAudioChunk.srv"
   "srv/NextEvent.srv"
   "srv/SetFace.srv"
   "srv/SetHeadPose.srv"

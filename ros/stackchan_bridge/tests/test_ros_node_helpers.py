@@ -341,6 +341,7 @@ class RosNodeHelperTests(unittest.TestCase):
         for name in (
             "ListEvents",
             "NextEvent",
+            "NextAudioChunk",
             "ClearEventCursor",
             "GetTranscript",
             "GetPowerStatus",
@@ -379,6 +380,9 @@ class RosNodeHelperTests(unittest.TestCase):
             "_device_audio_chunk_publishers",
             "_cmd_audio_chunk_subscriptions",
             "_pending_playback_chunks",
+            "_handle_next_audio_chunk",
+            "/audio/playback/next_chunk",
+            "audio playback pull served first chunk",
             "_active_playback_sessions",
             "_closed_playback_sessions",
             "_playback_relay_stats",
