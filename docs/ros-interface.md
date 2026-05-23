@@ -1101,13 +1101,16 @@ Baseline camera behavior:
   only; they must not inline base64, JPEG bytes, or image payloads
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
   `recoverable=true` unless a later contract adds a narrower error code
-- timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
+- timeout returns a structured `CAMERA_CAPTURE_FAILED` result when the device
+  camera action accepted the goal but did not deliver a result within the
+  bridge media-action timeout
 - the bridge rejects capture goals with `UNSUPPORTED_FEATURE` until firmware
   status reports `camera_snapshot` as available
 - after capability confirmation, the bridge forwards the goal to
-  `/stackchan/<device_id>/device/camera/capture`; missing, rejecting, or timed
-  out device action servers return structured transport/timeout/rejection
-  results instead of synthetic success
+  `/stackchan/<device_id>/device/camera/capture`; missing or rejecting device
+  action servers return structured transport/rejection results, while accepted
+  device goals that time out before result delivery return bounded
+  `CAMERA_CAPTURE_FAILED` instead of an unclassified CLI timeout
 - the bridge uses the media-action timeout for camera result delivery because
   firmware frame acquisition and JPEG encoding may exceed the short synchronous
   service timeout

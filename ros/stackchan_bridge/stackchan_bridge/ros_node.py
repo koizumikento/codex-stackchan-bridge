@@ -93,6 +93,10 @@ def _make_timeout_result(message: str) -> Result:
     )
 
 
+def _make_camera_capture_failed_result(message: str) -> Result:
+    return Result.rejected("CAMERA_CAPTURE_FAILED", message, recoverable=True)
+
+
 def _copy_status(response: object, status: object) -> None:
     response.device_id = status.device_id
     response.connected = status.connected
@@ -1827,11 +1831,19 @@ def main(args: list[str] | None = None) -> None:
             result_future = device_goal_handle.get_result_async()
             wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
             if wait_result is not None:
-                return wait_result, None
+                return (
+                    _make_camera_capture_failed_result(f"firmware {label} timed out"),
+                    None,
+                )
             try:
                 result_response = result_future.result()
             except Exception as exc:  # pragma: no cover - defensive ROS boundary.
-                return _make_transport_result(f"firmware {label} result failed: {exc}"), None
+                return (
+                    _make_camera_capture_failed_result(
+                        f"firmware {label} result failed: {exc}"
+                    ),
+                    None,
+                )
             action_result = result_response.result
             return _result_from_ros(action_result.result), action_result.image
 

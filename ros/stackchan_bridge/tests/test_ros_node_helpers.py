@@ -366,6 +366,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "feedback_sub_qos_profile=action_status_best_effort_depth_1",
             "status_sub_qos_profile=action_status_best_effort_depth_1",
             "_copy_compressed_image_payload",
+            "_make_camera_capture_failed_result",
             "_mark_device_available_from_event(",
             "_mark_device_available_from_status(",
             "_device_audio_capture_clients",

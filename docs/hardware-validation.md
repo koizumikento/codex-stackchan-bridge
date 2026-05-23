@@ -764,6 +764,10 @@ timing updates, device `default`, COM3 through host serial TCP bridge:
 - Camera capture still returned `TIMEOUT`. Firmware now prefers native JPEG and
   the loop order keeps audio ahead of camera, but camera acquisition/result
   delivery still needs a focused nonblocking or bounded-driver follow-up.
+- Follow-up bridge handling maps accepted device camera goals that miss the
+  media-action result deadline to `CAMERA_CAPTURE_FAILED`, so the next smoke
+  should show either `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1` or a
+  bounded camera failure instead of an unclassified CLI `TIMEOUT`.
 - Redaction remained green: no audio PCM, speech text, JPEG bytes/base64, NFC
   tag IDs, or IR raw-code markers appeared in normal output/log scans.
 

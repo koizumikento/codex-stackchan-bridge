@@ -607,6 +607,9 @@ through `/stackchan/<device_id>/cmd/camera/capture` to
 payload to the explicit `--output` file. Missing, empty, non-JPEG, or oversized
 payloads return structured camera capture errors. CLI JSON still reports the
 baseline QVGA JPEG metadata contract and never includes JPEG bytes or base64.
+If the firmware-owned camera action accepts a goal but does not deliver a
+result before the bridge media-action timeout, the bridge reports
+`CAMERA_CAPTURE_FAILED` instead of surfacing an unclassified CLI `TIMEOUT`.
 The mock backend keeps deterministic camera validation behavior for CLI
 development.
 
