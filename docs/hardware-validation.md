@@ -703,6 +703,19 @@ Observed results:
 - Manual button/touch/proximity/power/NFC/IR stimulus checks were not performed
   in this no-stimulus sweep. IMU and light semantic event markers were observed.
 
+2026-05-23 bridge media-timeout follow-up, device `default`, same firmware and
+serial bridge, after rebuilding `stackchan_bridge` with media actions using a
+longer result timeout than short synchronous device commands:
+
+- Container ROS build: pass for `stackchan_msgs` and `stackchan_bridge`.
+- Low-rate telemetry, raw IMU relay, `power status`, and redaction: pass.
+- Audio playback: unchanged structured `AUDIO_UNDERRUN`.
+- Audio capture: still `TIMEOUT` after bounded `audio_capture_started`; this
+  points at firmware capture chunk/terminal-result behavior rather than only
+  the former 2 second bridge command timeout.
+- Camera capture: still `TIMEOUT`; inspect firmware camera acquisition and
+  result delivery next.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

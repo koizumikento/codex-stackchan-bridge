@@ -998,6 +998,10 @@ the local audio file, so unsupported hardware smokes can remain metadata-only.
 Once `audio_playback` is available, playback chunks use the accepted
 `command_id` and monotonic `sequence` values on
 `/stackchan/<device_id>/device/audio/chunks`.
+The bridge must not use the short synchronous device-command timeout for media
+action result delivery. Playback and capture need a media-action timeout large
+enough for goal acceptance, firmware buffering, chunk transfer, and terminal
+result delivery.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -1084,6 +1088,9 @@ Baseline camera behavior:
   `/stackchan/<device_id>/device/camera/capture`; missing, rejecting, or timed
   out device action servers return structured transport/timeout/rejection
   results instead of synthetic success
+- the bridge uses the media-action timeout for camera result delivery because
+  firmware frame acquisition and JPEG encoding may exceed the short synchronous
+  service timeout
 - result transport must enforce the 96 KiB maximum before exposing metadata to
   callers
 

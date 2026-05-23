@@ -454,6 +454,10 @@ def main(args: list[str] | None = None) -> None:
             self._device_command_timeout_sec = float(
                 self.get_parameter("device_command_timeout_sec").value
             )
+            self.declare_parameter("device_media_action_timeout_sec", 8.0)
+            self._device_media_action_timeout_sec = float(
+                self.get_parameter("device_media_action_timeout_sec").value
+            )
             registry = DeviceRegistry(
                 _configured_device_records(
                     configured_device_ids,
@@ -1634,6 +1638,7 @@ def main(args: list[str] | None = None) -> None:
                 client,
                 goal,
                 f"camera capture action for '{device_id}'",
+                timeout_sec=self._device_media_action_timeout_sec,
             )
 
         def _call_device_audio_play(
@@ -1662,6 +1667,7 @@ def main(args: list[str] | None = None) -> None:
                 client,
                 goal,
                 f"audio playback action for '{device_id}'",
+                timeout_sec=self._device_media_action_timeout_sec,
             )
 
         def _call_device_audio_capture(
@@ -1685,10 +1691,15 @@ def main(args: list[str] | None = None) -> None:
             goal.sample_rate = int(request.sample_rate)
             goal.channels = int(request.channels)
             goal.duration_ms = int(request.duration_ms)
+            timeout_sec = max(
+                self._device_media_action_timeout_sec,
+                (goal.duration_ms / 1000.0) + 2.0,
+            )
             return self._send_device_action_goal(
                 client,
                 goal,
                 f"audio capture action for '{device_id}'",
+                timeout_sec=timeout_sec,
             )
 
         def _send_device_camera_capture_goal(
@@ -1696,12 +1707,14 @@ def main(args: list[str] | None = None) -> None:
             client: object,
             goal: object,
             label: str,
+            *,
+            timeout_sec: float | None = None,
         ) -> tuple[Result, object | None]:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable"), None
 
             goal_future = client.send_goal_async(goal)
-            wait_result = self._wait_for_future(goal_future, label)
+            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
             if wait_result is not None:
                 return wait_result, None
             try:
@@ -1719,7 +1732,7 @@ def main(args: list[str] | None = None) -> None:
                 )
 
             result_future = device_goal_handle.get_result_async()
-            wait_result = self._wait_for_future(result_future, label)
+            wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
             if wait_result is not None:
                 return wait_result, None
             try:
@@ -1734,12 +1747,14 @@ def main(args: list[str] | None = None) -> None:
             client: object,
             goal: object,
             label: str,
+            *,
+            timeout_sec: float | None = None,
         ) -> Result:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable")
 
             goal_future = client.send_goal_async(goal)
-            wait_result = self._wait_for_future(goal_future, label)
+            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
             if wait_result is not None:
                 return wait_result
             try:
@@ -1754,7 +1769,7 @@ def main(args: list[str] | None = None) -> None:
                 )
 
             result_future = device_goal_handle.get_result_async()
-            wait_result = self._wait_for_future(result_future, label)
+            wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
             if wait_result is not None:
                 return wait_result
             try:
@@ -1763,8 +1778,16 @@ def main(args: list[str] | None = None) -> None:
                 return _make_transport_result(f"firmware {label} result failed: {exc}")
             return _result_from_ros(result_response.result.result)
 
-        def _wait_for_future(self, future: object, label: str) -> Result | None:
-            deadline = time.monotonic() + self._device_command_timeout_sec
+        def _wait_for_future(
+            self,
+            future: object,
+            label: str,
+            *,
+            timeout_sec: float | None = None,
+        ) -> Result | None:
+            deadline = time.monotonic() + (
+                self._device_command_timeout_sec if timeout_sec is None else timeout_sec
+            )
             while not future.done() and time.monotonic() < deadline:
                 time.sleep(0.01)
             if future.done():
