@@ -2,6 +2,9 @@ stackchan_msgs/CommandMeta meta
 string<=16 format
 uint32 sample_rate
 uint8 channels
+bool first_chunk_present
+uint32 first_chunk_sequence
+uint8[<=1280] first_chunk_pcm
 string<=32 face_hint
 string<=32 motion_hint
 ---

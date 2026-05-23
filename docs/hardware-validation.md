@@ -897,6 +897,26 @@ uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sw
   designing a small first-chunk handoff in the playback action contract or a
   firmware-owned pull/ack path.
 
+2026-05-23/24 first-goal payload handoff smoke:
+
+- The additive `PlayAudio` action fields for a bounded first playback payload
+  were implemented across IDL, bridge, `stackchanctl`, and firmware, and the
+  firmware uploaded successfully through the PlatformIO helper.
+- With the first playback segment in the action goal, both the initial 20 ms
+  payload and a reduced 10 ms / 320 byte payload caused the physical smoke to
+  time out waiting for the firmware audio playback action result. After that
+  playback timeout, audio capture and camera capture also timed out in the same
+  smoke run even though sensor topics, power status, and event redaction still
+  sampled successfully.
+- Because this shifted the known failure from structured `AUDIO_UNDERRUN` to
+  action `TIMEOUT`, the first-goal payload path remains a local diagnostic
+  opt-in instead of the CLI baseline. The default playback path keeps all PCM
+  chunks on `/stackchan/default/cmd/audio/chunks` and
+  `/stackchan/default/device/audio/playback/chunks`.
+- Next work should instrument the firmware action result path and micro-ROS
+  action resource limits before making any action-goal payload handoff
+  production behavior.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

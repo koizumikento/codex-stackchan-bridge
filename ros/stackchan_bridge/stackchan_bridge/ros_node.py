@@ -1851,6 +1851,13 @@ def main(args: list[str] | None = None) -> None:
             goal.format = request.format
             goal.sample_rate = int(request.sample_rate)
             goal.channels = int(request.channels)
+            goal.first_chunk_present = bool(
+                getattr(request, "first_chunk_present", False)
+            )
+            goal.first_chunk_sequence = int(
+                getattr(request, "first_chunk_sequence", 0)
+            )
+            goal.first_chunk_pcm = bytes(getattr(request, "first_chunk_pcm", b""))
             goal.face_hint = getattr(request, "face_hint", "")
             goal.motion_hint = getattr(request, "motion_hint", "")
             return self._send_device_action_goal(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any, Protocol
@@ -75,11 +76,24 @@ AUDIO_PCM_S16LE_FORMAT = 1
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 0
 AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
 AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 1
 CAMERA_JPEG_FORMAT = "jpeg"
 CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
+
+
+def _audio_playback_first_goal_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    return min(max(value, 0), AUDIO_CHUNK_BYTES)
 
 
 class BridgeBackendError(RuntimeError):
@@ -663,6 +677,11 @@ class RclpyBridgeClient:
         goal.format = "pcm_s16le"
         goal.sample_rate = AUDIO_SAMPLE_RATE
         goal.channels = AUDIO_CHANNELS
+        first_goal_bytes = _audio_playback_first_goal_bytes()
+        first_chunk = pcm[:first_goal_bytes]
+        goal.first_chunk_present = bool(first_chunk)
+        goal.first_chunk_sequence = 0
+        goal.first_chunk_pcm = first_chunk
         goal.face_hint = ""
         goal.motion_hint = ""
         return self._send_action_goal(
@@ -671,7 +690,12 @@ class RclpyBridgeClient:
             goal,
             wait=wait,
             timeout=timeout,
-            on_accepted=lambda: self._publish_audio_playback_chunks(meta, pcm, timeout),
+            on_accepted=lambda: self._publish_audio_playback_chunks(
+                meta,
+                pcm[first_goal_bytes:],
+                timeout,
+                start_sequence=1 if first_chunk else 0,
+            ),
         )
 
     def capture_audio(
@@ -925,10 +949,17 @@ class RclpyBridgeClient:
         meta: CommandMeta,
         pcm: bytes,
         timeout: float,
+        *,
+        start_sequence: int = 0,
     ) -> None:
+        if not pcm:
+            return
         publisher = self._audio_chunk_publisher(meta.device_id)
         self._wait_for_audio_playback_subscriber(publisher, timeout)
-        for sequence, offset in enumerate(range(0, len(pcm), AUDIO_CHUNK_BYTES)):
+        for sequence, offset in enumerate(
+            range(0, len(pcm), AUDIO_CHUNK_BYTES),
+            start=start_sequence,
+        ):
             message = self._audio_chunk_type()
             message.device_id = meta.device_id
             message.command_id = meta.command_id

@@ -213,10 +213,14 @@ Expected states:
 - `fault`: a safety or hardware error needs to be reported.
 
 Audio playback and capture are action-coordinated behaviors. Firmware accepts
-the action goal first, then treats
-`/stackchan/<device_id>/device/audio/playback/chunks` as the bounded playback
-payload input path for the matching `command_id`. Microphone capture publishes
-bounded capture chunks on `/stackchan/<device_id>/device/audio/chunks`.
+the action goal first. The firmware-owned `PlayAudio` action goal may carry
+the first bounded PCM segment as `first_chunk_sequence=0`; that action-goal
+handoff is a local diagnostic path and is disabled in the CLI baseline until
+physical hardware smokes prove the action result path remains healthy.
+Playback payload for the matching `command_id` normally uses
+`/stackchan/<device_id>/device/audio/playback/chunks`. Microphone capture
+publishes bounded capture chunks on
+`/stackchan/<device_id>/device/audio/chunks`.
 Playback and capture topics are intentionally separated so firmware does not
 publish and subscribe on the same audio chunk topic over the micro-ROS serial
 transport. Playback must tolerate normal best-effort chunk pacing but report
@@ -229,8 +233,8 @@ serial path handled 640 byte publishes more reliably than max-size 40 ms
 chunks.
 
 CLI-origin playback chunks enter the bridge on
-`/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe chunks
-after the bridge has relayed them to
+`/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe topic
+chunks after the bridge has relayed them to
 `/stackchan/<device_id>/device/audio/playback/chunks` for an accepted
 firmware-owned playback action goal.
 
@@ -448,10 +452,13 @@ Baseline audio path:
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
 - Audio chunk topics use best-effort, volatile, keep-last-8 QoS. Playback chunks
   use `/stackchan/<device_id>/device/audio/playback/chunks`; capture chunks use
-  `/stackchan/<device_id>/device/audio/chunks`. The bridge may briefly wait for
-  the firmware playback subscription to match, then retry the first PLAYBACK
-  chunk a bounded number of times after action acceptance; firmware must ignore
-  duplicate chunks whose sequence is already accepted for the active
+  `/stackchan/<device_id>/device/audio/chunks`. A small first playback segment
+  is allowed in the firmware-owned `PlayAudio` goal for local diagnostics, but
+  the CLI baseline keeps playback payload on the chunk topic until hardware
+  validation proves this does not starve action results. The bridge may briefly
+  wait for the firmware playback subscription before forwarding chunks;
+  firmware must ignore duplicate chunks whose sequence is already accepted for
+  the active
   `command_id`.
 - Chunk streams are keyed by `device_id`, `command_id`, `direction`, and a
   sequence that is monotonic per command and direction.

@@ -557,15 +557,20 @@ firmware-confirmed audio transport still return `UNSUPPORTED_FEATURE`. CLI JSON
 reports the baseline metadata contract and never includes PCM bytes. The mock
 backend keeps deterministic responses for CLI development.
 When `audio_playback` is available, the bridge backend sends the public
-`PlayAudio` action and publishes bounded playback chunks with the same
-`command_id` on `/stackchan/<device_id>/cmd/audio/chunks`. The bridge buffers
-those command-ingress chunks and relays them to
+`PlayAudio` action, then publishes playback chunks with the same `command_id`
+on `/stackchan/<device_id>/cmd/audio/chunks` starting at sequence `0`. The
+bridge buffers those command-ingress chunks and relays them to
 `/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
 the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
 Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
 bridge; the bridge owns device-session arming and must not rely on a fixed
 sleep before forwarding to firmware. Invalid or unsupported input files return
 structured errors; PCM bytes are never printed in normal output.
+For KOIZUMI-111 diagnostics, developers can set
+`STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
+`320` to move the first playback segment into the action goal. The default is
+`0` because physical hardware smokes with 10 ms and 20 ms first-goal payloads
+timed out before this path was proven safe.
 
 When `audio_capture` is available, the bridge backend subscribes to
 `/stackchan/<device_id>/device/audio/chunks` before sending the public
