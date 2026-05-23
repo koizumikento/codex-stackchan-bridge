@@ -597,9 +597,13 @@ sequences require a separate contract.
 
 The bridge backend rejects camera capture with `UNSUPPORTED_FEATURE` until
 firmware status reports `camera_snapshot` as available, then forwards the goal
-to `/stackchan/<device_id>/device/camera/capture`. CLI JSON still reports the
-baseline QVGA JPEG metadata contract and never includes JPEG bytes. The mock
-backend keeps deterministic camera validation behavior for CLI development.
+through `/stackchan/<device_id>/cmd/camera/capture` to
+`/stackchan/<device_id>/device/camera/capture` and writes the returned JPEG
+payload to the explicit `--output` file. Missing, empty, non-JPEG, or oversized
+payloads return structured camera capture errors. CLI JSON still reports the
+baseline QVGA JPEG metadata contract and never includes JPEG bytes or base64.
+The mock backend keeps deterministic camera validation behavior for CLI
+development.
 
 Camera command results should distinguish request acceptance from image
 availability. A future implementation can accept a capture goal, then return

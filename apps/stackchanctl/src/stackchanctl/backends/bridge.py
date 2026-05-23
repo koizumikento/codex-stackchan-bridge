@@ -74,6 +74,8 @@ AUDIO_PCM_S16LE_FORMAT = 1
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
+CAMERA_JPEG_FORMAT = "jpeg"
+CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
 
 
 class BridgeBackendError(RuntimeError):
@@ -734,20 +736,47 @@ class RclpyBridgeClient:
     def capture_camera(
         self, meta: CommandMeta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del output
+        status = self.get_status(meta, timeout)
+        if not _capability_available(status, "camera_snapshot"):
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="camera capture requires firmware-confirmed device transport.",
+                    recoverable=False,
+                ),
+            )
+        camera_result = {}
         goal = self._capture_camera_type.Goal()
         _copy_meta(goal.meta, meta)
-        goal.format = "jpeg"
+        goal.format = CAMERA_JPEG_FORMAT
         goal.width = 320
         goal.height = 240
         goal.quality = quality
-        return self._send_action_goal(
+        response = self._send_action_goal(
             self._capture_camera_type,
             f"/stackchan/{meta.device_id}/cmd/camera/capture",
             goal,
             wait=wait,
             timeout=timeout,
+            on_result=lambda result: camera_result.setdefault("image", result.image),
         )
+        if not response.ok:
+            return response
+        image = camera_result.get("image")
+        if image is None:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="CAMERA_CAPTURE_FAILED",
+                    message="camera capture completed without an image payload",
+                    recoverable=True,
+                ),
+            )
+        _write_camera_capture_jpeg(output, image)
+        return response
 
     def list_events(
         self,
@@ -841,6 +870,7 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
         on_accepted=None,
+        on_result=None,
     ) -> BridgeCommandResponse:
         action = self._action_client_type(self._node, action_type, action_name)
         if not action.wait_for_server(timeout_sec=timeout):
@@ -865,7 +895,10 @@ class RclpyBridgeClient:
         # not proof that the physical behavior has completed.
         result_future = goal_handle.get_result_async()
         self._spin_future(result_future, timeout)
-        response = _response_from_ros(result_future.result().result.result)
+        action_result = result_future.result().result
+        response = _response_from_ros(action_result.result)
+        if response.ok and on_result is not None:
+            on_result(action_result)
         return _normalize_action_response(response, wait=wait)
 
     def _audio_chunk_publisher(self, device_id: str):
@@ -1001,6 +1034,44 @@ def _write_audio_capture_wav(path: str, pcm: bytes) -> None:
         raise BridgeBackendError(
             "AUDIO_CAPTURE_FAILED",
             "audio capture output WAV could not be written",
+            recoverable=False,
+        ) from exc
+
+
+def _write_camera_capture_jpeg(path: str, image) -> None:
+    destination = Path(path)
+    if destination.parent != Path(".") and not destination.parent.exists():
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture output directory does not exist",
+            recoverable=False,
+        )
+    image_format = getattr(image, "format", "")
+    data = bytes(getattr(image, "data", b""))
+    if image_format != CAMERA_JPEG_FORMAT:
+        raise BridgeBackendError(
+            "UNSUPPORTED_FEATURE",
+            "camera capture only supports JPEG payloads",
+            recoverable=False,
+        )
+    if not data:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture image payload was empty",
+            recoverable=True,
+        )
+    if len(data) > CAMERA_MAX_PAYLOAD_BYTES:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture image payload exceeded 96 KiB",
+            recoverable=True,
+        )
+    try:
+        destination.write_bytes(data)
+    except OSError as exc:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture output file could not be written",
             recoverable=False,
         ) from exc
 

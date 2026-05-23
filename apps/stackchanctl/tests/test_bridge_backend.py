@@ -1040,6 +1040,59 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(response.error.code, "AUDIO_CAPTURE_FAILED")
         self.assertEqual(node.subscriptions, [])
 
+    def test_capture_camera_writes_jpeg_payload_to_output_file(self) -> None:
+        jpeg = b"\xff\xd8stackchan\xff\xd9"
+        action = FakeActionClient(
+            action_result=SimpleNamespace(
+                result=SimpleNamespace(
+                    ok=True,
+                    state=2,
+                    error_code="",
+                    message="",
+                    recoverable=False,
+                ),
+                image=SimpleNamespace(format="jpeg", data=jpeg),
+            )
+        )
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = object()
+        client._action_client_type = action
+        client._capture_camera_type = FakeCaptureCamera
+        client.get_status = lambda meta, timeout: DeviceStatus(
+            device_id=meta.device_id,
+            connected=True,
+            device_state="idle",
+            face="neutral",
+            last_error=None,
+            capabilities=(CapabilityStatus("camera_snapshot", "available"),),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "frame.jpg"
+            response = client.capture_camera(
+                SimpleNamespace(
+                    device_id="default",
+                    command_id="cmd-camera-0001",
+                    source="test",
+                    created_at="2026-05-16T00:00:00Z",
+                    priority=SimpleNamespace(value="NORMAL"),
+                ),
+                str(output),
+                80,
+                wait=True,
+                timeout=1.0,
+            )
+            self.assertEqual(output.read_bytes(), jpeg)
+
+        self.assertTrue(response.ok)
+        self.assertEqual(response.result_state, ResultState.COMPLETED)
+        self.assertEqual(action.action_name, "/stackchan/default/cmd/camera/capture")
+        self.assertEqual(action.last_goal.format, "jpeg")
+        self.assertEqual(action.last_goal.width, 320)
+        self.assertEqual(action.last_goal.height, 240)
+        self.assertEqual(action.last_goal.quality, 80)
+
     def test_non_wait_action_preserves_facade_rejection(self) -> None:
         response = _normalize_action_response(
             BridgeCommandResponse(
@@ -1108,29 +1161,26 @@ class FakeFuture:
 class FakeGoalHandle:
     accepted = True
 
-    def __init__(self) -> None:
+    def __init__(self, action_result=None) -> None:
         self.result_requested = False
-
-    def get_result_async(self):
-        self.result_requested = True
-        return FakeFuture(
-            SimpleNamespace(
-                result=SimpleNamespace(
-                    result=SimpleNamespace(
-                        ok=True,
-                        state=2,
-                        error_code="",
-                        message="",
-                        recoverable=False,
-                    )
-                )
+        self.action_result = action_result or SimpleNamespace(
+            result=SimpleNamespace(
+                ok=True,
+                state=2,
+                error_code="",
+                message="",
+                recoverable=False,
             )
         )
 
+    def get_result_async(self):
+        self.result_requested = True
+        return FakeFuture(SimpleNamespace(result=self.action_result))
+
 
 class FakeActionClient:
-    def __init__(self) -> None:
-        self.goal_handle = FakeGoalHandle()
+    def __init__(self, action_result=None) -> None:
+        self.goal_handle = FakeGoalHandle(action_result)
         self.action_name = None
         self.last_goal = None
 
@@ -1176,6 +1226,16 @@ class FakeCaptureAudio:
             self.sample_rate = 0
             self.channels = 0
             self.duration_ms = 0
+
+
+class FakeCaptureCamera:
+    class Goal:
+        def __init__(self) -> None:
+            self.meta = SimpleNamespace(created_at=SimpleNamespace())
+            self.format = ""
+            self.width = 0
+            self.height = 0
+            self.quality = 0
 
 
 class FakeAudioChunk:

@@ -63,6 +63,11 @@ def _copy_result(result: object, source: object) -> None:
     result.recoverable = source.recoverable
 
 
+def _copy_compressed_image_payload(target: object, source: object) -> None:
+    target.format = getattr(source, "format", "")
+    target.data = bytes(getattr(source, "data", b""))
+
+
 def _copy_command_meta(target: object, source: CommandMeta, created_at: object) -> None:
     target.device_id = source.device_id
     target.command_id = source.command_id
@@ -1581,14 +1586,20 @@ def main(args: list[str] | None = None) -> None:
                 quality=int(request.quality),
             )
             if command_response.result.ok:
-                device_result = self._call_device_camera_capture(device_id, request, meta)
+                device_result, device_image = self._call_device_camera_capture(
+                    device_id, request, meta
+                )
                 command_response = type(command_response)(
                     command_response.device_id,
                     command_response.command_id,
                     device_result,
                 )
+            else:
+                device_image = None
             result = CaptureCamera.Result()
             _copy_result(result.result, command_response.result)
+            if command_response.result.ok and device_image is not None:
+                _copy_compressed_image_payload(result.image, device_image)
             if command_response.result.ok:
                 goal_handle.succeed()
             else:
@@ -1600,11 +1611,14 @@ def main(args: list[str] | None = None) -> None:
             device_id: str,
             request: object,
             meta: CommandMeta,
-        ) -> Result:
+        ) -> tuple[Result, object | None]:
             client = self._device_camera_capture_clients.get(device_id)
             if client is None:
-                return _make_transport_result(
-                    f"firmware camera capture action for '{device_id}' is not configured"
+                return (
+                    _make_transport_result(
+                        f"firmware camera capture action for '{device_id}' is not configured"
+                    ),
+                    None,
                 )
             goal = CaptureCamera.Goal()
             _copy_command_meta(
@@ -1616,7 +1630,7 @@ def main(args: list[str] | None = None) -> None:
             goal.width = int(request.width)
             goal.height = int(request.height)
             goal.quality = int(request.quality)
-            return self._send_device_action_goal(
+            return self._send_device_camera_capture_goal(
                 client,
                 goal,
                 f"camera capture action for '{device_id}'",
@@ -1676,6 +1690,44 @@ def main(args: list[str] | None = None) -> None:
                 goal,
                 f"audio capture action for '{device_id}'",
             )
+
+        def _send_device_camera_capture_goal(
+            self,
+            client: object,
+            goal: object,
+            label: str,
+        ) -> tuple[Result, object | None]:
+            if not client.wait_for_server(timeout_sec=0.1):
+                return _make_transport_result(f"firmware {label} is unavailable"), None
+
+            goal_future = client.send_goal_async(goal)
+            wait_result = self._wait_for_future(goal_future, label)
+            if wait_result is not None:
+                return wait_result, None
+            try:
+                device_goal_handle = goal_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} failed: {exc}"), None
+            if device_goal_handle is None or not getattr(device_goal_handle, "accepted", False):
+                return (
+                    Result.rejected(
+                        "UNKNOWN_COMMAND",
+                        f"firmware {label} rejected the goal",
+                        recoverable=False,
+                    ),
+                    None,
+                )
+
+            result_future = device_goal_handle.get_result_async()
+            wait_result = self._wait_for_future(result_future, label)
+            if wait_result is not None:
+                return wait_result, None
+            try:
+                result_response = result_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} result failed: {exc}"), None
+            action_result = result_response.result
+            return _result_from_ros(action_result.result), action_result.image
 
         def _send_device_action_goal(
             self,
