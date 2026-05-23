@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 import math
 from pathlib import Path
+import time
 from typing import Any, Protocol
 import wave
 
@@ -74,6 +75,10 @@ AUDIO_PCM_S16LE_FORMAT = 1
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
+AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
+AUDIO_PLAYBACK_SESSION_ARM_DELAY_SEC = 3.00
+AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 2
 CAMERA_JPEG_FORMAT = "jpeg"
 CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
 
@@ -667,7 +672,7 @@ class RclpyBridgeClient:
             goal,
             wait=wait,
             timeout=timeout,
-            on_accepted=lambda: self._publish_audio_playback_chunks(meta, pcm),
+            on_accepted=lambda: self._publish_audio_playback_chunks(meta, pcm, timeout),
         )
 
     def capture_audio(
@@ -916,8 +921,15 @@ class RclpyBridgeClient:
             self._audio_chunk_publishers[device_id] = publisher
         return publisher
 
-    def _publish_audio_playback_chunks(self, meta: CommandMeta, pcm: bytes) -> None:
+    def _publish_audio_playback_chunks(
+        self,
+        meta: CommandMeta,
+        pcm: bytes,
+        timeout: float,
+    ) -> None:
         publisher = self._audio_chunk_publisher(meta.device_id)
+        self._wait_for_audio_playback_subscriber(publisher, timeout)
+        self._wait_for_audio_playback_session_arm()
         for sequence, offset in enumerate(range(0, len(pcm), AUDIO_CHUNK_BYTES)):
             message = self._audio_chunk_type()
             message.device_id = meta.device_id
@@ -929,6 +941,41 @@ class RclpyBridgeClient:
             message.channels = AUDIO_CHANNELS
             message.pcm = pcm[offset : offset + AUDIO_CHUNK_BYTES]
             publisher.publish(message)
+            self._pace_audio_playback_chunk()
+
+    def _wait_for_audio_playback_subscriber(self, publisher, timeout: float) -> None:
+        get_subscription_count = getattr(publisher, "get_subscription_count", None)
+        if get_subscription_count is None:
+            self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+            return
+        deadline = time.monotonic() + min(
+            max(timeout, 0.0),
+            AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC,
+        )
+        while (
+            get_subscription_count() < AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS
+            and time.monotonic() < deadline
+        ):
+            self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+            spin_once = getattr(self._rclpy, "spin_once", None)
+            if spin_once is not None:
+                spin_once(self._node, timeout_sec=0)
+
+    def _wait_for_audio_playback_session_arm(self) -> None:
+        self._sleep_audio_playback(AUDIO_PLAYBACK_SESSION_ARM_DELAY_SEC)
+        spin_once = getattr(self._rclpy, "spin_once", None)
+        if spin_once is not None:
+            spin_once(self._node, timeout_sec=0)
+
+    def _pace_audio_playback_chunk(self) -> None:
+        self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+        spin_once = getattr(self._rclpy, "spin_once", None)
+        if spin_once is not None:
+            spin_once(self._node, timeout_sec=0)
+
+    def _sleep_audio_playback(self, seconds: float) -> None:
+        sleep = getattr(self, "_audio_playback_sleep", time.sleep)
+        sleep(seconds)
 
     def _service_client(self, service_type, device_id: str, tail: str, timeout: float):
         client = self._node.create_client(

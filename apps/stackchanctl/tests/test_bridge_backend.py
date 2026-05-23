@@ -856,6 +856,7 @@ class BridgeBackendTests(unittest.TestCase):
         client._play_audio_type = FakePlayAudio
         client._audio_chunk_type = FakeAudioChunk
         client._audio_chunk_publishers = {}
+        client._audio_playback_sleep = lambda seconds: None
         client.get_status = lambda meta, timeout: DeviceStatus(
             device_id=meta.device_id,
             connected=True,
@@ -896,6 +897,52 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(b"".join(message.pcm for message in publisher.messages), pcm)
         self.assertEqual([message.sequence for message in publisher.messages], [0, 1, 2])
         self.assertTrue(all(message.direction == 1 for message in publisher.messages))
+
+    def test_play_audio_waits_for_chunk_subscription_before_publishing(self) -> None:
+        action = FakeActionClient()
+        node = FakeNode()
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = node
+        client._action_client_type = action
+        client._play_audio_type = FakePlayAudio
+        client._audio_chunk_type = FakeAudioChunk
+        client._audio_chunk_publishers = {}
+        sleeps = []
+        client._audio_playback_sleep = lambda seconds: sleeps.append(seconds)
+        client.get_status = lambda meta, timeout: DeviceStatus(
+            device_id=meta.device_id,
+            connected=True,
+            device_state="idle",
+            face="neutral",
+            last_error=None,
+            capabilities=(CapabilityStatus("audio_playback", "available"),),
+        )
+        pcm = bytes([1, 2]) * 320
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prompt.wav"
+            with wave.open(str(path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(pcm)
+
+            response = client.play_audio(
+                SimpleNamespace(
+                    device_id="default",
+                    command_id="cmd-audio-0003",
+                    source="test",
+                    created_at="2026-05-16T00:00:00Z",
+                    priority=SimpleNamespace(value="NORMAL"),
+                ),
+                str(path),
+                wait=False,
+                timeout=1.0,
+            )
+
+        self.assertTrue(response.ok)
+        self.assertEqual(len(node.publishers["/stackchan/default/device/audio/chunks"].messages), 1)
+        self.assertGreaterEqual(len(sleeps), 2)
 
     def test_play_audio_keeps_unsupported_capability_before_file_read(self) -> None:
         client = RclpyBridgeClient.__new__(RclpyBridgeClient)

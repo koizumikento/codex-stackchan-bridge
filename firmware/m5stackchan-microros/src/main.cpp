@@ -205,9 +205,11 @@ constexpr unsigned long kBringupEventDelayMs = 500;
 constexpr unsigned long kBringupEventRetryMs = 1000;
 constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
-constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 800;
+constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
+constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
+constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
 constexpr int kYawServoId = 1;
@@ -227,6 +229,8 @@ constexpr uint16_t kIrCaptureBufferSize = 1024;
 constexpr uint8_t kIrTimeoutMs = 15;
 constexpr uint16_t kIrMinUnknownSize = 12;
 constexpr uint8_t kIrTolerancePercentage = kTolerance;
+constexpr uint8_t kCameraDriverBestQuality = 8;
+constexpr uint8_t kCameraDriverLowestQuality = 48;
 constexpr unsigned long kIoExpanderInitTimeoutMs = 1200;
 constexpr uint8_t kLtr553Address = 0x23;
 constexpr uint8_t kLtr553AlsContr = 0x80;
@@ -721,7 +725,7 @@ bool initialize_nfc_adapter() {
   return stackchan_units.add(stackchan_nfc_unit, M5.In_I2C) && stackchan_units.begin();
 }
 
-camera_config_t make_core_s3_camera_config() {
+camera_config_t make_core_s3_camera_config(pixformat_t pixel_format = PIXFORMAT_JPEG) {
   camera_config_t config{};
   config.pin_pwdn = -1;
   config.pin_reset = -1;
@@ -742,12 +746,13 @@ camera_config_t make_core_s3_camera_config() {
   config.xclk_freq_hz = 20000000;
   config.ledc_timer = LEDC_TIMER_0;
   config.ledc_channel = LEDC_CHANNEL_0;
-  config.pixel_format = PIXFORMAT_RGB565;
+  config.pixel_format = pixel_format;
   config.frame_size = FRAMESIZE_QVGA;
-  config.jpeg_quality = 0;
-  config.fb_count = 2;
+  config.jpeg_quality = pixel_format == PIXFORMAT_JPEG ? 18 : 0;
+  config.fb_count = pixel_format == PIXFORMAT_JPEG ? 1 : 2;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  config.grab_mode =
+      pixel_format == PIXFORMAT_JPEG ? CAMERA_GRAB_LATEST : CAMERA_GRAB_WHEN_EMPTY;
   config.sccb_i2c_port = -1;
   return config;
 }
@@ -756,6 +761,10 @@ bool initialize_camera_adapter() {
   stackchan_camera_config = make_core_s3_camera_config();
   M5.In_I2C.release();
   stackchan_camera_init_error = esp_camera_init(&stackchan_camera_config);
+  if (stackchan_camera_init_error != ESP_OK) {
+    stackchan_camera_config = make_core_s3_camera_config(PIXFORMAT_RGB565);
+    stackchan_camera_init_error = esp_camera_init(&stackchan_camera_config);
+  }
   if (stackchan_camera_init_error != ESP_OK) {
     stackchan_camera_sensor = nullptr;
     return false;
@@ -3770,8 +3779,27 @@ bool set_capture_camera_image_result(const uint8_t* data, size_t length) {
   return true;
 }
 
+uint8_t camera_driver_quality_from_goal(uint8_t quality) {
+  const uint8_t clamped =
+      quality < stackchan::kCameraMinQuality
+          ? stackchan::kCameraMinQuality
+          : (quality > stackchan::kCameraMaxQuality
+                 ? stackchan::kCameraMaxQuality
+                 : quality);
+  const uint32_t span = kCameraDriverLowestQuality - kCameraDriverBestQuality;
+  return kCameraDriverLowestQuality -
+         static_cast<uint8_t>(
+             (static_cast<uint32_t>(clamped - stackchan::kCameraMinQuality) * span) /
+             (stackchan::kCameraMaxQuality - stackchan::kCameraMinQuality));
+}
+
 stackchan::Result capture_camera_frame_to_result(uint8_t quality) {
   const uint32_t started_ms = millis();
+  if (stackchan_camera_sensor != nullptr) {
+    stackchan_camera_sensor->set_quality(
+        stackchan_camera_sensor,
+        camera_driver_quality_from_goal(quality));
+  }
   camera_fb_t* frame = esp_camera_fb_get();
   if (frame == nullptr) {
     return camera_capture_failed_result("camera frame capture failed");
@@ -4151,6 +4179,15 @@ void step_capture_audio_session() {
     audio_capture_buffer_index = (audio_capture_buffer_index + 1) % 2;
     audio_capture_recording_chunk = false;
   }
+  const uint32_t now_ms = millis();
+  if (audio_capture_recording_chunk &&
+      now_ms - audio_capture_last_chunk_ms >= kAudioCaptureChunkTimeoutMs) {
+    finish_capture_audio_goal(
+        audio_capture_failed_result("microphone record chunk timed out"),
+        GOAL_STATE_ABORTED);
+    send_capture_audio_result_if_ready();
+    return;
+  }
   if (audio_capture_published_chunks >= audio_capture_target_chunks) {
     publish_capture_audio_feedback(1.0f, "capture complete");
     finish_capture_audio_goal(audio_capture_completed_result(), GOAL_STATE_SUCCEEDED);
@@ -4183,8 +4220,8 @@ void start_capture_audio_goal(
   copy_bounded(last_command_id, sizeof(last_command_id), audio_capture_command_id);
   audio_capture_duration_ms = request.goal.duration_ms;
   audio_capture_target_chunks =
-      (audio_capture_duration_ms + stackchan::kAudioChunkMs - 1) /
-      stackchan::kAudioChunkMs;
+      (audio_capture_duration_ms + kAudioCaptureChunkMs - 1) /
+      kAudioCaptureChunkMs;
   if (audio_capture_target_chunks == 0) {
     audio_capture_target_chunks = 1;
   }
@@ -5280,13 +5317,13 @@ void loop() {
     last_heartbeat_ms = now;
   }
 
-  // Runtime order is safety/fault checks, motion-neutral work, command executor,
-  // high-priority event drain, then low-rate telemetry once real adapters exist.
+  // Runtime order is safety/fault checks, motion-neutral work, audio media,
+  // command executor, camera, event drain, then low-rate telemetry.
   // Do not publish synthetic pose/status samples as real device telemetry.
-  spin_command_executor();
   poll_capture_audio_action_server();
-  poll_capture_camera_action_server();
   poll_play_audio_action_server();
+  spin_command_executor();
+  poll_capture_camera_action_server();
   queue_bringup_event_if_ready(now);
   drain_device_events();
   publish_runtime_telemetry(static_cast<uint32_t>(now));

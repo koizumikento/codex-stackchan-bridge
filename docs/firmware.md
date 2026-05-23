@@ -212,6 +212,23 @@ Expected states:
 - `degraded`: usable locally, but ROS connectivity is missing or partial.
 - `fault`: a safety or hardware error needs to be reported.
 
+Audio playback and capture are action-coordinated behaviors. Firmware accepts
+the action goal first, then treats `/stackchan/<device_id>/device/audio/chunks`
+as a bounded payload path for the matching `command_id`. Playback must tolerate
+normal best-effort chunk pacing but report `AUDIO_UNDERRUN` if no valid
+playback chunk arrives before the device-side no-chunk timeout. Microphone
+capture must return a structured `AUDIO_CAPTURE_FAILED` terminal result if a
+recording chunk stalls, rather than leaving the bridge to time out without a
+firmware result. Capture uses the baseline 20 ms chunk size for hardware
+bring-up because the current micro-ROS serial path handled 640 byte publishes
+more reliably than max-size 40 ms chunks.
+
+Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
+driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
+a fallback when a board profile cannot produce JPEG frames directly. Camera
+quality values from the ROS action are mapped onto the camera driver quality
+range locally in firmware.
+
 ## Capability status and degraded operation
 
 Firmware should treat hardware features as independently available capabilities.
@@ -497,11 +514,11 @@ of the baseline contract. They require a documented resource, transport, and QoS
 decision before implementation.
 
 The K151 firmware initializes the CoreS3 GC0308 through the documented
-`esp_camera` path, captures QVGA RGB565 frames, converts them to JPEG for the
-firmware-owned `/stackchan/<device_id>/device/camera/capture` action result,
-and discards frames above 96 KiB. Normal CLI, MCP, public events, and firmware
-logs continue to omit JPEG bytes, base64, and image payloads; camera failure
-events carry only bounded metadata and the command id.
+`esp_camera` path, prefers QVGA driver-native JPEG capture, falls back to
+RGB565-to-JPEG conversion if native JPEG initialization is unavailable, and
+discards frames above 96 KiB. Normal CLI, MCP, public events, and firmware logs
+continue to omit JPEG bytes, base64, and image payloads; camera failure events
+carry only bounded metadata and the command id.
 
 ### NFC
 

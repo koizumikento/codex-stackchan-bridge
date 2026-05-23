@@ -241,6 +241,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("update_servo_health_cache(now);"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("publish_status_heartbeat();"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("spin_command_executor();"))
+        self.assertLess(loop_body.find("poll_capture_audio_action_server();"), loop_body.find("spin_command_executor();"))
+        self.assertLess(loop_body.find("poll_play_audio_action_server();"), loop_body.find("spin_command_executor();"))
+        self.assertLess(loop_body.find("spin_command_executor();"), loop_body.find("poll_capture_camera_action_server();"))
         self.assertIn("move_servo_pair_to(motion_scheduler.target)", main)
         self.assertIn("move_servo_pair_to(motion_scheduler.home)", main)
         self.assertIn("fail_motion_scheduler(result);", main)
@@ -595,6 +598,16 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"audio playback chunk arrived without an accepted session"', audio)
         self.assertIn('"AUDIO_UNDERRUN"', audio)
 
+    def test_audio_capture_chunk_timeout_returns_structured_result(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+
+        self.assertIn("kAudioCaptureChunkTimeoutMs", main)
+        self.assertIn("kAudioCaptureChunkMs = stackchan::kAudioChunkMs", main)
+        self.assertIn("stackchan::kAudioChunkBytes", main)
+        self.assertIn("kAudioPlaybackNoChunkTimeoutMs = 6000", main)
+        self.assertIn('"microphone record chunk timed out"', main)
+        self.assertIn("audio_capture_failed_result", main)
+
     def test_firmware_status_reports_audio_capabilities(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
@@ -712,8 +725,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('"/stackchan/%s/device/camera/capture"', main)
         self.assertIn("ROSIDL_GET_ACTION_TYPE_SUPPORT(stackchan_msgs, CaptureCamera)", main)
         self.assertIn("stackchan_camera_snapshot_initialized = initialize_camera_adapter()", main)
-        self.assertIn("PIXFORMAT_RGB565", main)
+        self.assertIn("PIXFORMAT_JPEG", main)
         self.assertIn("FRAMESIZE_QVGA", main)
+        self.assertIn("CAMERA_GRAB_LATEST", main)
+        self.assertIn("camera_driver_quality_from_goal", main)
         self.assertIn("frame2jpg", main)
         self.assertIn("stackchan::validate_camera_quality(goal.quality)", main)
         self.assertIn("stackchan::kCameraMaxPayloadBytes", main)
@@ -821,6 +836,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN", sweep)
         self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN", sweep)
         self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN", sweep)
+        self.assertIn("STACKCHAN_EVENT_STIMULUS_WINDOW_RAN", sweep)
+        self.assertIn("STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=NOT_RUN", sweep)
         self.assertIn('classify_event_stimulus "TOUCH"', sweep)
         self.assertIn('classify_event_stimulus "PROXIMITY"', sweep)
         self.assertIn('classify_event_stimulus "LIGHT"', sweep)

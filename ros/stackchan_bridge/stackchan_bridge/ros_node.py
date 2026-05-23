@@ -454,7 +454,7 @@ def main(args: list[str] | None = None) -> None:
             self._device_command_timeout_sec = float(
                 self.get_parameter("device_command_timeout_sec").value
             )
-            self.declare_parameter("device_media_action_timeout_sec", 8.0)
+            self.declare_parameter("device_media_action_timeout_sec", 20.0)
             self._device_media_action_timeout_sec = float(
                 self.get_parameter("device_media_action_timeout_sec").value
             )

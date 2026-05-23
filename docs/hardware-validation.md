@@ -296,9 +296,12 @@ hardware bring-up issue complete.
 
   The runner emits
   `STACKCHAN_EVENT_STIMULUS_{BUTTON,IMU,TOUCH,PROXIMITY,LIGHT,POWER,NFC,IR}_STATUS=PASS`
-  when a matching event is observed and `UNAVAILABLE` when the current firmware
-  does not publish that event family during the window. Keep `UNAVAILABLE` as a
-  recorded fixture result until the corresponding firmware adapter exists.
+  when a matching event is observed, `UNAVAILABLE` when a stimulus window ran
+  but the current firmware/hardware did not publish that event family, and
+  `NOT_RUN` when the sweep intentionally used `--stimulus-window-seconds 0`.
+  Keep `UNAVAILABLE` as a recorded fixture result until the corresponding
+  firmware adapter or physical stimulus path exists; do not count `NOT_RUN` as a
+  failed physical stimulus.
 - For NFC `UNAVAILABLE`, verify the UnitNFC is on the StackChan-BSP NFC example
   I2C path. If firmware-only serial diagnostics are needed, rebuild with
   `STACKCHAN_SERIAL_DIAGNOSTICS=1` and run the monitor with the micro-ROS Agent
@@ -713,8 +716,51 @@ longer result timeout than short synchronous device commands:
 - Audio capture: still `TIMEOUT` after bounded `audio_capture_started`; this
   points at firmware capture chunk/terminal-result behavior rather than only
   the former 2 second bridge command timeout.
+
+Implementation follow-up:
+
+- Playback chunk publishing is now paced at the baseline 20 ms chunk interval
+  after a short subscriber-discovery wait and firmware-session arm delay to
+  reduce best-effort drops during short prompts. Firmware now allows a longer
+  initial no-chunk window for the bridge-to-device action handoff. This is a
+  bring-up workaround; a later fix should let bridge-owned device-goal
+  acceptance trigger playback chunks directly.
+- Firmware microphone capture now bounds each recording chunk with a device-side
+  timeout and returns structured `AUDIO_CAPTURE_FAILED` if the chunk never
+  completes. Capture is back on the baseline 20 ms chunk size because the real
+  serial path reported `MIC_OVERRUN` when trying max-size 40 ms chunks.
+- The media smoke now uses a one-chunk 0.02 s capture, one-chunk prompt, and
+  quality 50 JPEG by
+  default. This keeps the hardware smoke focused on proving the ROS path before
+  longer audio captures or high-quality camera payloads become their own
+  follow-up validations.
+- Camera snapshot now requests QVGA JPEG directly from the camera driver and
+  maps action quality onto the driver quality range before capture, with RGB565
+  capture plus firmware JPEG encode retained as a fallback if driver-native
+  JPEG init is unavailable. The next hardware sweep should show either a JPEG
+  result or a structured camera failure instead of an unclassified action
+  timeout.
 - Camera capture: still `TIMEOUT`; inspect firmware camera acquisition and
   result delivery next.
+
+2026-05-23 one-chunk media smoke after firmware loop arbitration and action
+timing updates, device `default`, COM3 through host serial TCP bridge:
+
+- PlatformIO build and upload passed through `scripts/firmware_platformio.py`.
+- Low-rate touch, IMU, proximity, light, and power samples appeared on device
+  and public relay topics; `power status` returned `ok=true`.
+- Audio capture one-chunk smoke passed: `stackchanctl audio capture --seconds
+  0.02 --json` returned `ok=true`, and events included matching
+  `audio_capture_started` and `audio_capture_finished`.
+- Audio playback still returned structured `AUDIO_UNDERRUN` even with a
+  conservative fixed arm delay and longer firmware no-chunk window. Treat this
+  as evidence that playback chunks should be routed by the bridge after
+  device-goal acceptance instead of timed from the CLI.
+- Camera capture still returned `TIMEOUT`. Firmware now prefers native JPEG and
+  the loop order keeps audio ahead of camera, but camera acquisition/result
+  delivery still needs a focused nonblocking or bounded-driver follow-up.
+- Redaction remained green: no audio PCM, speech text, JPEG bytes/base64, NFC
+  tag IDs, or IR raw-code markers appeared in normal output/log scans.
 
 ## Cleanup
 

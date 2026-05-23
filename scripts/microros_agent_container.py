@@ -98,6 +98,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     tcp_pty_sweep.add_argument(
+        "--media-audio-capture-seconds",
+        type=float,
+        default=0.02,
+        help="Audio capture duration used by the hardware media smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-camera-quality",
+        type=int,
+        default=50,
+        help="JPEG quality used by the hardware camera smoke.",
+    )
+    tcp_pty_sweep.add_argument(
         "--skip-build",
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
@@ -377,7 +389,7 @@ import wave
 
 sample_rate = 16000
 samples = bytearray()
-for index in range(sample_rate // 10):
+for index in range(sample_rate // 50):
     value = int(1200 * math.sin(2 * math.pi * 440 * index / sample_rate))
     samples.extend(int(value).to_bytes(2, "little", signed=True))
 with wave.open(sys.argv[1], "wb") as wav:
@@ -401,7 +413,7 @@ PY
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
 
   echo "--- stackchanctl audio capture smoke ---"
-  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds 1 --output "$mic_wav" --json 2>&1)
+  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {max(0.001, float(args.media_audio_capture_seconds))} --output "$mic_wav" --json 2>&1)
   audio_capture_result=$?
   rm -f "$mic_wav"
   printf '%s\n' "$audio_capture_output"
@@ -417,7 +429,7 @@ PY
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
 
   echo "--- stackchanctl camera capture smoke ---"
-  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality 80 --json 2>&1)
+  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality {min(95, max(1, int(args.media_camera_quality)))} --json 2>&1)
   camera_result=$?
   rm -f "$frame_jpg"
   printf '%s\n' "$camera_output"
@@ -452,11 +464,14 @@ ros2 topic list -t | grep stackchan || true
 echo "--- stackchan services ---"
 ros2 service list -t | grep stackchan || true
 
+stimulus_window_ran=0
 if [ "{max(0, int(args.stimulus_window_seconds))}" -gt 0 ]; then
+  stimulus_window_ran=1
   echo "--- manual hardware stimulus window ({max(0, int(args.stimulus_window_seconds))}s) ---"
   echo "Apply button, IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
   sleep {max(0, int(args.stimulus_window_seconds))}
 fi
+echo "STACKCHAN_EVENT_STIMULUS_WINDOW_RAN=$stimulus_window_ran"
 
 run_topic_once "device_touch" "/stackchan/default/device/touch/state" "stackchan_msgs/msg/TouchState"
 run_topic_once "public_touch" "/stackchan/default/touch/state" "stackchan_msgs/msg/TouchState"
@@ -486,6 +501,9 @@ classify_event_stimulus() {{
   if printf '%s\n' "$events_output" | grep -Eq "$pattern"; then
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=PASS"
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=1"
+  elif [ "$stimulus_window_ran" -eq 0 ]; then
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=NOT_RUN"
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=0"
   else
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=UNAVAILABLE"
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=0"
