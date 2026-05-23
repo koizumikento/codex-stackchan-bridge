@@ -601,6 +601,7 @@ class FirmwareContractTests(unittest.TestCase):
     def test_audio_capture_chunk_timeout_returns_structured_result(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
+        events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
 
         self.assertIn("kAudioCaptureChunkTimeoutMs", main)
         self.assertIn("kAudioCaptureChunkMs = stackchan::kAudioChunkMs", main)
@@ -620,6 +621,15 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("play_audio_chunks_seen", main)
         self.assertIn("play_audio_chunks_accepted", main)
         self.assertIn("play_audio_chunks_rejected", main)
+        self.assertIn("audio_playback_action", main)
+        self.assertIn("event_publisher.publish_name(", main)
+        self.assertIn('"audio_playback_action"', events)
+        self.assertIn('"goal_request_taken"', main)
+        self.assertIn('"goal_response_sent"', main)
+        self.assertIn('"first_goal_chunk_dispatch"', main)
+        self.assertIn('"result_ready"', main)
+        self.assertIn('"result_request_taken"', main)
+        self.assertIn('"result_response_sent"', main)
         self.assertIn('"chunk_without_active_goal"', main)
         self.assertIn('"chunk_accepted"', main)
         self.assertIn('"play_raw_failed"', main)

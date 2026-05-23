@@ -522,6 +522,12 @@ codes such as `AUDIO_UNDERRUN` or `MALFORMED_AUDIO_CHUNK`. These diagnostics
 exist only to distinguish bridge relay timing, firmware chunk rejection,
 speaker `playRaw` failure, and device-side no-chunk timeout; they must not print
 PCM bytes, speech text, transcripts, or any image/NFC/IR payload.
+Playback action diagnostics may also publish or print payload-free action
+stages such as goal request taken, goal response sent, first-goal chunk
+dispatch, result ready, result request taken, and result response sent. The
+firmware event name is `audio_playback_action`. These diagnostics are for
+KOIZUMI-112 style result-path debugging and must stay limited to command id,
+accepted flag, first-chunk byte count, and action/session booleans.
 
 ### Camera
 

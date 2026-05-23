@@ -917,6 +917,44 @@ uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sw
   action resource limits before making any action-goal payload handoff
   production behavior.
 
+KOIZUMI-112 diagnostic firmware update:
+
+- The next diagnostic build adds payload-free `audio_playback_action` firmware
+  events, plus optional `stackchan audio_playback_action` serial lines when
+  serial diagnostics are explicitly enabled, around playback goal request, goal
+  response, first-goal chunk dispatch, result readiness, result request, and
+  result response send. These diagnostics intentionally include only command id,
+  accepted flag, first-chunk byte count, and action/session booleans.
+- Use this build to decide whether the first-goal payload timeout occurs before
+  firmware sees the goal, before first chunk dispatch, after result readiness,
+  or while the result response is being requested/sent.
+
+2026-05-23/24 KOIZUMI-112 first-goal event diagnostic smoke:
+
+- Uploaded the event-diagnostic firmware through
+  `scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200
+  --no-stub`.
+- Ran same-container Agent/bridge/sensor sweep with
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=320` and `--timeout 30`.
+- Playback still returned firmware action `TIMEOUT`; audio capture and camera
+  capture also timed out afterward. Touch, IMU, proximity, light, and power
+  topics sampled, power status completed, and redaction stayed green.
+- `stackchanctl events list` returned firmware events such as `firmware_ready`,
+  `dark_detected`, `picked_up`, and `tilted`, but no `audio_playback_action`
+  event. Because the new diagnostic event is emitted immediately after
+  `rcl_action_take_goal_request()` succeeds, this points to the firmware not
+  taking the playback goal request when the action goal contains the 320 byte
+  first payload, rather than a later result-response stall.
+- The same event diagnostic firmware with
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=0` reached
+  `audio_playback_action` stages `goal_request_taken`, `goal_response_sent`,
+  `goal_execute`, `result_request_taken`, `result_ready`, and
+  `result_response_sent`. That run returned structured `AUDIO_UNDERRUN`, while
+  audio capture and camera capture stayed OK. This confirms the topic-only
+  baseline reaches firmware action handling and result delivery, while the
+  320 byte first-goal payload prevents the playback goal request from being
+  taken by firmware.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

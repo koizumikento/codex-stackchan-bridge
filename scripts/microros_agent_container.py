@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,9 @@ DEFAULT_PTY = "/tmp/stackchan-tty"
 DEFAULT_EVENT_TOPIC = "/stackchan/default/device/events"
 DEFAULT_PUBLIC_EVENT_TOPIC = "/stackchan/default/events"
 DEFAULT_EVENT_TYPE = "stackchan_msgs/msg/StackChanEvent"
+ENV_PASSTHROUGH = (
+    "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
+)
 
 
 def main() -> int:
@@ -958,6 +962,10 @@ def docker_run(
     workdir: str | None = None,
 ) -> int:
     docker_args = ["docker", "run", "--rm", "--net=host"]
+    for name in ENV_PASSTHROUGH:
+        value = os.environ.get(name)
+        if value is not None:
+            docker_args.extend(["-e", f"{name}={value}"])
     for device in devices or []:
         docker_args.append(f"--device={device}")
     if mount_workspace:

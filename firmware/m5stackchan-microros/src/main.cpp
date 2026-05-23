@@ -484,6 +484,49 @@ void log_play_audio_session_diagnostic(
   stackchan_diag_println(result.error_code);
 }
 
+void log_play_audio_action_diagnostic(
+    const char* stage,
+    const char* command_id,
+    bool accepted,
+    bool first_chunk_present,
+    uint32_t first_chunk_bytes) {
+  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"stage\":\"%s\",\"accepted\":%s,\"first_chunk\":%s,"
+      "\"first_chunk_bytes\":%lu,\"goal_active\":%s,"
+      "\"result_ready\":%s,\"result_request_pending\":%s}",
+      stage == nullptr ? "" : stage,
+      accepted ? "true" : "false",
+      first_chunk_present ? "true" : "false",
+      static_cast<unsigned long>(first_chunk_bytes),
+      play_audio_goal_active ? "true" : "false",
+      play_audio_result_ready ? "true" : "false",
+      play_audio_result_request_pending ? "true" : "false");
+  event_publisher.publish_name(
+      "audio_playback_action",
+      millis(),
+      command_id,
+      payload);
+  stackchan_diag_print("stackchan audio_playback_action stage=");
+  stackchan_diag_print(stage == nullptr ? "" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_print(command_id == nullptr ? "" : command_id);
+  stackchan_diag_print(" accepted=");
+  stackchan_diag_print(accepted ? "true" : "false");
+  stackchan_diag_print(" first_chunk=");
+  stackchan_diag_print(first_chunk_present ? "true" : "false");
+  stackchan_diag_print(" first_chunk_bytes=");
+  stackchan_diag_print(first_chunk_bytes);
+  stackchan_diag_print(" goal_active=");
+  stackchan_diag_print(play_audio_goal_active ? "true" : "false");
+  stackchan_diag_print(" result_ready=");
+  stackchan_diag_print(play_audio_result_ready ? "true" : "false");
+  stackchan_diag_print(" result_request_pending=");
+  stackchan_diag_println(play_audio_result_request_pending ? "true" : "false");
+}
+
 bool is_known_face(const char* name) {
   return strcmp(name, "neutral") == 0 ||
          strcmp(name, "happy") == 0 ||
@@ -4487,6 +4530,12 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
   play_audio_terminal_result = result;
   play_audio_terminal_status = action_status;
   play_audio_result_ready = true;
+  log_play_audio_action_diagnostic(
+      "result_ready",
+      play_audio_diagnostic_command_id,
+      result.ok,
+      false,
+      0);
   play_audio_goal_active = false;
   play_audio_active_goal_handle = nullptr;
   play_audio_received_chunk = false;
@@ -4500,6 +4549,12 @@ void send_play_audio_result_if_ready() {
   if (!goal_id_matches(
           play_audio_result_request.goal_id,
           play_audio_terminal_goal_info.goal_id)) {
+    log_play_audio_action_diagnostic(
+        "result_request_goal_mismatch",
+        play_audio_diagnostic_command_id,
+        false,
+        false,
+        0);
     return;
   }
   play_audio_result_response.status = play_audio_terminal_status;
@@ -4507,15 +4562,34 @@ void send_play_audio_result_if_ready() {
           play_audio_terminal_result,
           &play_audio_result_response.result.result)) {
     stackchan_diag_println("stackchan micro_ros_step=play_audio_result_assign result=false");
+    log_play_audio_action_diagnostic(
+        "result_assign_failed",
+        play_audio_diagnostic_command_id,
+        false,
+        false,
+        0);
     return;
   }
-  if (rcl_ok(rcl_action_send_result_response(
-                 &play_audio_action_server,
-                 &play_audio_result_request_header,
-                 &play_audio_result_response),
-             "play_audio_send_result_response")) {
+  const rcl_ret_t send_result = rcl_action_send_result_response(
+      &play_audio_action_server,
+      &play_audio_result_request_header,
+      &play_audio_result_response);
+  if (rcl_ok(send_result, "play_audio_send_result_response")) {
+    log_play_audio_action_diagnostic(
+        "result_response_sent",
+        play_audio_diagnostic_command_id,
+        play_audio_terminal_result.ok,
+        false,
+        0);
     play_audio_result_request_pending = false;
     play_audio_result_ready = false;
+  } else {
+    log_play_audio_action_diagnostic(
+        "result_response_failed",
+        play_audio_diagnostic_command_id,
+        false,
+        false,
+        0);
   }
 }
 
@@ -4561,6 +4635,14 @@ void start_play_audio_goal(
     return;
   }
   log_play_audio_session_diagnostic("goal_active", start_result);
+  log_play_audio_action_diagnostic(
+      "goal_execute",
+      command_id,
+      true,
+      request.goal.first_chunk_present,
+      request.goal.first_chunk_present
+          ? static_cast<uint32_t>(request.goal.first_chunk_pcm.size)
+          : 0);
   copy_bounded(
       last_command_id,
       sizeof(last_command_id),
@@ -4569,6 +4651,12 @@ void start_play_audio_goal(
   play_audio_started_ms = millis();
   play_audio_last_chunk_ms = play_audio_started_ms;
   if (request.goal.first_chunk_present) {
+    log_play_audio_action_diagnostic(
+        "first_goal_chunk_dispatch",
+        command_id,
+        true,
+        true,
+        static_cast<uint32_t>(request.goal.first_chunk_pcm.size));
     accept_play_audio_pcm_chunk(
         command_id,
         request.goal.first_chunk_sequence,
@@ -4599,27 +4687,53 @@ void poll_play_audio_goal_request() {
   rcl_action_goal_info_t goal_info =
       rcl_action_get_zero_initialized_goal_info();
   copy_goal_info_from_request(&goal_info, play_audio_goal_request);
+  const char* command_id =
+      play_audio_goal_request.goal.meta.command_id.data != nullptr
+          ? play_audio_goal_request.goal.meta.command_id.data
+          : "";
+  log_play_audio_action_diagnostic(
+      "goal_request_taken",
+      command_id,
+      false,
+      play_audio_goal_request.goal.first_chunk_present,
+      play_audio_goal_request.goal.first_chunk_present
+          ? static_cast<uint32_t>(play_audio_goal_request.goal.first_chunk_pcm.size)
+          : 0);
   if (audio_playback_guard.active()) {
     play_audio_goal_response.accepted = false;
     play_audio_goal_response.stamp = goal_info.stamp;
-    rcl_ok(
-        rcl_action_send_goal_response(
-            &play_audio_action_server,
-            &request_header,
-            &play_audio_goal_response),
-        "play_audio_send_busy_goal_response");
+    const rcl_ret_t send_result = rcl_action_send_goal_response(
+        &play_audio_action_server,
+        &request_header,
+        &play_audio_goal_response);
+    rcl_ok(send_result, "play_audio_send_busy_goal_response");
+    log_play_audio_action_diagnostic(
+        "goal_response_busy",
+        command_id,
+        false,
+        play_audio_goal_request.goal.first_chunk_present,
+        play_audio_goal_request.goal.first_chunk_present
+            ? static_cast<uint32_t>(play_audio_goal_request.goal.first_chunk_pcm.size)
+            : 0);
     return;
   }
   rcl_action_goal_handle_t* goal_handle =
       rcl_action_accept_new_goal(&play_audio_action_server, &goal_info);
   play_audio_goal_response.accepted = goal_handle != nullptr;
   play_audio_goal_response.stamp = goal_info.stamp;
-  rcl_ok(
-      rcl_action_send_goal_response(
-          &play_audio_action_server,
-          &request_header,
-          &play_audio_goal_response),
-      "play_audio_send_goal_response");
+  const rcl_ret_t send_result = rcl_action_send_goal_response(
+      &play_audio_action_server,
+      &request_header,
+      &play_audio_goal_response);
+  rcl_ok(send_result, "play_audio_send_goal_response");
+  log_play_audio_action_diagnostic(
+      "goal_response_sent",
+      command_id,
+      play_audio_goal_response.accepted,
+      play_audio_goal_request.goal.first_chunk_present,
+      play_audio_goal_request.goal.first_chunk_present
+          ? static_cast<uint32_t>(play_audio_goal_request.goal.first_chunk_pcm.size)
+          : 0);
   if (goal_handle == nullptr) {
     reset_rcl_error();
     return;
@@ -4660,6 +4774,12 @@ void poll_play_audio_result_request() {
   }
   play_audio_result_request_header = request_header;
   play_audio_result_request_pending = true;
+  log_play_audio_action_diagnostic(
+      "result_request_taken",
+      play_audio_diagnostic_command_id,
+      true,
+      false,
+      0);
   send_play_audio_result_if_ready();
 }
 
