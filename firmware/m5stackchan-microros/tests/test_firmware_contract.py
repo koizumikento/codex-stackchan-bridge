@@ -703,6 +703,41 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("Serial.print(\"stackchan", main)
         self.assertNotIn("Serial.println(\"stackchan", main)
 
+    def test_sensor_input_diagnostic_profile_is_firmware_only(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        helper = (REPO_ROOT / "scripts" / "firmware_platformio.py").read_text()
+        firmware_doc = (REPO_ROOT / "docs" / "firmware.md").read_text()
+        hardware_doc = (REPO_ROOT / "docs" / "hardware-validation.md").read_text()
+
+        self.assertIn("#define STACKCHAN_SENSOR_INPUT_DIAGNOSTICS 0", main)
+        self.assertIn(
+            "Sensor input diagnostics require STACKCHAN_SERIAL_DIAGNOSTICS=1",
+            main,
+        )
+        self.assertIn("print_sensor_input_diagnostics", main)
+        self.assertIn("stackchan sensor_input_diag_mode active=true", main)
+        self.assertIn("initialize_sensor_input_diagnostic_adapters();", main)
+        self.assertIn("void initialize_sensor_input_diagnostic_adapters()", main)
+        self.assertIn("return;", main)
+        self.assertIn("stackchan sensor_input_diag ms=", main)
+        self.assertIn("touch_zone_mask", main)
+        self.assertIn("touch_i0", main)
+        self.assertIn("ltr553_bus=wire", main)
+        self.assertIn("ltr553_part_id_read_ok", main)
+        self.assertIn("ltr553_last_ps_read_ok", main)
+        self.assertIn("ltr553_last_als_read_ok", main)
+        self.assertIn("in_i2c_released_for_camera", main)
+        self.assertIn("stackchan_in_i2c_released_for_camera = true;", main)
+        self.assertIn("--sensor-input-diagnostics", helper)
+        self.assertIn("ARDUINO_USB_MODE=1", helper)
+        self.assertIn("ARDUINO_USB_CDC_ON_BOOT=1", helper)
+        self.assertIn("STACKCHAN_SERIAL_DIAGNOSTICS=1", helper)
+        self.assertIn("STACKCHAN_SENSOR_INPUT_DIAGNOSTICS=1", helper)
+        self.assertIn("--sensor-input-diagnostics", firmware_doc)
+        self.assertIn("sensor_input_diag", firmware_doc)
+        self.assertIn("--sensor-input-diagnostics", hardware_doc)
+        self.assertIn("sensor_input_diag", hardware_doc)
+
     def test_microros_publish_failures_are_debounced_before_disconnect(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 

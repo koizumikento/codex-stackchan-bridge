@@ -750,6 +750,18 @@ disconnect loop on a transient post-entity-creation publish miss. The exact ROS
 2 interface belongs in
 [ros-interface.md](ros-interface.md).
 
+For K151 touch/proximity/light bring-up, the PlatformIO helper also has a
+firmware-only `--sensor-input-diagnostics` profile. It enables
+`STACKCHAN_SERIAL_DIAGNOSTICS=1` and `STACKCHAN_SENSOR_INPUT_DIAGNOSTICS=1`,
+skips micro-ROS Agent attachment in the runtime loop, and prints bounded
+`sensor_input_diag` lines for touch intensities, LTR553 part/manufacturer and
+read status, proximity/light raw readings, power telemetry, and whether the
+diagnostic profile released the internal I2C path for camera init. The profile
+initializes only the touch, power, and LTR553 sensor adapters so it can
+distinguish sensor wiring/read failures from optional adapter pressure. This is
+a local maintenance/debug profile only, not a normal ROS, CLI, or MCP command
+surface; restore a normal firmware build after the monitor run.
+
 For transport isolation during hardware bring-up, the PlatformIO helper can
 build a temporary `STACKCHAN_MICROROS_MINIMAL_BRINGUP=1` profile with
 `--microros-minimal-bringup`. That profile initializes only

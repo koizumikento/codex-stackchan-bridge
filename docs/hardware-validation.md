@@ -350,6 +350,22 @@ hardware bring-up issue complete.
   Keep `UNAVAILABLE` as a recorded fixture result until the corresponding
   firmware adapter or physical stimulus path exists; do not count `NOT_RUN` as a
   failed physical stimulus.
+- If touch, proximity, or light raw telemetry remains fixed at zero, stop the
+  micro-ROS Agent and flash the firmware-only sensor diagnostic profile:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --sensor-input-diagnostics
+  uv run --no-project python scripts/firmware_platformio.py monitor --port COM3 --baud 921600
+  ```
+
+  During manual touch, near/far, and light/dark stimuli, inspect the bounded
+  `sensor_input_diag` fields: `touch_zone_mask`, `touch_i0..touch_i2`,
+  `ltr553_part_ok`, `ltr553_manufacturer_ok`, `ps_read_ok`, `ps_raw`,
+  `als_read_ok`, `als_raw`, `power_voltage_v`, and
+  `in_i2c_released_for_camera`. This diagnostic profile is local firmware
+  maintenance only; do not run it with the Agent attached to the same USB
+  serial transport, and restore a normal firmware build before standard ROS 2
+  validation.
 - For NFC `UNAVAILABLE`, verify the UnitNFC is on the StackChan-BSP NFC example
   I2C path. If firmware-only serial diagnostics are needed, rebuild with
   `STACKCHAN_SERIAL_DIAGNOSTICS=1` and run the monitor with the micro-ROS Agent

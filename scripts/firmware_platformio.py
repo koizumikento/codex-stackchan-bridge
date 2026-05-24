@@ -281,6 +281,15 @@ def add_microros_diagnostic_arguments(parser: argparse.ArgumentParser) -> None:
             "telemetry profile with the play-audio action and chunk subscriber."
         ),
     )
+    profile.add_argument(
+        "--sensor-input-diagnostics",
+        action="store_true",
+        help=(
+            "Build a firmware-only serial monitor diagnostic for K151 touch, "
+            "proximity, light, and power reads. Do not attach the micro-ROS "
+            "Agent to the same COM port while this profile is running."
+        ),
+    )
 
 
 def add_calibration_maintenance_arguments(parser: argparse.ArgumentParser) -> None:
@@ -363,6 +372,11 @@ def firmware_build_flags(
         flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
         flags.append("-D STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP=1")
         flags.append("-D STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP=1")
+    if getattr(args, "sensor_input_diagnostics", False):
+        flags.append("-D ARDUINO_USB_MODE=1")
+        flags.append("-D ARDUINO_USB_CDC_ON_BOOT=1")
+        flags.append("-D STACKCHAN_SERIAL_DIAGNOSTICS=1")
+        flags.append("-D STACKCHAN_SENSOR_INPUT_DIAGNOSTICS=1")
     return flags
 
 

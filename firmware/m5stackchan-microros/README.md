@@ -91,6 +91,22 @@ micro-ROS transport. For a firmware-only monitor session with the Agent stopped,
 enable `STACKCHAN_SERIAL_DIAGNOSTICS=1`; do not run those text diagnostics while
 the micro-ROS Agent is attached to the same COM port.
 
+For touch/proximity/light/power input bring-up, use the firmware-only sensor
+diagnostic profile:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --sensor-input-diagnostics
+uv run --no-project python scripts/firmware_platformio.py monitor --port COM3 --baud 921600
+```
+
+This profile prints bounded `sensor_input_diag` lines for touch zone
+intensities, LTR553 register/read status, proximity/light raw readings, power
+telemetry, and whether the diagnostic profile released the internal I2C path
+for camera init. It initializes only the touch, power, and LTR553 sensor
+adapters to separate sensor wiring/read failures from optional adapter pressure.
+Stop the micro-ROS Agent first and flash a normal build again after the monitor
+run.
+
 If the Agent creates the ROS graph but no samples reach ROS 2, build a
 temporary minimal bring-up profile before changing command behavior:
 

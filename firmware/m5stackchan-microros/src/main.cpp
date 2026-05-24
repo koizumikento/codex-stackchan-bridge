@@ -76,6 +76,14 @@
 #define STACKCHAN_SERIAL_DIAGNOSTICS 0
 #endif
 
+#ifndef STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
+#define STACKCHAN_SENSOR_INPUT_DIAGNOSTICS 0
+#endif
+
+#if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS && !STACKCHAN_SERIAL_DIAGNOSTICS
+#error "Sensor input diagnostics require STACKCHAN_SERIAL_DIAGNOSTICS=1"
+#endif
+
 #ifndef STACKCHAN_MICROROS_MINIMAL_BRINGUP
 #define STACKCHAN_MICROROS_MINIMAL_BRINGUP 0
 #endif
@@ -167,6 +175,7 @@ unsigned long last_heartbeat_ms = 0;
 unsigned long last_agent_attempt_ms = 0;
 unsigned long microros_connected_since_ms = 0;
 unsigned long last_bringup_event_enqueue_ms = 0;
+unsigned long last_sensor_input_diag_ms = 0;
 constexpr uint8_t kMicrorosMaxConsecutivePublishFailures = 3;
 bool microros_connected = false;
 uint8_t microros_bringup_event_enqueue_count = 0;
@@ -361,6 +370,12 @@ bool play_audio_action_init_failed = false;
 bool stackchan_touch_sensor_initialized = false;
 bool stackchan_power_monitor_initialized = false;
 bool ltr553_sensor_initialized = false;
+bool ltr553_part_id_read_ok = false;
+bool ltr553_manufacturer_id_read_ok = false;
+uint8_t ltr553_part_id = 0;
+uint8_t ltr553_manufacturer_id = 0;
+bool ltr553_last_ps_read_ok = false;
+bool ltr553_last_als_read_ok = false;
 bool stackchan_led_initialized = false;
 bool stackchan_imu_initialized = false;
 bool stackchan_nfc_initialized = false;
@@ -370,6 +385,7 @@ bool stackchan_audio_capture_initialized = false;
 bool stackchan_audio_playback_transport_initialized = false;
 bool stackchan_audio_capture_transport_initialized = false;
 bool stackchan_camera_snapshot_initialized = false;
+bool stackchan_in_i2c_released_for_camera = false;
 camera_config_t stackchan_camera_config;
 sensor_t* stackchan_camera_sensor = nullptr;
 esp_err_t stackchan_camera_init_error = ESP_OK;
@@ -822,13 +838,17 @@ float calculate_ltr553_lux(uint16_t ch0, uint16_t ch1) {
 }
 
 bool initialize_ltr553_sensor() {
-  uint8_t part_id = 0;
-  uint8_t manufacturer_id = 0;
-  if (!ltr553_read_register(kLtr553PartId, &part_id) ||
-      !ltr553_read_register(kLtr553ManufacturerId, &manufacturer_id)) {
+  ltr553_part_id = 0;
+  ltr553_manufacturer_id = 0;
+  ltr553_last_ps_read_ok = false;
+  ltr553_last_als_read_ok = false;
+  ltr553_part_id_read_ok = ltr553_read_register(kLtr553PartId, &ltr553_part_id);
+  ltr553_manufacturer_id_read_ok =
+      ltr553_read_register(kLtr553ManufacturerId, &ltr553_manufacturer_id);
+  if (!ltr553_part_id_read_ok || !ltr553_manufacturer_id_read_ok) {
     return false;
   }
-  if (manufacturer_id != kLtr553ExpectedManufacturerId) {
+  if (ltr553_manufacturer_id != kLtr553ExpectedManufacturerId) {
     return false;
   }
 
@@ -839,7 +859,6 @@ bool initialize_ltr553_sensor() {
   ok = ltr553_write_register(kLtr553AlsMeasRate, 0x12) && ok;
   ok = ltr553_write_register(kLtr553AlsContr, 0x01) && ok;
   ok = ltr553_write_register(kLtr553PsContr, 0x03) && ok;
-  (void)part_id;
   return ok;
 }
 
@@ -890,6 +909,7 @@ camera_config_t make_core_s3_camera_config(pixformat_t pixel_format = PIXFORMAT_
 
 bool initialize_camera_adapter() {
   stackchan_camera_config = make_core_s3_camera_config();
+  stackchan_in_i2c_released_for_camera = true;
   M5.In_I2C.release();
   stackchan_camera_init_error = esp_camera_init(&stackchan_camera_config);
   if (stackchan_camera_init_error != ESP_OK) {
@@ -933,6 +953,21 @@ void initialize_sensor_adapters() {
   stackchan_camera_snapshot_initialized = initialize_camera_adapter();
 }
 
+#if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
+void initialize_sensor_input_diagnostic_adapters() {
+  stackchan_touch_sensor.begin();
+  stackchan_touch_sensor_initialized = true;
+
+  m5::INA226_Class::config_t config;
+  config.shunt_res = 0.01f;
+  config.max_expected_current = 8.19f;
+  stackchan_power_monitor.config(config);
+  stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
+
+  ltr553_sensor_initialized = initialize_ltr553_sensor();
+}
+#endif
+
 stackchan::TouchStateTelemetry read_touch_state_telemetry(uint32_t now_ms) {
   stackchan::TouchStateTelemetry telemetry{};
   copy_bounded(telemetry.device_id, sizeof(telemetry.device_id), STACKCHAN_DEVICE_ID);
@@ -964,13 +999,16 @@ stackchan::ProximityRawTelemetry read_proximity_raw_telemetry(uint32_t now_ms) {
   telemetry.distance_m = NAN;
 
   if (!ltr553_sensor_initialized) {
+    ltr553_last_ps_read_ok = false;
     return telemetry;
   }
 
   uint8_t data[2] = {0, 0};
   if (!ltr553_read_block(kLtr553PsDataLow, data, sizeof(data))) {
+    ltr553_last_ps_read_ok = false;
     return telemetry;
   }
+  ltr553_last_ps_read_ok = true;
   const uint16_t raw = static_cast<uint16_t>(((data[1] & 0x07u) << 8) | data[0]);
   telemetry.raw = raw;
   telemetry.signal = static_cast<float>(raw) / kLtr553PsFullScale;
@@ -985,13 +1023,16 @@ stackchan::LightRawTelemetry read_light_raw_telemetry(uint32_t now_ms) {
   telemetry.sensor_index = 0;
 
   if (!ltr553_sensor_initialized) {
+    ltr553_last_als_read_ok = false;
     return telemetry;
   }
 
   uint8_t data[4] = {0, 0, 0, 0};
   if (!ltr553_read_block(kLtr553AlsDataCh1Low, data, sizeof(data))) {
+    ltr553_last_als_read_ok = false;
     return telemetry;
   }
+  ltr553_last_als_read_ok = true;
   const uint16_t ch1 = static_cast<uint16_t>((data[1] << 8) | data[0]);
   const uint16_t ch0 = static_cast<uint16_t>((data[3] << 8) | data[2]);
   telemetry.raw = ch0;
@@ -1045,6 +1086,72 @@ stackchan::PowerStatusTelemetry read_power_status_telemetry(uint32_t now_ms) {
       telemetry.voltage_v > 0.0f && telemetry.voltage_v <= stackchan::kBrownoutRiskVoltageV;
   return telemetry;
 }
+
+#if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
+void print_sensor_input_diagnostics(uint32_t now_ms) {
+  constexpr unsigned long kSensorInputDiagPeriodMs = 250;
+  if (now_ms - last_sensor_input_diag_ms < kSensorInputDiagPeriodMs) {
+    return;
+  }
+  last_sensor_input_diag_ms = now_ms;
+
+  const stackchan::TouchStateTelemetry touch = read_touch_state_telemetry(now_ms);
+  const stackchan::ProximityRawTelemetry proximity =
+      read_proximity_raw_telemetry(now_ms);
+  const stackchan::LightRawTelemetry light = read_light_raw_telemetry(now_ms);
+  const stackchan::PowerStatusTelemetry power = read_power_status_telemetry(now_ms);
+
+  stackchan_diag_print("stackchan sensor_input_diag ms=");
+  stackchan_diag_print(now_ms);
+  stackchan_diag_print(" touch_init=");
+  stackchan_diag_print(stackchan_touch_sensor_initialized ? "true" : "false");
+  stackchan_diag_print(" touch_zone_mask=");
+  stackchan_diag_print(static_cast<int>(touch.zone_mask));
+  stackchan_diag_print(" touch_i0=");
+  stackchan_diag_print(static_cast<int>(touch.intensities[0]));
+  stackchan_diag_print(" touch_i1=");
+  stackchan_diag_print(static_cast<int>(touch.intensities[1]));
+  stackchan_diag_print(" touch_i2=");
+  stackchan_diag_print(static_cast<int>(touch.intensities[2]));
+  stackchan_diag_print(" ltr553_init=");
+  stackchan_diag_print(ltr553_sensor_initialized ? "true" : "false");
+  stackchan_diag_print(" ltr553_bus=wire");
+  stackchan_diag_print(" ltr553_part_ok=");
+  stackchan_diag_print(ltr553_part_id_read_ok ? "true" : "false");
+  stackchan_diag_print(" ltr553_part_id=");
+  stackchan_diag_print(static_cast<int>(ltr553_part_id));
+  stackchan_diag_print(" ltr553_manufacturer_ok=");
+  stackchan_diag_print(ltr553_manufacturer_id_read_ok ? "true" : "false");
+  stackchan_diag_print(" ltr553_manufacturer_id=");
+  stackchan_diag_print(static_cast<int>(ltr553_manufacturer_id));
+  stackchan_diag_print(" ps_read_ok=");
+  stackchan_diag_print(ltr553_last_ps_read_ok ? "true" : "false");
+  stackchan_diag_print(" ps_raw=");
+  stackchan_diag_print(proximity.raw);
+  stackchan_diag_print(" ps_signal=");
+  stackchan_diag_print(proximity.signal);
+  stackchan_diag_print(" als_read_ok=");
+  stackchan_diag_print(ltr553_last_als_read_ok ? "true" : "false");
+  stackchan_diag_print(" als_raw=");
+  stackchan_diag_print(light.raw);
+  stackchan_diag_print(" als_lux=");
+  stackchan_diag_print(light.illuminance_lux);
+  stackchan_diag_print(" power_init=");
+  stackchan_diag_print(stackchan_power_monitor_initialized ? "true" : "false");
+  stackchan_diag_print(" power_voltage_v=");
+  stackchan_diag_print(power.voltage_v);
+  stackchan_diag_print(" power_current_ma=");
+  stackchan_diag_print(power.current_ma);
+  stackchan_diag_print(" power_source=");
+  stackchan_diag_print(static_cast<int>(power.power_source));
+  stackchan_diag_print(" in_i2c_released_for_camera=");
+  stackchan_diag_print(stackchan_in_i2c_released_for_camera ? "true" : "false");
+  stackchan_diag_print(" camera_probe_ok=");
+  stackchan_diag_print(stackchan_camera_snapshot_initialized ? "true" : "false");
+  stackchan_diag_print(" camera_init_error=");
+  stackchan_diag_println(static_cast<int>(stackchan_camera_init_error));
+}
+#endif
 
 bool read_imu_sample(stackchan::ImuSample* sample) {
   if (sample == nullptr || !stackchan_imu_initialized) {
@@ -5876,6 +5983,16 @@ void publish_runtime_telemetry(uint32_t now_ms) {
 
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+#if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
+  M5.begin();
+  Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+  delay(200);
+  initialize_sensor_input_diagnostic_adapters();
+  stackchan_diag_println("stackchan sensor_input_diag_mode active=true");
+  show_neutral_face();
+  state_machine.booted();
+  return;
+#endif
   servo_adapter_init_result = initialize_servo_adapter();
   stackchan_diag_print("stackchan servo_adapter_init ok=");
   stackchan_diag_print(servo_adapter_init_result.ok ? "true" : "false");
@@ -5934,6 +6051,11 @@ void setup() {
 void loop() {
   const unsigned long now = millis();
   M5.update();
+#if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
+  print_sensor_input_diagnostics(static_cast<uint32_t>(now));
+  delay(50);
+  return;
+#endif
   step_motion_scheduler(now);
   update_servo_health_cache(now);
 
