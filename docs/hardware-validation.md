@@ -1222,6 +1222,39 @@ KOIZUMI-112 diagnostic firmware update:
 
   The plan reported `upload_status: current`.
 
+### 2026-05-25 KOIZUMI-128 COM3 application serial zero-byte isolation
+
+- Rechecked the normal firmware path after the 2026-05-24 baud clarification.
+  Uploading the normal firmware to COM3 with the stable flashing path succeeded:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+  ```
+
+- A same-container sensor sweep over the host serial TCP bridge completed but
+  reported `connected: false`; all touch, IMU, proximity, light, power, and
+  event topic probes timed out with `SAMPLE_SEEN=0`.
+- The host serial TCP bridge connected to the container `socat` peer, but its
+  byte counters stayed at `serial_to_tcp=0 tcp_to_serial=0` throughout the
+  Agent run. The micro-ROS Agent log showed startup only and no client session
+  traffic.
+- To isolate optional firmware initialization, the `--microros-minimal-bringup`
+  profile was uploaded successfully and checked with:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-event-echo --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 6 --timeout 30
+  ```
+
+  The echo timed out, and the serial TCP bridge again reported
+  `serial_to_tcp=0 tcp_to_serial=0`.
+- This narrows the current blocker below K151 sensors and below normal firmware
+  optional entities: COM3 still works for PlatformIO/esptool flashing, but the
+  application runtime serial path is not producing observable XRCE or text
+  bytes on COM3. KOIZUMI-128 tracks that transport-level isolation.
+- Normal firmware was restored after the minimal profile, and
+  `uv run --no-project python scripts/firmware_platformio.py plan --json --port
+  COM3` reported `upload_status: current`.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear
