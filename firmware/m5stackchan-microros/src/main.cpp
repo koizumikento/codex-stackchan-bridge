@@ -469,6 +469,28 @@ void log_play_audio_chunk_diagnostic(
     uint32_t sequence,
     uint32_t bytes,
     const char* result_code) {
+  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"result\":\"%s\","
+      "\"seen\":%lu,\"ok\":%lu,\"rej\":%lu,\"active\":%s,"
+      "\"pending\":%s,\"next\":%lu}",
+      stage == nullptr ? "" : stage,
+      static_cast<unsigned long>(sequence),
+      static_cast<unsigned long>(bytes),
+      result_code == nullptr ? "" : result_code,
+      static_cast<unsigned long>(play_audio_chunks_seen),
+      static_cast<unsigned long>(play_audio_chunks_accepted),
+      static_cast<unsigned long>(play_audio_chunks_rejected),
+      play_audio_goal_active ? "true" : "false",
+      play_audio_chunk_request_pending ? "true" : "false",
+      static_cast<unsigned long>(play_audio_next_pull_sequence));
+  event_publisher.publish_name(
+      "audio_playback_chunk",
+      millis(),
+      command_id,
+      payload);
   stackchan_diag_print("stackchan audio_playback_diag stage=");
   stackchan_diag_print(stage == nullptr ? "" : stage);
   stackchan_diag_print(" command_id=");
@@ -3609,7 +3631,9 @@ bool firmware_publish_callback(
   if (topic != stackchan::DevicePublisherTopic::Status) {
     return true;
   }
-#elif STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
+#elif STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && \
+    STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP && \
+    !STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP
   if (topic == stackchan::DevicePublisherTopic::Events) {
     return true;
   }
@@ -3752,7 +3776,8 @@ void update_agent_connection(bool connected) {
 }
 
 void queue_bringup_event_if_ready(unsigned long now) {
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+    (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP)
   (void)now;
   return;
 #endif
@@ -4781,6 +4806,12 @@ void request_next_play_audio_chunk() {
   if (send_result == RCL_RET_OK) {
     play_audio_chunk_request_pending = true;
     play_audio_last_pull_request_ms = now_ms;
+    log_play_audio_chunk_diagnostic(
+        "pull_requested",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        "OK");
     return;
   }
   reset_rcl_error();
@@ -5157,7 +5188,22 @@ void handle_audio_chunk_subscription(const void* message) {
 
 void handle_audio_playback_chunk_response(const void* response) {
   play_audio_chunk_request_pending = false;
-  if (response == nullptr || !play_audio_goal_active) {
+  if (response == nullptr) {
+    log_play_audio_chunk_diagnostic(
+        "pull_response_null",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        "TRANSPORT_DISCONNECTED");
+    return;
+  }
+  if (!play_audio_goal_active) {
+    log_play_audio_chunk_diagnostic(
+        "pull_response_without_active_goal",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        "UNKNOWN_COMMAND");
     return;
   }
   const auto* chunk_response =
@@ -5176,6 +5222,12 @@ void handle_audio_playback_chunk_response(const void* response) {
     return;
   }
   if (!chunk_response->has_chunk) {
+    log_play_audio_chunk_diagnostic(
+        chunk_response->end_of_stream ? "pull_end_of_stream" : "pull_empty",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        "OK");
     return;
   }
   const auto* chunk = &chunk_response->chunk;

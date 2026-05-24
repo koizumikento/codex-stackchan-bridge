@@ -1032,6 +1032,55 @@ KOIZUMI-112 diagnostic firmware update:
   this run. IMU, proximity, light, power telemetry, power status, event listing,
   and redaction checks stayed healthy.
 
+### 2026-05-24 KOIZUMI-115 playback pull response timeout diagnosis
+
+- Added payload-free firmware `audio_playback_chunk` diagnostics and allowed
+  media bring-up profiles to publish firmware events instead of dropping them
+  as the pure raw-telemetry profile does.
+- Firmware contract and build checks passed:
+
+  ```powershell
+  uv run --no-project python -m unittest firmware.m5stackchan-microros.tests.test_firmware_contract
+  uv run --no-project python scripts/firmware_platformio.py build --microros-core-play-audio-bringup
+  ```
+
+- Upload through the repository PlatformIO helper succeeded only with the
+  stable low-speed no-stub path:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --microros-core-play-audio-bringup --upload-speed 115200 --no-stub
+  ```
+
+  The same upload at the default 921600 bps and at 460800 bps with the esptool
+  stub reached the ESP32-S3 and then failed after changing baud with
+  `No serial data received`.
+- Same-container smoke was run with COM3 exposed through the host serial TCP
+  bridge:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-audio-capture-seconds 0.02 --media-camera-quality 50
+  ```
+
+- The bridge again served the first pull chunk:
+
+  ```text
+  audio playback pull served first chunk ... bytes=640 buffered=0
+  ```
+
+- Firmware events now show the remaining failure is before speaker enqueue:
+  `audio_playback_chunk` alternates between `pull_requested` and
+  `pull_response_timeout`; counters remain `seen=0`, `ok=0`, `rej=0`,
+  `next=0`. No `chunk_accepted`, `chunk_rejected`, `play_raw_failed`, or
+  `pull_response_rejected` event appears.
+- Therefore the current `AUDIO_UNDERRUN` is not a speaker `playRaw` failure or
+  chunk validation rejection. The firmware micro-ROS `NextAudioChunk` client
+  response callback is not receiving the accepted bridge response before the
+  firmware timeout. Follow-up fix is tracked in KOIZUMI-116.
+- This diagnostic profile intentionally does not enable audio capture or camera
+  capture, so those commands correctly return `UNSUPPORTED_FEATURE` in this
+  run. IMU, touch, proximity, light, power telemetry, event listing, and
+  redaction checks still produced valid observations.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

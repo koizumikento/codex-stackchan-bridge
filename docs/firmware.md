@@ -534,6 +534,12 @@ firmware event name is `audio_playback_action`. These diagnostics are for
 KOIZUMI-112 style result-path debugging and must stay limited to command id,
 accepted flag, first-chunk byte count, and action/session booleans.
 
+Playback chunk relay diagnostics may also publish payload-free firmware events
+named `audio_playback_chunk`. The payload is limited to stage, sequence, byte
+count, structured result code, accepted/rejected counters, active-session flag,
+pending-request flag, and next expected sequence. It must not include PCM bytes,
+speech text, transcripts, images, NFC tag IDs, IR codes, or protocol dumps.
+
 ### Camera
 
 Camera support should be treated as an independent capability.
