@@ -21,6 +21,11 @@ ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
 )
+ROS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_build_stamp"
+ROS_MSGS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_stackchan_msgs_build_stamp"
+ROS_BRIDGE_BUILD_STAMP = (
+    f"{WORKSPACE}/install/.stackchan_ros_stackchan_bridge_build_stamp"
+)
 
 
 def main() -> int:
@@ -136,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
+    add_ros_smoke_build_arguments(tcp_pty_sweep)
 
     tcp_pty_bridge = subparsers.add_parser(
         "tcp-pty-bridge-smoke",
@@ -155,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
+    add_ros_smoke_build_arguments(tcp_pty_bridge)
     tcp_pty_bridge.add_argument(
         "--disconnect-check",
         action="store_true",
@@ -257,11 +264,171 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_ros_smoke_build_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--clean-ros-build",
+        action="store_true",
+        help=(
+            "Run colcon with --cmake-clean-cache. By default the same-container "
+            "smoke uses an incremental symlink install build."
+        ),
+    )
+    parser.add_argument(
+        "--allow-stale-install",
+        action="store_true",
+        help=(
+            "Allow --skip-build even when ROS source files are newer than the "
+            "last smoke build stamp. Use only for diagnostics."
+        ),
+    )
+
+
+def ros_smoke_setup_script(args: argparse.Namespace) -> str:
+    if args.skip_build and args.clean_ros_build:
+        raise SystemExit("--clean-ros-build cannot be combined with --skip-build")
+    stale_allowed = "1" if args.allow_stale_install else "0"
+    clean_arg = "--cmake-clean-cache" if args.clean_ros_build else ""
+    clean_build_dirs = "1" if args.clean_ros_build else "0"
+    colcon_required = "0" if args.skip_build else "1"
+    if args.skip_build:
+        build_or_guard_script = f"""
+phase_start "skip-build stale install guard" STALE_GUARD
+stale_status=0
+stale_allowable=0
+if [ ! -f {WORKSPACE}/install/setup.bash ]; then
+  echo "install/setup.bash is missing; rerun without --skip-build" >&2
+  stale_status=1
+elif [ ! -f {ROS_MSGS_BUILD_STAMP} ] || [ ! -f {ROS_BRIDGE_BUILD_STAMP} ]; then
+  echo "ROS package build stamps are missing; rerun without --skip-build once to create fresh incremental install stamps" >&2
+  stale_status=1
+  stale_allowable=1
+else
+  stale_paths=$(find ros/stackchan_msgs \\
+    \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+    -o -type f -newer {ROS_MSGS_BUILD_STAMP} -print | head -n 20)
+  bridge_stale_paths=$(find ros/stackchan_bridge \\
+    \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+    -o -type f -newer {ROS_BRIDGE_BUILD_STAMP} -print | head -n 20)
+  if [ -n "$bridge_stale_paths" ]; then
+    stale_paths="${{stale_paths}}${{stale_paths:+
+}}$bridge_stale_paths"
+  fi
+  if [ -n "$stale_paths" ]; then
+    echo "ROS sources are newer than the last smoke build stamp; rerun without --skip-build before trusting this smoke:" >&2
+    printf '%s\\n' "$stale_paths" >&2
+    stale_status=1
+    stale_allowable=1
+  fi
+fi
+if [ "$stale_status" -ne 0 ] && [ "$stale_allowable" = "1" ] && [ "{stale_allowed}" = "1" ]; then
+  echo "WARNING: continuing with stale install because --allow-stale-install was set" >&2
+  stale_status=0
+fi
+phase_end "$stale_status"
+[ "$stale_status" -eq 0 ] || exit "$stale_status"
+"""
+    else:
+        build_or_guard_script = f"""
+phase_start "ROS package build" ROS_BUILD
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_BUILD_STAMP} ]; then
+  echo "resetting ROS package build dirs before symlink-install transition"
+  rm -rf build/stackchan_msgs build/stackchan_bridge
+fi
+msgs_changed=0
+bridge_changed=0
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_MSGS_BUILD_STAMP} ]; then
+  msgs_changed=1
+elif find ros/stackchan_msgs \\
+  \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+  -o -type f -newer {ROS_MSGS_BUILD_STAMP} -print -quit | grep -q .; then
+  msgs_changed=1
+fi
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_BRIDGE_BUILD_STAMP} ]; then
+  bridge_changed=1
+elif find ros/stackchan_bridge \\
+  \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+  -o -type f -newer {ROS_BRIDGE_BUILD_STAMP} -print -quit | grep -q .; then
+  bridge_changed=1
+fi
+packages=""
+if [ "$msgs_changed" = "1" ]; then
+  packages="stackchan_msgs stackchan_bridge"
+elif [ "$bridge_changed" = "1" ]; then
+  packages="stackchan_bridge"
+fi
+if [ -z "$packages" ]; then
+  echo "ROS package sources are unchanged; keeping existing symlink install"
+  build_status=0
+else
+  echo "building ROS packages: $packages"
+  colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge --packages-select $packages --symlink-install {clean_arg}
+  build_status=$?
+fi
+if [ "$build_status" -eq 0 ]; then
+  mkdir -p {WORKSPACE}/install
+  if [ "$msgs_changed" = "1" ]; then
+    touch {ROS_MSGS_BUILD_STAMP}
+  fi
+  if [ "$msgs_changed" = "1" ] || [ "$bridge_changed" = "1" ]; then
+    touch {ROS_BRIDGE_BUILD_STAMP}
+  fi
+  touch {ROS_BUILD_STAMP}
+fi
+phase_end "$build_status"
+[ "$build_status" -eq 0 ] || exit "$build_status"
+"""
+    return f"""
+phase_times_file=/tmp/stackchan-smoke-phase-times.log
+: > "$phase_times_file"
+phase_start_epoch=0
+phase_slug=""
+phase_start() {{
+  phase_label="$1"
+  phase_slug="$2"
+  phase_start_epoch=$(date +%s)
+  echo "--- phase: $phase_label ---"
+}}
+phase_end() {{
+  phase_result="$1"
+  phase_end_epoch=$(date +%s)
+  phase_seconds=$((phase_end_epoch - phase_start_epoch))
+  echo "STACKCHAN_SMOKE_PHASE_${{phase_slug}}_SECONDS=$phase_seconds" | tee -a "$phase_times_file"
+  return "$phase_result"
+}}
+print_phase_summary() {{
+  echo "--- smoke phase timing summary ---"
+  cat "$phase_times_file" 2>/dev/null || true
+}}
+
+phase_start "dependency/setup check" SETUP_CHECK
+source /opt/ros/jazzy/setup.bash
+source /uros_ws/install/local_setup.bash
+setup_status=0
+for command_name in socat python3 ros2; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "missing required command '$command_name'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+    setup_status=1
+  fi
+done
+if [ "{colcon_required}" = "1" ] && ! command -v colcon >/dev/null 2>&1; then
+  echo "missing required command 'colcon'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  setup_status=1
+fi
+phase_end "$setup_status"
+[ "$setup_status" -eq 0 ] || exit "$setup_status"
+
+{build_or_guard_script}
+source {WORKSPACE}/install/setup.bash
+"""
+
+
 def run_tcp_pty(args: argparse.Namespace) -> int:
     command = f"""
 set -e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
+command -v socat >/dev/null 2>&1 || {{
+  echo "missing required command 'socat'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  exit 1
+}}
 source /opt/ros/jazzy/setup.bash
 source /uros_ws/install/local_setup.bash
 socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} &
@@ -280,8 +447,10 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} 
 def run_tcp_pty_event_echo(args: argparse.Namespace) -> int:
     command = f"""
 set -e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
+command -v socat >/dev/null 2>&1 || {{
+  echo "missing required command 'socat'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  exit 1
+}}
 source /opt/ros/jazzy/setup.bash
 source /uros_ws/install/local_setup.bash
 source {WORKSPACE}/install/setup.bash
@@ -318,32 +487,10 @@ exit $echo_result
 
 
 def run_tcp_pty_sensor_sweep(args: argparse.Namespace) -> int:
-    build_deps_command = (
-        ""
-        if args.skip_build
-        else (
-            "apt-get install -y --no-install-recommends "
-            "build-essential cmake python3-colcon-common-extensions "
-            "ros-jazzy-geometry-msgs ros-jazzy-rclpy "
-            "ros-jazzy-rosidl-default-generators >/dev/null\n"
-        )
-    )
-    build_command = (
-        ""
-        if args.skip_build
-        else (
-            "colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge "
-            "--packages-select stackchan_msgs stackchan_bridge --cmake-clean-cache\n"
-        )
-    )
+    setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
-{build_deps_command}
-source /opt/ros/jazzy/setup.bash
-source /uros_ws/install/local_setup.bash
-{build_command}source {WORKSPACE}/install/setup.bash
+{setup_script}
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:$PYTHONPATH
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
@@ -351,20 +498,34 @@ socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2
 socat_pid=$!
 agent_pid=
 bridge_pid=
-trap 'kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true' EXIT
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_SMOKE_PHASE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))" | tee -a "$phase_times_file"
+  print_phase_summary
+}}
+trap cleanup EXIT
+phase_start "serial PTY setup" PTY_SETUP
 for i in $(seq 1 50); do
   [ -e {args.pty} ] && break
   sleep 0.1
 done
+phase_end 0
+phase_start "bridge startup" BRIDGE_STARTUP
 "$bridge_node" >/tmp/stackchan-bridge.log 2>&1 &
 bridge_pid=$!
 for i in $(seq 1 80); do
   ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
   sleep 0.25
 done
+phase_end 0
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
 ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
 agent_pid=$!
 sleep 6
+phase_end 0
+phase_start "smoke checks" SMOKE_CHECKS
 
 run_topic_once() {{
   slug="$1"
@@ -558,6 +719,7 @@ echo "--- micro-ROS Agent tail ---"
 tail -n 120 /tmp/stackchan-agent.log || true
 echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
+phase_end "$result"
 exit $result
 """
     return docker_run(
@@ -586,32 +748,10 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     home_check = "1" if args.home_check else "0"
     soak_seconds = max(0, int(args.soak_seconds))
     soak_interval_seconds = max(1, int(args.soak_interval_seconds))
-    build_deps_command = (
-        ""
-        if args.skip_build
-        else (
-            "apt-get install -y --no-install-recommends "
-            "build-essential cmake python3-colcon-common-extensions "
-            "ros-jazzy-geometry-msgs ros-jazzy-rclpy "
-            "ros-jazzy-rosidl-default-generators >/dev/null\n"
-        )
-    )
-    build_command = (
-        ""
-        if args.skip_build
-        else (
-            "colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge "
-            "--packages-select stackchan_msgs stackchan_bridge --cmake-clean-cache\n"
-        )
-    )
+    setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
-{build_deps_command}
-source /opt/ros/jazzy/setup.bash
-source /uros_ws/install/local_setup.bash
-{build_command}source {WORKSPACE}/install/setup.bash
+{setup_script}
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:${{PYTHONPATH:-}}
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
@@ -619,20 +759,34 @@ socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2
 socat_pid=$!
 agent_pid=
 bridge_pid=
-trap 'kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true' EXIT
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_SMOKE_PHASE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))" | tee -a "$phase_times_file"
+  print_phase_summary
+}}
+trap cleanup EXIT
+phase_start "serial PTY setup" PTY_SETUP
 for i in $(seq 1 50); do
   [ -e {args.pty} ] && break
   sleep 0.1
 done
+phase_end 0
+phase_start "bridge startup" BRIDGE_STARTUP
 "$bridge_node" >/tmp/stackchan-bridge.log 2>&1 &
 bridge_pid=$!
 for i in $(seq 1 80); do
   ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
   sleep 0.25
 done
+phase_end 0
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
 ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
 agent_pid=$!
 sleep 5
+phase_end 0
+phase_start "smoke checks" SMOKE_CHECKS
 echo "--- stackchanctl observe ---"
 python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json
 observe_result=$?
@@ -947,6 +1101,7 @@ echo "--- micro-ROS Agent motion reconnect tail ---"
 tail -n 120 /tmp/stackchan-agent-motion-reconnect.log || true
 echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
+phase_end "$result"
 exit $result
 """
     return docker_run(

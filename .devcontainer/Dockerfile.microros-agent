@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-rclpy \
     ros-jazzy-rosidl-default-generators \
     ros-jazzy-rosidl-default-runtime \
+    socat \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi \

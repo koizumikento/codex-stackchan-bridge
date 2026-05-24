@@ -7,7 +7,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,6 +17,8 @@ FIRMWARE_DIR = "firmware/m5stackchan-microros"
 DEFAULT_ENV = "stackchan-cores3"
 STACKCHAN_MSGS = ROOT / "ros" / "stackchan_msgs"
 EXTRA_PACKAGES = ROOT / FIRMWARE_DIR / "extra_packages"
+BUILD_MANIFEST = "stackchan-firmware-build.json"
+UPLOAD_MANIFEST = "stackchan-firmware-last-upload.json"
 
 UV_PLATFORMIO = [
     "uv",
@@ -47,6 +48,10 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command == "plan":
+        extra_build_flags = firmware_build_flags(args, parser)
+        return run_plan(args, extra_build_flags)
+
     if args.command == "build":
         extra_build_flags = firmware_build_flags(args, parser)
         command = [
@@ -61,7 +66,10 @@ def main() -> int:
             platformio_config = write_platformio_config(None, False, extra_build_flags)
             command.extend(["-c", str(platformio_config)])
         try:
-            return run_platformio(command)
+            result = run_platformio(command)
+            if result == 0:
+                write_build_manifest(args.environment, extra_build_flags)
+            return result
         finally:
             if platformio_config is not None:
                 platformio_config.unlink(missing_ok=True)
@@ -88,7 +96,11 @@ def main() -> int:
             )
             command.extend(["-c", str(upload_config)])
         try:
-            return run_platformio(command)
+            result = run_platformio(command)
+            if result == 0:
+                write_build_manifest(args.environment, extra_build_flags)
+                write_upload_manifest(args.environment, extra_build_flags, args.port)
+            return result
         finally:
             if upload_config is not None:
                 upload_config.unlink(missing_ok=True)
@@ -122,6 +134,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    plan = subparsers.add_parser(
+        "plan",
+        help="Report whether firmware build/upload work appears necessary.",
+    )
+    plan.add_argument(
+        "-e",
+        "--environment",
+        default=DEFAULT_ENV,
+        help=f"PlatformIO environment to inspect (default: {DEFAULT_ENV}).",
+    )
+    plan.add_argument(
+        "--port",
+        help=(
+            "Optional serial port used to decide whether the last successful "
+            "upload marker matches this device."
+        ),
+    )
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable plan output.",
+    )
+    add_microros_diagnostic_arguments(plan)
+    add_calibration_maintenance_arguments(plan)
 
     build = subparsers.add_parser("build", help="Build firmware with PlatformIO.")
     build.add_argument(
@@ -329,6 +366,64 @@ def firmware_build_flags(
     return flags
 
 
+def run_plan(args: argparse.Namespace, extra_build_flags: list[str]) -> int:
+    fingerprint = firmware_source_fingerprint(args.environment, extra_build_flags)
+    artifact = firmware_artifact(args.environment)
+    build_manifest = read_json(firmware_build_manifest_path(args.environment))
+    upload_manifest = read_json(firmware_upload_manifest_path(args.environment))
+    build_current = (
+        artifact.exists()
+        and build_manifest.get("fingerprint") == fingerprint
+        and build_manifest.get("environment") == args.environment
+        and build_manifest.get("extra_build_flags") == extra_build_flags
+    )
+    upload_current = False
+    upload_status = "unknown"
+    if args.port:
+        upload_current = (
+            build_current
+            and upload_manifest.get("fingerprint") == fingerprint
+            and upload_manifest.get("environment") == args.environment
+            and upload_manifest.get("port") == args.port
+        )
+        upload_status = "current" if upload_current else "upload_recommended"
+
+    reasons: list[str] = []
+    if not artifact.exists():
+        reasons.append("firmware artifact is missing")
+    if not build_current and artifact.exists():
+        reasons.append("firmware sources or build flags differ from the last build marker")
+    if args.port and not upload_current:
+        reasons.append("last successful upload marker is missing or does not match this port/fingerprint")
+    if not reasons:
+        reasons.append("build artifact and optional upload marker are current")
+
+    plan = {
+        "environment": args.environment,
+        "port": args.port,
+        "artifact": str(artifact.relative_to(ROOT)),
+        "artifact_exists": artifact.exists(),
+        "fingerprint": fingerprint,
+        "extra_build_flags": extra_build_flags,
+        "build_required": not build_current,
+        "upload_status": upload_status,
+        "upload_recommended": bool(args.port and not upload_current),
+        "reasons": reasons,
+    }
+    if args.json:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+    else:
+        print(f"environment: {plan['environment']}")
+        if args.port:
+            print(f"port: {args.port}")
+        print(f"artifact: {plan['artifact']}")
+        print(f"build_required: {str(plan['build_required']).lower()}")
+        print(f"upload_status: {upload_status}")
+        for reason in reasons:
+            print(f"- {reason}")
+    return 0
+
+
 def calibration_maintenance_build_flags(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
@@ -394,6 +489,97 @@ def run_platformio(args: list[str]) -> int:
         check=False,
     )
     return int(completed.returncode)
+
+
+def firmware_artifact(environment: str) -> Path:
+    return ROOT / FIRMWARE_DIR / ".pio" / "build" / environment / "firmware.bin"
+
+
+def firmware_build_manifest_path(environment: str) -> Path:
+    return ROOT / FIRMWARE_DIR / ".pio" / "build" / environment / BUILD_MANIFEST
+
+
+def firmware_upload_manifest_path(environment: str) -> Path:
+    return ROOT / FIRMWARE_DIR / ".pio" / "build" / environment / UPLOAD_MANIFEST
+
+
+def write_build_manifest(environment: str, extra_build_flags: list[str]) -> None:
+    fingerprint = firmware_source_fingerprint(environment, extra_build_flags)
+    manifest = {
+        "environment": environment,
+        "extra_build_flags": extra_build_flags,
+        "fingerprint": fingerprint,
+        "artifact": str(firmware_artifact(environment).relative_to(ROOT)),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    path = firmware_build_manifest_path(environment)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
+def write_upload_manifest(
+    environment: str,
+    extra_build_flags: list[str],
+    port: str,
+) -> None:
+    fingerprint = firmware_source_fingerprint(environment, extra_build_flags)
+    manifest = {
+        "environment": environment,
+        "extra_build_flags": extra_build_flags,
+        "fingerprint": fingerprint,
+        "port": port,
+        "uploaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    path = firmware_upload_manifest_path(environment)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
+def read_json(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def firmware_source_fingerprint(
+    environment: str,
+    extra_build_flags: list[str],
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"environment={environment}".encode("utf-8"))
+    digest.update(b"\0")
+    for flag in extra_build_flags:
+        digest.update(flag.encode("utf-8"))
+        digest.update(b"\0")
+    for base in (ROOT / FIRMWARE_DIR, STACKCHAN_MSGS):
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or should_skip_firmware_fingerprint_file(path):
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def should_skip_firmware_fingerprint_file(path: Path) -> bool:
+    relative = path.relative_to(ROOT)
+    parts = set(relative.parts)
+    if parts.intersection(
+        {".pio", "build", "install", "log", "tests", "__pycache__", ".pytest_cache"},
+    ):
+        return True
+    if relative.parts[: len(Path(FIRMWARE_DIR, "extra_packages").parts)] == Path(
+        FIRMWARE_DIR,
+        "extra_packages",
+    ).parts:
+        return True
+    return path.suffix in {".md", ".pyc", ".tmp"}
 
 
 def write_platformio_config(

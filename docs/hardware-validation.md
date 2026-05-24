@@ -43,7 +43,36 @@ hardware bring-up issue complete.
   The repository Agent image builds micro-ROS Agent from source against the
   same ROS 2 Jazzy base used by `stackchan_bridge`; prefer it for bridge/CLI
   smoke tests so Agent, `rclpy`, and generated type support remain
-  ABI-aligned.
+  ABI-aligned. The image also carries the smoke-time runtime tools such as
+  `socat`; smoke scripts should not run `apt-get update` during each validation
+  pass.
+
+  The same-container bridge and sensor smoke commands build
+  `stackchan_msgs` and `stackchan_bridge` incrementally by default with
+  `--symlink-install`. Use the default path after source changes:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --face-check happy
+  ```
+
+  Use `--skip-build` only for repeated hardware smokes after a successful
+  normal smoke build. The helper records `install/.stackchan_ros_build_stamp`
+  and fails `--skip-build` if files under `ros/stackchan_msgs` or
+  `ros/stackchan_bridge` are newer than that stamp. If a diagnostic must use an
+  intentionally stale install, add `--allow-stale-install` and record that fact
+  in the Linear issue. Use `--clean-ros-build` only after dependency, generated
+  interface, or CMake cache problems; it restores the older clean-cache behavior
+  for that run.
+
+  Smoke output ends with `STACKCHAN_SMOKE_PHASE_*_SECONDS` lines for setup,
+  ROS build or stale guard, PTY setup, bridge startup, Agent startup, smoke
+  checks, and teardown. Paste those timing lines into the relevant Linear issue
+  when build time is part of the investigation. The first normal smoke after
+  this change resets only `build/stackchan_msgs` and `build/stackchan_bridge`
+  if no smoke build stamp exists, because older non-symlink build caches can
+  conflict with `--symlink-install`. Later normal smokes use per-package stamps:
+  `stackchan_msgs` is rebuilt only when message/interface sources changed, while
+  `stackchan_bridge` can be refreshed by itself for bridge-only edits.
 
   A successful Agent connection logs `session established`, then creates the
   participant, topic, publisher, and datawriter for
@@ -59,6 +88,18 @@ hardware bring-up issue complete.
   `/stackchan/default/device/status`; it should not be used to validate face,
   motion, audio, camera, events, or raw telemetry. Restore a normal PlatformIO
   upload before marking the standard bridge command path ready.
+- Before rebuilding or uploading firmware during repeated smoke work, inspect
+  the local PlatformIO state:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py plan --port COM3
+  ```
+
+  If `build_required: false` and `upload_status: current`, firmware sources,
+  selected diagnostic build flags, and the last successful upload marker match
+  the selected port. In that case, skip upload and continue with ROS smoke.
+  If either value indicates work is needed, use the repository PlatformIO helper
+  rather than direct flashing tools.
 - If minimal status works, isolate the core command path with:
 
   ```powershell
