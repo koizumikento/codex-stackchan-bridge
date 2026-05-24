@@ -572,9 +572,13 @@ sleep before forwarding to firmware. Invalid or unsupported input files return
 structured errors; PCM bytes are never printed in normal output.
 For KOIZUMI-111 diagnostics, developers can set
 `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
-`320` to move the first playback segment into the action goal. The default is
-`0` because physical hardware smokes with 10 ms and 20 ms first-goal payloads
-timed out before this path was proven safe.
+`64` to move the first playback segment into the action goal. Developers can
+also set `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES` to an even byte count such as
+`64` to split remaining CLI-origin playback transport chunks below the normal
+20 ms / 640 byte cadence while diagnosing serial micro-ROS payload limits. The
+defaults are `0` first-goal bytes and `640` topic/pull chunk bytes; these
+diagnostic settings are local bring-up knobs, not a stable user-facing audio
+quality contract.
 
 When `audio_capture` is available, the bridge backend subscribes to
 `/stackchan/<device_id>/device/audio/chunks` before sending the public
@@ -839,6 +843,11 @@ Environment variables may override convenience settings for automation:
 - `STACKCHANCTL_OUTPUT`
 - `STACKCHANCTL_LOG_LEVEL`
 - `STACKCHANCTL_SOURCE`
+
+Audio bring-up diagnostics may also use:
+
+- `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES`
+- `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES`
 
 ## Mock backend
 

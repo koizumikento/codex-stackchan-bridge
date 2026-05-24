@@ -1081,6 +1081,54 @@ KOIZUMI-112 diagnostic firmware update:
   run. IMU, touch, proximity, light, power telemetry, event listing, and
   redaction checks still produced valid observations.
 
+### 2026-05-24 KOIZUMI-116 small playback payload diagnosis
+
+- Reused the KOIZUMI-115 play-audio bring-up firmware and same-container
+  Agent/bridge smoke flow with COM3 exposed through the host serial TCP bridge.
+- With `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=320`, `audio play` timed out
+  before firmware emitted `audio_playback_action` diagnostics. This matches the
+  earlier KOIZUMI-112 evidence that a 320 byte first-goal payload can prevent
+  firmware from taking the action goal request.
+- With `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64`, firmware emitted
+  `audio_playback_action` stages `goal_request_taken`, `goal_response_sent`,
+  `goal_execute`, and `first_goal_chunk_dispatch`, followed by
+  `audio_playback_chunk` stage `chunk_accepted` for sequence 0 with 64 bytes.
+  This proves a small PC-to-firmware playback payload can cross the serial
+  micro-ROS path and be accepted by the speaker adapter.
+- The same run then timed out on the next pulled chunk, where the remaining
+  bridge response was still 576 bytes. This narrows KOIZUMI-116 to a bounded
+  payload-size issue on the serial micro-ROS playback transport rather than a
+  generic action, service, or speaker enqueue failure.
+- Follow-up validation should set both
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64` and
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64` so the remaining topic/pull chunks
+  are split to the same proven payload size.
+- That follow-up smoke completed with `audio play` returning `ACCEPTED`.
+  Firmware accepted sequence 0 from the first-goal payload, and the bridge
+  buffered and published nine 64 byte remaining chunks with no bridge drops.
+  Firmware then marked the playback action `result_ready` before sequence 1
+  was accepted, and the next 64 byte chunk arrived as
+  `chunk_without_active_goal`. The remaining blocker is therefore firmware
+  playback session lifetime/result timing after the first accepted chunk, not
+  the bridge's ability to split and publish small transport chunks.
+- After fixing firmware to wait for end-of-stream before successful
+  completion, the same 64 byte smoke accepted all playback chunks through
+  sequence 9. It then timed out at the CLI because the bridge did not expose
+  `end_of_stream=true` until its device action client timed out and closed the
+  relay. KOIZUMI-118 tracks the bridge-side idle-input end-of-stream fix.
+- After adding bridge idle-input end-of-stream and increasing the bridge media
+  action timeout default to 35 seconds, a rebuild-backed same-container smoke
+  with `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64` and
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64` returned `stackchanctl audio play`
+  `ok=true`, `result_state=ACCEPTED`. Firmware events showed sequence 0
+  accepted from the first-goal payload, all remaining chunks accepted through
+  sequence 9, `pull_end_of_stream` at sequence 10, `result_ready`, and
+  `result_response_sent`. The bridge logged
+  `audio playback pull closed idle input` before `audio playback relay
+  finished` with `received=9`, `published=9`, `dropped=0`, and `pending=0`.
+  Audio capture and camera capture remain `UNSUPPORTED_FEATURE` for this
+  play-audio bring-up firmware profile.
+
 ## Cleanup
 
 - Save the command transcript and observed result codes in the PR or Linear

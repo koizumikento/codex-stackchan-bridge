@@ -643,9 +643,13 @@ rejected with `FIRMWARE_BUSY`. Malformed chunk size, wrong `direction`, wrong
 result/event conditions. A small first PLAYBACK payload may be handed to
 firmware in the `/stackchan/<device_id>/device/audio/play` action goal as
 `first_chunk_sequence=0` plus `first_chunk_pcm`; this is currently a local
-diagnostic path, disabled by default, because physical hardware smokes showed
-action-result timeouts with 10 ms and 20 ms first-goal payloads. Remaining
-playback chunks, if any, continue on this topic starting at the next sequence.
+diagnostic path, disabled by default. Physical hardware smokes showed that a
+64 byte first-goal payload can be accepted, while 320 byte and 640 byte
+payload transfers still time out or stall on the serial micro-ROS path.
+Remaining playback chunks, if any, continue on this topic starting at the next
+sequence. The CLI bridge backend may temporarily split diagnostic playback
+transport chunks below the normal 640 byte cadence to isolate payload-size
+limits, but this is not a new high-level audio quality mode.
 Before relaying buffered topic chunks, the bridge may wait briefly for the
 firmware subscription to be matched because the topic is best-effort and
 volatile. Firmware must ignore duplicate chunks whose sequence is already
@@ -1097,10 +1101,15 @@ Firmware may alternatively pull the next buffered chunk through the
 bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper after
 action acceptance. This helper keeps PCM out of action goals while avoiding
 best-effort topic delivery as the only playback ingress.
+The bridge may mark the pull stream end-of-stream after the CLI-origin chunk
+input has been idle for a bounded interval and the buffered queue is empty; it
+must not wait for the device action result callback before exposing
+`end_of_stream=true`, because firmware may need that observation to finish the
+action.
 The bridge must not use the short synchronous device-command timeout for media
-action result delivery. Playback and capture need a media-action timeout large
-enough for goal acceptance, firmware buffering, chunk transfer, and terminal
-result delivery.
+action result delivery. Playback and capture need a media-action timeout, 35
+seconds by default in the bridge, large enough for goal acceptance, firmware
+buffering, chunk transfer, and terminal result delivery.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -1114,6 +1123,10 @@ Privacy and result rules:
   not that speaker output has completed. Playback start, queued depth,
   completion, underrun, and terminal failure should be observable through action
   feedback, status, or bounded events.
+- Firmware must not mark playback completed solely because the speaker has
+  drained after one accepted chunk. Completion requires end-of-stream plus
+  speaker drain; missing next chunks are `AUDIO_UNDERRUN` after a bounded
+  inter-chunk timeout.
 - Device-side playback chunks are valid only for an active firmware-owned
   playback session with a matching `command_id`. Firmware must reject orphaned
   chunks rather than treating the chunk topic as a raw speaker-control command.

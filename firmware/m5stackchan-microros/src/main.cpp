@@ -210,6 +210,7 @@ constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
 constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
+constexpr unsigned long kAudioPlaybackInterChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackPullIntervalMs = 20;
 constexpr unsigned long kAudioPlaybackPullTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
@@ -424,6 +425,7 @@ stackchan::Result play_audio_terminal_result =
 int8_t play_audio_terminal_status = GOAL_STATE_UNKNOWN;
 bool play_audio_goal_active = false;
 bool play_audio_received_chunk = false;
+bool play_audio_end_of_stream_seen = false;
 bool play_audio_result_ready = false;
 bool play_audio_result_request_pending = false;
 bool play_audio_chunk_client_initialized = false;
@@ -3501,6 +3503,7 @@ void destroy_microros_entities() {
       stackchan_audio_capture_transport_initialized = false;
       audio_playback_guard.finish_session();
       play_audio_goal_active = false;
+      play_audio_end_of_stream_seen = false;
       play_audio_result_ready = false;
       play_audio_result_request_pending = false;
       play_audio_chunk_request_pending = false;
@@ -3593,6 +3596,7 @@ void destroy_microros_entities() {
     capture_camera_result_request_pending = false;
     audio_playback_guard.finish_session();
     play_audio_goal_active = false;
+    play_audio_end_of_stream_seen = false;
     play_audio_result_ready = false;
     play_audio_result_request_pending = false;
     play_audio_chunk_request_pending = false;
@@ -4722,6 +4726,7 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
   play_audio_goal_active = false;
   play_audio_active_goal_handle = nullptr;
   play_audio_received_chunk = false;
+  play_audio_end_of_stream_seen = false;
   play_audio_chunk_request_pending = false;
   audio_playback_guard.finish_session();
 }
@@ -4855,6 +4860,15 @@ void maybe_finish_play_audio_session() {
         stackchan::audio_underrun());
     finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
   } else if (play_audio_received_chunk &&
+             !play_audio_end_of_stream_seen &&
+             !play_audio_chunk_request_pending &&
+             now_ms - play_audio_last_chunk_ms >= kAudioPlaybackInterChunkTimeoutMs) {
+    log_play_audio_session_diagnostic(
+        "inter_chunk_timeout",
+        stackchan::audio_underrun());
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+  } else if (play_audio_received_chunk &&
+             play_audio_end_of_stream_seen &&
              now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs &&
              !M5.Speaker.isPlaying(0)) {
     finish_play_audio_goal(audio_playback_completed_result(), GOAL_STATE_SUCCEEDED);
@@ -4897,6 +4911,7 @@ void start_play_audio_goal(
       sizeof(last_command_id),
       command_id);
   play_audio_received_chunk = false;
+  play_audio_end_of_stream_seen = false;
   play_audio_chunk_request_pending = false;
   play_audio_chunk_request_sequence_number = 0;
   play_audio_next_pull_sequence = 0;
@@ -5222,6 +5237,9 @@ void handle_audio_playback_chunk_response(const void* response) {
     return;
   }
   if (!chunk_response->has_chunk) {
+    if (chunk_response->end_of_stream) {
+      play_audio_end_of_stream_seen = true;
+    }
     log_play_audio_chunk_diagnostic(
         chunk_response->end_of_stream ? "pull_end_of_stream" : "pull_empty",
         play_audio_diagnostic_command_id,

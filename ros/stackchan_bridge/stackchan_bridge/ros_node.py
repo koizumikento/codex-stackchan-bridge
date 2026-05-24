@@ -28,6 +28,7 @@ AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3
 AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
+AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35
 
 
 def _audio_chunk_pcm_size(message: object) -> int:
@@ -477,7 +478,7 @@ def main(args: list[str] | None = None) -> None:
             self._device_command_timeout_sec = float(
                 self.get_parameter("device_command_timeout_sec").value
             )
-            self.declare_parameter("device_media_action_timeout_sec", 20.0)
+            self.declare_parameter("device_media_action_timeout_sec", 35.0)
             self._device_media_action_timeout_sec = float(
                 self.get_parameter("device_media_action_timeout_sec").value
             )
@@ -1243,6 +1244,7 @@ def main(args: list[str] | None = None) -> None:
                     key,
                     {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
                 )
+                stats["last_received_monotonic"] = time.monotonic()
                 stats["received"] += 1
                 if key in self._active_playback_sessions:
                     publish_now = True
@@ -1288,6 +1290,7 @@ def main(args: list[str] | None = None) -> None:
                     key,
                     {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
                 )
+                stats["activated_monotonic"] = time.monotonic()
             self.get_logger().info(
                 "audio playback relay activated "
                 f"device_id={device_id!r} command_id={command_id!r} "
@@ -1321,6 +1324,31 @@ def main(args: list[str] | None = None) -> None:
                 buffered_chunks = len(queue)
                 active = key in self._active_playback_sessions
                 closed = key in self._closed_playback_sessions
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                idle_reference = float(
+                    stats.get("last_received_monotonic")
+                    or stats.get("activated_monotonic")
+                    or 0.0
+                )
+                if (
+                    active
+                    and chunk is None
+                    and buffered_chunks == 0
+                    and idle_reference > 0.0
+                    and time.monotonic() - idle_reference >= AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC
+                ):
+                    self._active_playback_sessions.discard(key)
+                    self._closed_playback_sessions.add(key)
+                    active = False
+                    closed = True
+                    self.get_logger().info(
+                        "audio playback pull closed idle input "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"next_sequence={next_sequence}"
+                    )
             if not active and not closed:
                 _copy_result(
                     response.result,

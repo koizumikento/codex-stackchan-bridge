@@ -474,6 +474,10 @@ Baseline audio path:
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.
+- Firmware must keep a playback session active while waiting for the next
+  bounded chunk. It may report successful completion only after an explicit
+  end-of-stream observation plus speaker drain, or report `AUDIO_UNDERRUN`
+  after a bounded inter-chunk timeout or terminal playback error.
 - Firmware should publish or return enough metadata for the bridge to distinguish
   queued, playing, completed, underrun, and failed playback without logging PCM
   bytes.

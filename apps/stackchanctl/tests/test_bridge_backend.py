@@ -959,6 +959,65 @@ class BridgeBackendTests(unittest.TestCase):
         )
         self.assertEqual([message.sequence for message in publisher.messages], [1, 2])
 
+    def test_play_audio_can_use_smaller_transport_chunks_for_diagnostics(self) -> None:
+        action = FakeActionClient()
+        node = FakeNode()
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._rclpy = FakeRclpy()
+        client._node = node
+        client._action_client_type = action
+        client._play_audio_type = FakePlayAudio
+        client._audio_chunk_type = FakeAudioChunk
+        client._audio_chunk_publishers = {}
+        client._audio_playback_sleep = lambda seconds: None
+        client.get_status = lambda meta, timeout: DeviceStatus(
+            device_id=meta.device_id,
+            connected=True,
+            device_state="idle",
+            face="neutral",
+            last_error=None,
+            capabilities=(CapabilityStatus("audio_playback", "available"),),
+        )
+        pcm = bytes(range(128)) * 2
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prompt.wav"
+            with wave.open(str(path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(pcm)
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES": "64",
+                    "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES": "64",
+                },
+            ):
+                response = client.play_audio(
+                    SimpleNamespace(
+                        device_id="default",
+                        command_id="cmd-audio-small-chunks",
+                        source="test",
+                        created_at="2026-05-16T00:00:00Z",
+                        priority=SimpleNamespace(value="NORMAL"),
+                    ),
+                    str(path),
+                    wait=False,
+                    timeout=1.0,
+                )
+
+        self.assertTrue(response.ok)
+        self.assertEqual(action.last_goal.first_chunk_pcm, pcm[:64])
+        publisher = node.publishers["/stackchan/default/cmd/audio/chunks"]
+        self.assertEqual(len(publisher.messages), 3)
+        self.assertEqual([message.sequence for message in publisher.messages], [1, 2, 3])
+        self.assertEqual([len(message.pcm) for message in publisher.messages], [64, 64, 64])
+        self.assertEqual(
+            b"".join(message.pcm for message in publisher.messages),
+            pcm[64:],
+        )
+
     def test_bridge_backend_audio_chunk_qos_is_best_effort(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]

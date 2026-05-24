@@ -78,6 +78,7 @@ AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 0
+AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
 AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 1
@@ -94,6 +95,20 @@ def _audio_playback_first_goal_bytes() -> int:
     except ValueError:
         return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
     return min(max(value, 0), AUDIO_CHUNK_BYTES)
+
+
+def _audio_playback_chunk_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_CHUNK_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_CHUNK_BYTES
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_CHUNK_BYTES
+    value = min(max(value, 2), AUDIO_CHUNK_BYTES)
+    if value % 2:
+        value -= 1
+    return max(value, 2)
 
 
 class BridgeBackendError(RuntimeError):
@@ -956,8 +971,9 @@ class RclpyBridgeClient:
             return
         publisher = self._audio_chunk_publisher(meta.device_id)
         self._wait_for_audio_playback_subscriber(publisher, timeout)
+        chunk_bytes = _audio_playback_chunk_bytes()
         for sequence, offset in enumerate(
-            range(0, len(pcm), AUDIO_CHUNK_BYTES),
+            range(0, len(pcm), chunk_bytes),
             start=start_sequence,
         ):
             message = self._audio_chunk_type()
@@ -968,7 +984,7 @@ class RclpyBridgeClient:
             message.format = AUDIO_PCM_S16LE_FORMAT
             message.sample_rate = AUDIO_SAMPLE_RATE
             message.channels = AUDIO_CHANNELS
-            message.pcm = pcm[offset : offset + AUDIO_CHUNK_BYTES]
+            message.pcm = pcm[offset : offset + chunk_bytes]
             publisher.publish(message)
             self._pace_audio_playback_chunk()
 
