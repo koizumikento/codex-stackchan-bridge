@@ -1,0 +1,66 @@
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=jazzy
+ENV UROS_WS=/uros_ws
+ENV FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/disable_fastdds_shm.xml
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    python3-colcon-common-extensions \
+    python3-pip \
+    python3-pytest \
+    python3-rosdep \
+    python3-vcstool \
+    python3-venv \
+    ros-jazzy-ament-cmake \
+    ros-jazzy-geometry-msgs \
+    ros-jazzy-rclpy \
+    ros-jazzy-rosidl-default-generators \
+    ros-jazzy-rosidl-default-runtime \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi \
+    && rosdep update --rosdistro jazzy
+
+WORKDIR ${UROS_WS}
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && git clone --depth 1 -b ${ROS_DISTRO} https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup \
+    && apt-get update \
+    && rosdep install --from-paths src --ignore-src -y --rosdistro ${ROS_DISTRO} \
+    && colcon build \
+    && source install/local_setup.bash \
+    && ros2 run micro_ros_setup create_agent_ws.sh \
+    && ros2 run micro_ros_setup build_agent.sh \
+    && rm -rf build log src /var/lib/apt/lists/*
+
+RUN printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">' \
+    '  <transport_descriptors>' \
+    '    <transport_descriptor>' \
+    '      <transport_id>udp_transport</transport_id>' \
+    '      <type>UDPv4</type>' \
+    '    </transport_descriptor>' \
+    '  </transport_descriptors>' \
+    '  <participant profile_name="participant_profile" is_default_profile="true">' \
+    '    <rtps>' \
+    '      <userTransports>' \
+    '        <transport_id>udp_transport</transport_id>' \
+    '      </userTransports>' \
+    '      <useBuiltinTransports>false</useBuiltinTransports>' \
+    '    </rtps>' \
+    '  </participant>' \
+    '</profiles>' \
+    > /tmp/disable_fastdds_shm.xml
+
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc \
+    && echo "source ${UROS_WS}/install/local_setup.bash" >> /etc/bash.bashrc
+
+WORKDIR /workspaces/codex-stackchan-bridge

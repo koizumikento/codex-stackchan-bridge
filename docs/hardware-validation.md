@@ -35,9 +35,15 @@ hardware bring-up issue complete.
   PTY:
 
   ```powershell
+  uv run --no-project python scripts/microros_agent_container.py build-image
   uv run --no-project --with pyserial python scripts/serial_tcp_bridge.py --serial-port COM3 --baud 921600 --host 0.0.0.0 --tcp-port 11411
   uv run --no-project python scripts/microros_agent_container.py tcp-pty --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
   ```
+
+  The repository Agent image builds micro-ROS Agent from source against the
+  same ROS 2 Jazzy base used by `stackchan_bridge`; prefer it for bridge/CLI
+  smoke tests so Agent, `rclpy`, and generated type support remain
+  ABI-aligned.
 
   A successful Agent connection logs `session established`, then creates the
   participant, topic, publisher, and datawriter for
@@ -91,7 +97,7 @@ hardware bring-up issue complete.
   miss samples:
 
   ```powershell
-  uv run --no-project python scripts/ros2_container.py build
+  uv run --no-project python scripts/microros_agent_container.py build-image
   uv run --no-project --with pyserial python scripts/serial_tcp_bridge.py --serial-port COM3 --baud 921600 --host 0.0.0.0 --tcp-port 11411
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-event-echo --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 6
   ```
@@ -104,6 +110,7 @@ hardware bring-up issue complete.
   container:
 
   ```powershell
+  uv run --no-project python scripts/microros_agent_container.py build-image
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --face-check happy --motion-check nod --motion-expected-error CALIBRATION_INVALID --reconnect-check
   ```
 
@@ -989,6 +996,41 @@ KOIZUMI-112 diagnostic firmware update:
   risk is a dedicated, reproducible same-container Agent/bridge smoke image or
   host-side ROS environment that keeps micro-ROS Agent and Python bridge
   dependencies ABI-aligned.
+
+2026-05-24 KOIZUMI-114 ABI-aligned Agent image smoke:
+
+- Added and built the repository Agent image with:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py build-image
+  ```
+
+  The image builds micro-ROS Agent from source with `micro_ros_setup` on top of
+  `ros:jazzy-ros-base`, so the Agent, `rclpy`, and generated type support use
+  the same ROS 2 Jazzy dependency set.
+- With COM3 exposed through the host serial TCP bridge, same-container
+  `tcp-pty-bridge-smoke --face-check happy` passed. The smoke observed
+  `/stackchan/default/status` with `connected: true`, `firmware_version:
+  bringup`, sent `stackchanctl --backend bridge face happy --json`, and a
+  follow-up observe reported `face: happy`. `stackchanctl events list` also
+  saw `firmware_ready`.
+- This resolves the Fast-CDR symbol mismatch that blocked the previous
+  same-container smoke, and also avoids Docker Desktop cross-container DDS
+  sample loss for bridge/CLI validation.
+- Running `tcp-pty-sensor-sweep --skip-build` with the new image reached the
+  bridge and firmware media path. The bridge logged
+  `audio playback pull served first chunk` for sequence 0 with 640 bytes, so
+  `/stackchan/default/audio/playback/next_chunk` is callable from firmware.
+- Audio playback still returned structured `AUDIO_UNDERRUN`. Firmware
+  `audio_playback_action` events reached `goal_request_taken`,
+  `goal_response_sent`, `goal_execute`, `result_request_taken`,
+  `result_ready`, and `result_response_sent`, but the result remained
+  underrun. This narrows the remaining playback fault to the firmware side
+  after the first pull response is served, rather than Agent/bridge ABI,
+  bridge buffering, or service discovery.
+- Audio capture and camera capture timed out after the playback underrun in
+  this run. IMU, proximity, light, power telemetry, power status, event listing,
+  and redaction checks stayed healthy.
 
 ## Cleanup
 

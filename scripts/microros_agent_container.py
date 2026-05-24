@@ -8,7 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = "/workspaces/codex-stackchan-bridge"
-DEFAULT_IMAGE = "microros/micro-ros-agent:jazzy"
+DEFAULT_IMAGE = "codex-stackchan-microros-agent:jazzy"
+DEFAULT_DOCKERFILE = ".devcontainer/Dockerfile.microros-agent"
 DEFAULT_BAUD = 921600
 DEFAULT_TCP_HOST = "host.docker.internal"
 DEFAULT_TCP_PORT = 11411
@@ -25,6 +26,18 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command == "build-image":
+        return run(
+            [
+                "docker",
+                "build",
+                "-f",
+                DEFAULT_DOCKERFILE,
+                "-t",
+                args.image,
+                ".",
+            ]
+        )
     if args.command == "tcp-pty":
         return run_tcp_pty(args)
     if args.command == "tcp-pty-event-echo":
@@ -51,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Agent image to use (default: {DEFAULT_IMAGE}).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "build-image",
+        help="Build the repo micro-ROS Agent image with ABI-aligned ROS 2 deps.",
+    )
 
     tcp_pty = subparsers.add_parser(
         "tcp-pty",
@@ -974,6 +991,11 @@ def docker_run(
         docker_args.extend(["-w", workdir])
     docker_args.extend(["--entrypoint", "/bin/bash", image, "-lc", command])
     completed = subprocess.run(docker_args, cwd=ROOT, check=False)
+    return int(completed.returncode)
+
+
+def run(command: list[str]) -> int:
+    completed = subprocess.run(command, cwd=ROOT, check=False)
     return int(completed.returncode)
 
 

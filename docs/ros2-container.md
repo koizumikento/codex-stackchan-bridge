@@ -114,9 +114,15 @@ Windows and presents it to the Linux Agent container through TCP and a
 container PTY:
 
 ```powershell
+uv run --no-project python scripts/microros_agent_container.py build-image
 uv run --no-project --with pyserial python scripts/serial_tcp_bridge.py --serial-port COM3 --baud 921600 --host 0.0.0.0 --tcp-port 11411
 uv run --no-project python scripts/microros_agent_container.py tcp-pty --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
 ```
+
+The repository Agent image is built from the same ROS 2 Jazzy base used for
+`stackchan_bridge` and builds micro-ROS Agent with `micro_ros_setup`. Prefer it
+over `microros/micro-ros-agent:jazzy` for bridge/CLI smoke tests so Python ROS
+nodes and Agent dependencies remain ABI-aligned.
 
 For a payload-level event smoke on Windows Docker Desktop, keep the host bridge
 running and run the Agent plus `ros2 topic echo` in the same Agent container:
@@ -141,6 +147,7 @@ For a full bridge/CLI smoke against the same Agent transport, keep the host
 serial TCP bridge running and use:
 
 ```powershell
+uv run --no-project python scripts/microros_agent_container.py build-image
 uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
 ```
 
