@@ -40,6 +40,12 @@ hardware bring-up issue complete.
   uv run --no-project python scripts/microros_agent_container.py tcp-pty --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
   ```
 
+  The host serial TCP bridge opens COM3 with DTR and RTS inactive by default.
+  Keep that default for normal runtime Agent bridging on ESP32-S3/CoreS3 boards
+  because active DTR/RTS can interact with auto-reset or boot control lines.
+  Use `--dtr active`, `--rts active`, or `unchanged` only for a deliberate
+  reset-line diagnostic.
+
   The repository Agent image builds micro-ROS Agent from source against the
   same ROS 2 Jazzy base used by `stackchan_bridge`; prefer it for bridge/CLI
   smoke tests so Agent, `rclpy`, and generated type support remain
@@ -1251,6 +1257,16 @@ KOIZUMI-112 diagnostic firmware update:
   optional entities: COM3 still works for PlatformIO/esptool flashing, but the
   application runtime serial path is not producing observable XRCE or text
   bytes on COM3. KOIZUMI-128 tracks that transport-level isolation.
+- Follow-up implementation changed `scripts/serial_tcp_bridge.py` so DTR and
+  RTS are explicitly inactive before the COM port is opened. This prevents the
+  host bridge from accidentally holding ESP32-S3 auto-reset or boot lines while
+  the Agent is waiting for application runtime serial traffic.
+- A local pyserial read-only check still saw zero bytes for DTR/RTS inactive,
+  DTR active/RTS inactive, and both active. RTS active/DTR inactive returned
+  `ClearCommError failed`, so the default runtime bridge should keep both
+  control lines inactive. Windows port enumeration showed COM3 as
+  `USB VID:PID=303A:1001 SER=44:1B:F6:E2:94:50`, matching the CoreS3 USB CDC
+  runtime identity.
 - Normal firmware was restored after the minimal profile, and
   `uv run --no-project python scripts/firmware_platformio.py plan --json --port
   COM3` reported `upload_status: current`.

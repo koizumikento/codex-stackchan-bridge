@@ -9,6 +9,33 @@ import time
 import serial
 
 
+def add_control_line_argument(
+    parser: argparse.ArgumentParser,
+    name: str,
+    help_text: str,
+) -> None:
+    parser.add_argument(
+        f"--{name}",
+        choices=("inactive", "active", "unchanged"),
+        default="inactive",
+        help=help_text,
+    )
+
+
+def open_serial_port(args: argparse.Namespace) -> serial.Serial:
+    ser = serial.Serial()
+    ser.port = args.serial_port
+    ser.baudrate = args.baud
+    ser.timeout = 0
+    ser.write_timeout = 0
+    if args.dtr != "unchanged":
+        ser.dtr = args.dtr == "active"
+    if args.rts != "unchanged":
+        ser.rts = args.rts == "active"
+    ser.open()
+    return ser
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Bridge a host serial port to one TCP client."
@@ -28,16 +55,35 @@ def main() -> int:
         action="store_true",
         help="Exit after the first TCP client disconnects.",
     )
+    add_control_line_argument(
+        parser,
+        "dtr",
+        (
+            "DTR state to apply before opening the serial port. The default "
+            "keeps ESP32-S3 auto-reset lines inactive during runtime Agent "
+            "bridging."
+        ),
+    )
+    add_control_line_argument(
+        parser,
+        "rts",
+        (
+            "RTS state to apply before opening the serial port. The default "
+            "keeps ESP32-S3 auto-boot/reset lines inactive during runtime "
+            "Agent bridging."
+        ),
+    )
     args = parser.parse_args()
 
-    with serial.Serial(args.serial_port, args.baud, timeout=0, write_timeout=0) as ser:
+    with open_serial_port(args) as ser:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind((args.host, args.tcp_port))
             server.listen(1)
             print(
                 f"serial_tcp_bridge listening {args.host}:{args.tcp_port} "
-                f"<-> {args.serial_port}@{args.baud}",
+                f"<-> {args.serial_port}@{args.baud} "
+                f"dtr={args.dtr} rts={args.rts}",
                 flush=True,
             )
             while True:
