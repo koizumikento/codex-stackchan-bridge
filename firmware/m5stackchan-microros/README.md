@@ -120,9 +120,10 @@ uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --u
 ```
 
 That profile initializes only `/stackchan/default/device/status` and skips
-optional services, actions, events, and raw telemetry. It is a diagnostic build
-flag, not the normal firmware surface; flash a normal build again after the
-transport/resource isolation smoke.
+optional services, actions, events, raw telemetry, and board hardware adapters
+such as M5/BSP, servo, sensor, audio, and camera initialization. It is a
+diagnostic build flag, not the normal firmware surface; flash a normal build
+again after the transport/resource isolation smoke.
 
 For a narrower command-path smoke after status works, use the core command
 profile:

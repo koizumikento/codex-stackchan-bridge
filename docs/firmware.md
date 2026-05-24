@@ -773,9 +773,11 @@ For transport isolation during hardware bring-up, the PlatformIO helper can
 build a temporary `STACKCHAN_MICROROS_MINIMAL_BRINGUP=1` profile with
 `--microros-minimal-bringup`. That profile initializes only
 `/stackchan/<device_id>/device/status` and skips optional firmware-owned
-services, actions, event publishing, and raw telemetry. Use it only to
-distinguish status/transport failure from entity-count or optional-resource
-pressure, then restore a normal firmware build before validating the standard
+services, actions, event publishing, raw telemetry, and board hardware
+adapters such as M5/BSP, servo, sensor, audio, and camera initialization. Use it
+only to distinguish status/transport failure from entity-count,
+optional-resource, or board-initialization pressure, then restore a normal
+firmware build before validating the standard
 `stackchanctl -> stackchan_bridge -> firmware` command path.
 
 If the minimal profile proves status transport, the temporary

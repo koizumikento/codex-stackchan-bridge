@@ -91,9 +91,11 @@ hardware bring-up issue complete.
   ```
 
   This diagnostic build initializes only
-  `/stackchan/default/device/status`; it should not be used to validate face,
-  motion, audio, camera, events, or raw telemetry. Restore a normal PlatformIO
-  upload before marking the standard bridge command path ready.
+  `/stackchan/default/device/status` and skips board hardware adapters such as
+  M5/BSP, servo, sensor, audio, and camera initialization; it should not be used
+  to validate face, motion, audio, camera, events, or raw telemetry. Restore a
+  normal PlatformIO upload before marking the standard bridge command path
+  ready.
 - Before rebuilding or uploading firmware during repeated smoke work, inspect
   the local PlatformIO state:
 
@@ -1270,6 +1272,20 @@ KOIZUMI-112 diagnostic firmware update:
 - Normal firmware was restored after the minimal profile, and
   `uv run --no-project python scripts/firmware_platformio.py plan --json --port
   COM3` reported `upload_status: current`.
+- Follow-up firmware changes made `--microros-minimal-bringup` skip board
+  hardware adapters before the Agent connection loop. Re-run this profile after
+  building to distinguish a pure USB CDC/XRCE transport problem from a block or
+  crash in M5/BSP, servo, sensor, audio, or camera initialization.
+- With that true minimal profile on COM3, a direct ROS 2 echo of
+  `/stackchan/default/device/status` succeeded through the host serial TCP
+  bridge and same-container micro-ROS Agent. The sample reported
+  `connected: true`, `state: ready`, `firmware_version: bringup`, and the Agent
+  log showed status topic publisher/datawriter creation. This proves the
+  Windows COM3 USB CDC path, serial TCP bridge, container Agent, and status
+  publisher can work when board hardware adapters are skipped.
+- Normal firmware was restored again after the true minimal status check, and
+  `uv run --no-project python scripts/firmware_platformio.py plan --json --port
+  COM3` reported `upload_status: current` with no diagnostic build flags.
 
 ## Cleanup
 

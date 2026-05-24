@@ -468,6 +468,10 @@ uint32_t play_audio_chunks_accepted = 0;
 uint32_t play_audio_chunks_rejected = 0;
 
 void publish_status_heartbeat();
+bool firmware_publish_callback(
+    stackchan::DevicePublisherTopic topic,
+    const void* message,
+    void* user_data);
 stackchan::Result validate_motion_servo_target(
     const stackchan::ServoTarget& target,
     const char* label);
@@ -1031,6 +1035,18 @@ void run_sensor_input_diagnostic_loop(uint32_t now_ms) {
 
   M5.update();
   print_sensor_input_diagnostics(now_ms);
+}
+#endif
+
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+void initialize_minimal_microros_bringup() {
+  stackchan::Result publisher_result =
+      device_publishers.initialize(STACKCHAN_DEVICE_ID);
+  if (!publisher_result.ok) {
+    last_error = publisher_result;
+  }
+  device_publishers.set_publish_callback(firmware_publish_callback);
+  state_machine.booted();
 }
 #endif
 
@@ -6054,6 +6070,10 @@ void setup() {
   print_sensor_input_diag_stage("setup_enter");
   return;
 #endif
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+  initialize_minimal_microros_bringup();
+  return;
+#endif
   servo_adapter_init_result = initialize_servo_adapter();
   stackchan_diag_print("stackchan servo_adapter_init ok=");
   stackchan_diag_print(servo_adapter_init_result.ok ? "true" : "false");
@@ -6114,6 +6134,20 @@ void loop() {
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
   run_sensor_input_diagnostic_loop(static_cast<uint32_t>(now));
   delay(50);
+  return;
+#endif
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+  if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
+    update_agent_connection(try_connect_microros_agent());
+    last_agent_attempt_ms = now;
+  }
+
+  if (now - last_heartbeat_ms >= 1000) {
+    publish_status_heartbeat();
+    last_heartbeat_ms = now;
+  }
+
+  delay(10);
   return;
 #endif
   M5.update();

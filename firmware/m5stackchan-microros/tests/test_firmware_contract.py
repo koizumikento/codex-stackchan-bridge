@@ -237,7 +237,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("if (safety_fault || !recovery_result.ok)", main)
         self.assertIn("copy_bounded(current_motion, sizeof(current_motion), motion_scheduler.name);", main)
         self.assertIn("step_motion_scheduler(now);", main)
-        loop_body = main[main.find("void loop() {") :]
+        loop_body = main[
+            main.find("M5.update();", main.find("void loop() {")) :
+        ]
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("update_servo_health_cache(now);"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("publish_status_heartbeat();"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("spin_command_executor();"))
@@ -761,6 +763,20 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("#define STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP 0", main)
         self.assertIn("Select only one micro-ROS bring-up profile", main)
         self.assertIn("#if STACKCHAN_MICROROS_MINIMAL_BRINGUP", main)
+        self.assertIn("void initialize_minimal_microros_bringup()", main)
+        self.assertIn("initialize_minimal_microros_bringup();", main)
+        minimal_setup = main[
+            main.find("#if STACKCHAN_MICROROS_MINIMAL_BRINGUP", main.find("void setup()"))
+            : main.find("#endif", main.find("initialize_minimal_microros_bringup();"))
+        ]
+        self.assertIn("return;", minimal_setup)
+        minimal_loop = main[
+            main.find("#if STACKCHAN_MICROROS_MINIMAL_BRINGUP", main.find("void loop()"))
+            : main.find("#endif", main.find("delay(10);"))
+        ]
+        self.assertIn("try_connect_microros_agent()", minimal_loop)
+        self.assertIn("publish_status_heartbeat();", minimal_loop)
+        self.assertIn("return;", minimal_loop)
         self.assertIn("#if STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP", main)
         self.assertIn("#if STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP", main)
         self.assertIn("#if STACKCHAN_MICROROS_CORE_AUDIO_SUBSCRIPTION_BRINGUP", main)
