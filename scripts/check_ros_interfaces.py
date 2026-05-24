@@ -26,6 +26,7 @@ EXPECTED_INTERFACES = [
     "srv/GetTranscript.srv",
     "srv/GetStatus.srv",
     "srv/ListEvents.srv",
+    "srv/NextAudioChunk.srv",
     "srv/NextEvent.srv",
     "srv/SetFace.srv",
     "srv/SetHeadPose.srv",
@@ -86,6 +87,15 @@ SERVICE_FIELDS = {
         "stackchan_msgs/Result result",
         "stackchan_msgs/StackChanEvent[<=1] events",
         "string<=36 cursor",
+    ],
+    "NextAudioChunk.srv": [
+        "stackchan_msgs/CommandMeta meta",
+        "uint32 next_sequence",
+        "stackchan_msgs/Result result",
+        "bool has_chunk",
+        "stackchan_msgs/AudioChunk chunk",
+        "bool end_of_stream",
+        "uint32 buffered_chunks",
     ],
     "ClearEventCursor.srv": [
         "stackchan_msgs/CommandMeta meta",
@@ -197,6 +207,10 @@ def main() -> int:
         require("string<=160 message" in text, f"{action.name} missing message feedback")
         if action.name == "MoveHeadPose.action":
             require("bool home" in text, "MoveHeadPose missing home mode flag")
+        if action.name == "PlayAudio.action":
+            require("bool first_chunk_present" in text, "PlayAudio missing first chunk presence")
+            require("uint32 first_chunk_sequence" in text, "PlayAudio missing first chunk sequence")
+            require("uint8[<=1280] first_chunk_pcm" in text, "PlayAudio first chunk bound drifted")
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")

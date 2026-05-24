@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = "/workspaces/codex-stackchan-bridge"
-DEFAULT_IMAGE = "microros/micro-ros-agent:jazzy"
+DEFAULT_IMAGE = "codex-stackchan-microros-agent:jazzy"
+DEFAULT_DOCKERFILE = ".devcontainer/Dockerfile.microros-agent"
 DEFAULT_BAUD = 921600
 DEFAULT_TCP_HOST = "host.docker.internal"
 DEFAULT_TCP_PORT = 11411
@@ -15,12 +17,33 @@ DEFAULT_PTY = "/tmp/stackchan-tty"
 DEFAULT_EVENT_TOPIC = "/stackchan/default/device/events"
 DEFAULT_PUBLIC_EVENT_TOPIC = "/stackchan/default/events"
 DEFAULT_EVENT_TYPE = "stackchan_msgs/msg/StackChanEvent"
+ENV_PASSTHROUGH = (
+    "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
+    "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
+)
+ROS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_build_stamp"
+ROS_MSGS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_stackchan_msgs_build_stamp"
+ROS_BRIDGE_BUILD_STAMP = (
+    f"{WORKSPACE}/install/.stackchan_ros_stackchan_bridge_build_stamp"
+)
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command == "build-image":
+        return run(
+            [
+                "docker",
+                "build",
+                "-f",
+                DEFAULT_DOCKERFILE,
+                "-t",
+                args.image,
+                ".",
+            ]
+        )
     if args.command == "tcp-pty":
         return run_tcp_pty(args)
     if args.command == "tcp-pty-event-echo":
@@ -47,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Agent image to use (default: {DEFAULT_IMAGE}).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "build-image",
+        help="Build the repo micro-ROS Agent image with ABI-aligned ROS 2 deps.",
+    )
 
     tcp_pty = subparsers.add_parser(
         "tcp-pty",
@@ -98,10 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     tcp_pty_sweep.add_argument(
+        "--media-audio-capture-seconds",
+        type=float,
+        default=0.02,
+        help="Audio capture duration used by the hardware media smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-camera-quality",
+        type=int,
+        default=50,
+        help="JPEG quality used by the hardware camera smoke.",
+    )
+    tcp_pty_sweep.add_argument(
         "--skip-build",
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
+    add_ros_smoke_build_arguments(tcp_pty_sweep)
 
     tcp_pty_bridge = subparsers.add_parser(
         "tcp-pty-bridge-smoke",
@@ -121,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
+    add_ros_smoke_build_arguments(tcp_pty_bridge)
     tcp_pty_bridge.add_argument(
         "--disconnect-check",
         action="store_true",
@@ -146,6 +187,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--face-check",
         default="",
         help="Set this face through stackchanctl and verify observe reports it.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--allow-missing-firmware-ready",
+        action="store_true",
+        help=(
+            "Do not fail the smoke when firmware_ready is absent. Use this only "
+            "for diagnostic firmware profiles that intentionally skip the "
+            "firmware event publisher."
+        ),
+    )
+    tcp_pty_bridge.add_argument(
+        "--led-check",
+        action="store_true",
+        help="Run progress, success, and off LED commands through stackchanctl.",
     )
     tcp_pty_bridge.add_argument(
         "--motion-check",
@@ -209,11 +264,171 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_ros_smoke_build_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--clean-ros-build",
+        action="store_true",
+        help=(
+            "Run colcon with --cmake-clean-cache. By default the same-container "
+            "smoke uses an incremental symlink install build."
+        ),
+    )
+    parser.add_argument(
+        "--allow-stale-install",
+        action="store_true",
+        help=(
+            "Allow --skip-build even when ROS source files are newer than the "
+            "last smoke build stamp. Use only for diagnostics."
+        ),
+    )
+
+
+def ros_smoke_setup_script(args: argparse.Namespace) -> str:
+    if args.skip_build and args.clean_ros_build:
+        raise SystemExit("--clean-ros-build cannot be combined with --skip-build")
+    stale_allowed = "1" if args.allow_stale_install else "0"
+    clean_arg = "--cmake-clean-cache" if args.clean_ros_build else ""
+    clean_build_dirs = "1" if args.clean_ros_build else "0"
+    colcon_required = "0" if args.skip_build else "1"
+    if args.skip_build:
+        build_or_guard_script = f"""
+phase_start "skip-build stale install guard" STALE_GUARD
+stale_status=0
+stale_allowable=0
+if [ ! -f {WORKSPACE}/install/setup.bash ]; then
+  echo "install/setup.bash is missing; rerun without --skip-build" >&2
+  stale_status=1
+elif [ ! -f {ROS_MSGS_BUILD_STAMP} ] || [ ! -f {ROS_BRIDGE_BUILD_STAMP} ]; then
+  echo "ROS package build stamps are missing; rerun without --skip-build once to create fresh incremental install stamps" >&2
+  stale_status=1
+  stale_allowable=1
+else
+  stale_paths=$(find ros/stackchan_msgs \\
+    \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+    -o -type f -newer {ROS_MSGS_BUILD_STAMP} -print | head -n 20)
+  bridge_stale_paths=$(find ros/stackchan_bridge \\
+    \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+    -o -type f -newer {ROS_BRIDGE_BUILD_STAMP} -print | head -n 20)
+  if [ -n "$bridge_stale_paths" ]; then
+    stale_paths="${{stale_paths}}${{stale_paths:+
+}}$bridge_stale_paths"
+  fi
+  if [ -n "$stale_paths" ]; then
+    echo "ROS sources are newer than the last smoke build stamp; rerun without --skip-build before trusting this smoke:" >&2
+    printf '%s\\n' "$stale_paths" >&2
+    stale_status=1
+    stale_allowable=1
+  fi
+fi
+if [ "$stale_status" -ne 0 ] && [ "$stale_allowable" = "1" ] && [ "{stale_allowed}" = "1" ]; then
+  echo "WARNING: continuing with stale install because --allow-stale-install was set" >&2
+  stale_status=0
+fi
+phase_end "$stale_status"
+[ "$stale_status" -eq 0 ] || exit "$stale_status"
+"""
+    else:
+        build_or_guard_script = f"""
+phase_start "ROS package build" ROS_BUILD
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_BUILD_STAMP} ]; then
+  echo "resetting ROS package build dirs before symlink-install transition"
+  rm -rf build/stackchan_msgs build/stackchan_bridge
+fi
+msgs_changed=0
+bridge_changed=0
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_MSGS_BUILD_STAMP} ]; then
+  msgs_changed=1
+elif find ros/stackchan_msgs \\
+  \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+  -o -type f -newer {ROS_MSGS_BUILD_STAMP} -print -quit | grep -q .; then
+  msgs_changed=1
+fi
+if [ "{clean_build_dirs}" = "1" ] || [ ! -f {ROS_BRIDGE_BUILD_STAMP} ]; then
+  bridge_changed=1
+elif find ros/stackchan_bridge \\
+  \\( -path '*/__pycache__/*' -o -name '*.pyc' -o -path '*/.pytest_cache/*' \\) -prune \\
+  -o -type f -newer {ROS_BRIDGE_BUILD_STAMP} -print -quit | grep -q .; then
+  bridge_changed=1
+fi
+packages=""
+if [ "$msgs_changed" = "1" ]; then
+  packages="stackchan_msgs stackchan_bridge"
+elif [ "$bridge_changed" = "1" ]; then
+  packages="stackchan_bridge"
+fi
+if [ -z "$packages" ]; then
+  echo "ROS package sources are unchanged; keeping existing symlink install"
+  build_status=0
+else
+  echo "building ROS packages: $packages"
+  colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge --packages-select $packages --symlink-install {clean_arg}
+  build_status=$?
+fi
+if [ "$build_status" -eq 0 ]; then
+  mkdir -p {WORKSPACE}/install
+  if [ "$msgs_changed" = "1" ]; then
+    touch {ROS_MSGS_BUILD_STAMP}
+  fi
+  if [ "$msgs_changed" = "1" ] || [ "$bridge_changed" = "1" ]; then
+    touch {ROS_BRIDGE_BUILD_STAMP}
+  fi
+  touch {ROS_BUILD_STAMP}
+fi
+phase_end "$build_status"
+[ "$build_status" -eq 0 ] || exit "$build_status"
+"""
+    return f"""
+phase_times_file=/tmp/stackchan-smoke-phase-times.log
+: > "$phase_times_file"
+phase_start_epoch=0
+phase_slug=""
+phase_start() {{
+  phase_label="$1"
+  phase_slug="$2"
+  phase_start_epoch=$(date +%s)
+  echo "--- phase: $phase_label ---"
+}}
+phase_end() {{
+  phase_result="$1"
+  phase_end_epoch=$(date +%s)
+  phase_seconds=$((phase_end_epoch - phase_start_epoch))
+  echo "STACKCHAN_SMOKE_PHASE_${{phase_slug}}_SECONDS=$phase_seconds" | tee -a "$phase_times_file"
+  return "$phase_result"
+}}
+print_phase_summary() {{
+  echo "--- smoke phase timing summary ---"
+  cat "$phase_times_file" 2>/dev/null || true
+}}
+
+phase_start "dependency/setup check" SETUP_CHECK
+source /opt/ros/jazzy/setup.bash
+source /uros_ws/install/local_setup.bash
+setup_status=0
+for command_name in socat python3 ros2; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "missing required command '$command_name'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+    setup_status=1
+  fi
+done
+if [ "{colcon_required}" = "1" ] && ! command -v colcon >/dev/null 2>&1; then
+  echo "missing required command 'colcon'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  setup_status=1
+fi
+phase_end "$setup_status"
+[ "$setup_status" -eq 0 ] || exit "$setup_status"
+
+{build_or_guard_script}
+source {WORKSPACE}/install/setup.bash
+"""
+
+
 def run_tcp_pty(args: argparse.Namespace) -> int:
     command = f"""
 set -e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
+command -v socat >/dev/null 2>&1 || {{
+  echo "missing required command 'socat'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  exit 1
+}}
 source /opt/ros/jazzy/setup.bash
 source /uros_ws/install/local_setup.bash
 socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} &
@@ -232,8 +447,10 @@ ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} 
 def run_tcp_pty_event_echo(args: argparse.Namespace) -> int:
     command = f"""
 set -e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
+command -v socat >/dev/null 2>&1 || {{
+  echo "missing required command 'socat'; rebuild the Agent smoke image with: uv run --no-project python scripts/microros_agent_container.py build-image" >&2
+  exit 1
+}}
 source /opt/ros/jazzy/setup.bash
 source /uros_ws/install/local_setup.bash
 source {WORKSPACE}/install/setup.bash
@@ -270,32 +487,10 @@ exit $echo_result
 
 
 def run_tcp_pty_sensor_sweep(args: argparse.Namespace) -> int:
-    build_deps_command = (
-        ""
-        if args.skip_build
-        else (
-            "apt-get install -y --no-install-recommends "
-            "build-essential cmake python3-colcon-common-extensions "
-            "ros-jazzy-geometry-msgs ros-jazzy-rclpy "
-            "ros-jazzy-rosidl-default-generators >/dev/null\n"
-        )
-    )
-    build_command = (
-        ""
-        if args.skip_build
-        else (
-            "colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge "
-            "--packages-select stackchan_msgs stackchan_bridge --cmake-clean-cache\n"
-        )
-    )
+    setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
-{build_deps_command}
-source /opt/ros/jazzy/setup.bash
-source /uros_ws/install/local_setup.bash
-{build_command}source {WORKSPACE}/install/setup.bash
+{setup_script}
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:$PYTHONPATH
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
@@ -303,20 +498,34 @@ socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2
 socat_pid=$!
 agent_pid=
 bridge_pid=
-trap 'kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true' EXIT
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_SMOKE_PHASE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))" | tee -a "$phase_times_file"
+  print_phase_summary
+}}
+trap cleanup EXIT
+phase_start "serial PTY setup" PTY_SETUP
 for i in $(seq 1 50); do
   [ -e {args.pty} ] && break
   sleep 0.1
 done
+phase_end 0
+phase_start "bridge startup" BRIDGE_STARTUP
 "$bridge_node" >/tmp/stackchan-bridge.log 2>&1 &
 bridge_pid=$!
 for i in $(seq 1 80); do
   ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
   sleep 0.25
 done
+phase_end 0
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
 ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
 agent_pid=$!
 sleep 6
+phase_end 0
+phase_start "smoke checks" SMOKE_CHECKS
 
 run_topic_once() {{
   slug="$1"
@@ -352,6 +561,76 @@ run_power_status() {{
   echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_STRUCTURED_ERROR_SEEN=$([ "$power_error_result" -eq 0 ] && echo 1 || echo 0)"
 }}
 
+run_media_smoke() {{
+  prompt_wav=$(mktemp /tmp/stackchan-prompt-XXXXXX.wav)
+  mic_wav=$(mktemp /tmp/stackchan-mic-XXXXXX.wav)
+  frame_jpg=$(mktemp /tmp/stackchan-frame-XXXXXX.jpg)
+  python3 - "$prompt_wav" <<'PY'
+import math
+import sys
+import wave
+
+sample_rate = 16000
+samples = bytearray()
+for index in range(sample_rate // 50):
+    value = int(1200 * math.sin(2 * math.pi * 440 * index / sample_rate))
+    samples.extend(int(value).to_bytes(2, "little", signed=True))
+with wave.open(sys.argv[1], "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(sample_rate)
+    wav.writeframes(bytes(samples))
+PY
+
+  echo "--- stackchanctl audio play smoke ---"
+  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play "$prompt_wav" --json 2>&1)
+  audio_play_result=$?
+  rm -f "$prompt_wav"
+  printf '%s\n' "$audio_play_output"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
+  printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  audio_play_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=$([ "$audio_play_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
+  audio_play_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  echo "--- stackchanctl audio capture smoke ---"
+  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {max(0.001, float(args.media_audio_capture_seconds))} --output "$mic_wav" --json 2>&1)
+  audio_capture_result=$?
+  rm -f "$mic_wav"
+  printf '%s\n' "$audio_capture_output"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=$audio_capture_result"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  audio_capture_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=$([ "$audio_capture_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"MIC_OVERRUN"'
+  audio_capture_mic_overrun_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=$([ "$audio_capture_mic_overrun_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_capture_output" | grep -Eq '"ok": *true'
+  audio_capture_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  echo "--- stackchanctl camera capture smoke ---"
+  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality {min(95, max(1, int(args.media_camera_quality)))} --json 2>&1)
+  camera_result=$?
+  rm -f "$frame_jpg"
+  printf '%s\n' "$camera_output"
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=$camera_result"
+  printf '%s\n' "$camera_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+  camera_unsupported_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN=$([ "$camera_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$camera_output" | grep -Eq '"ok": *true'
+  camera_ok_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=$([ "$camera_ok_result" -eq 0 ] && echo 1 || echo 0)"
+
+  if {{ [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; }} ||
+     {{ [ "$audio_capture_unsupported_result" -ne 0 ] && [ "$audio_capture_mic_overrun_result" -ne 0 ] && [ "$audio_capture_ok_result" -ne 0 ]; }} ||
+     {{ [ "$camera_unsupported_result" -ne 0 ] && [ "$camera_ok_result" -ne 0 ]; }}; then
+    result=1
+  fi
+}}
+
 echo "--- stackchanctl observe ---"
 observe_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json 2>&1)
 observe_result=$?
@@ -368,14 +647,19 @@ ros2 topic list -t | grep stackchan || true
 echo "--- stackchan services ---"
 ros2 service list -t | grep stackchan || true
 
+stimulus_window_ran=0
 if [ "{max(0, int(args.stimulus_window_seconds))}" -gt 0 ]; then
+  stimulus_window_ran=1
   echo "--- manual hardware stimulus window ({max(0, int(args.stimulus_window_seconds))}s) ---"
-  echo "Apply IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
+  echo "Apply button, IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
   sleep {max(0, int(args.stimulus_window_seconds))}
 fi
+echo "STACKCHAN_EVENT_STIMULUS_WINDOW_RAN=$stimulus_window_ran"
 
 run_topic_once "device_touch" "/stackchan/default/device/touch/state" "stackchan_msgs/msg/TouchState"
 run_topic_once "public_touch" "/stackchan/default/touch/state" "stackchan_msgs/msg/TouchState"
+run_topic_once "device_imu_raw" "/stackchan/default/device/imu/raw" "stackchan_msgs/msg/ImuRaw"
+run_topic_once "public_imu_raw" "/stackchan/default/imu/raw" "stackchan_msgs/msg/ImuRaw"
 run_topic_once "device_proximity" "/stackchan/default/device/proximity/raw" "stackchan_msgs/msg/ProximityRaw"
 run_topic_once "public_proximity" "/stackchan/default/proximity/raw" "stackchan_msgs/msg/ProximityRaw"
 run_topic_once "device_light" "/stackchan/default/device/light/raw" "stackchan_msgs/msg/LightRaw"
@@ -383,6 +667,7 @@ run_topic_once "public_light" "/stackchan/default/light/raw" "stackchan_msgs/msg
 run_topic_once "device_power" "/stackchan/default/device/power/status" "stackchan_msgs/msg/PowerStatus"
 run_topic_once "public_power" "/stackchan/default/power/status" "stackchan_msgs/msg/PowerStatus"
 run_power_status
+run_media_smoke
 run_topic_once "device_events" "/stackchan/default/device/events" "stackchan_msgs/msg/StackChanEvent"
 run_topic_once "public_events" "/stackchan/default/events" "stackchan_msgs/msg/StackChanEvent"
 
@@ -399,13 +684,21 @@ classify_event_stimulus() {{
   if printf '%s\n' "$events_output" | grep -Eq "$pattern"; then
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=PASS"
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=1"
+  elif [ "$stimulus_window_ran" -eq 0 ]; then
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=NOT_RUN"
+    echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=0"
   else
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_STATUS=UNAVAILABLE"
     echo "STACKCHAN_EVENT_STIMULUS_${{slug}}_EVENT_SEEN=0"
   fi
 }}
 
+classify_event_stimulus "BUTTON" '"button_pressed"|"button_released"|"button_held"'
 classify_event_stimulus "IMU" '"picked_up"|"placed_down"|"shaken"|"tilted"|"face_up"|"face_down"'
+classify_event_stimulus "TOUCH" '"touched"|"touch_released"|"touch_held"'
+classify_event_stimulus "PROXIMITY" '"proximity_near"|"proximity_clear"'
+classify_event_stimulus "LIGHT" '"light_changed"|"dark_detected"|"bright_detected"'
+classify_event_stimulus "POWER" '"battery_low"|"battery_recovered"|"charging_started"|"charging_stopped"|"power_source_changed"|"brownout_risk"|"power_fault"'
 classify_event_stimulus "NFC" '"nfc_detected"|"nfc_removed"|"nfc_read_failed"'
 classify_event_stimulus "IR" '"remote_button_pressed"|"remote_button_released"|"remote_button_held"|"remote_command_received"|"ir_transmit_started"|"ir_transmit_finished"|"ir_transmit_failed"'
 
@@ -426,6 +719,7 @@ echo "--- micro-ROS Agent tail ---"
 tail -n 120 /tmp/stackchan-agent.log || true
 echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
+phase_end "$result"
 exit $result
 """
     return docker_run(
@@ -438,9 +732,11 @@ exit $result
 
 def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     disconnect_check = "1" if args.disconnect_check or args.reconnect_check else "0"
+    allow_missing_firmware_ready = "1" if args.allow_missing_firmware_ready else "0"
     reconnect_check = "1" if args.reconnect_check else "0"
     disconnect_face_command = args.disconnect_face_command.strip()
     face_check = args.face_check.strip()
+    led_check = "1" if args.led_check else "0"
     motion_check = args.motion_check.strip()
     motion_disconnect_check = args.motion_disconnect_check.strip()
     motion_expected_error = args.motion_expected_error.strip()
@@ -452,32 +748,10 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     home_check = "1" if args.home_check else "0"
     soak_seconds = max(0, int(args.soak_seconds))
     soak_interval_seconds = max(1, int(args.soak_interval_seconds))
-    build_deps_command = (
-        ""
-        if args.skip_build
-        else (
-            "apt-get install -y --no-install-recommends "
-            "build-essential cmake python3-colcon-common-extensions "
-            "ros-jazzy-geometry-msgs ros-jazzy-rclpy "
-            "ros-jazzy-rosidl-default-generators >/dev/null\n"
-        )
-    )
-    build_command = (
-        ""
-        if args.skip_build
-        else (
-            "colcon build --base-paths ros/stackchan_msgs ros/stackchan_bridge "
-            "--packages-select stackchan_msgs stackchan_bridge --cmake-clean-cache\n"
-        )
-    )
+    setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
-apt-get update >/dev/null
-apt-get install -y --no-install-recommends socat >/dev/null
-{build_deps_command}
-source /opt/ros/jazzy/setup.bash
-source /uros_ws/install/local_setup.bash
-{build_command}source {WORKSPACE}/install/setup.bash
+{setup_script}
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:${{PYTHONPATH:-}}
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
@@ -485,20 +759,34 @@ socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2
 socat_pid=$!
 agent_pid=
 bridge_pid=
-trap 'kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true' EXIT
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_SMOKE_PHASE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))" | tee -a "$phase_times_file"
+  print_phase_summary
+}}
+trap cleanup EXIT
+phase_start "serial PTY setup" PTY_SETUP
 for i in $(seq 1 50); do
   [ -e {args.pty} ] && break
   sleep 0.1
 done
+phase_end 0
+phase_start "bridge startup" BRIDGE_STARTUP
 "$bridge_node" >/tmp/stackchan-bridge.log 2>&1 &
 bridge_pid=$!
 for i in $(seq 1 80); do
   ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
   sleep 0.25
 done
+phase_end 0
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
 ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
 agent_pid=$!
 sleep 5
+phase_end 0
+phase_start "smoke checks" SMOKE_CHECKS
 echo "--- stackchanctl observe ---"
 python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json
 observe_result=$?
@@ -523,6 +811,20 @@ echo "STACKCHAN_BRIDGE_STATUS_ATTEMPTS=$status_attempt"
 [ "$status_result" -eq 0 ] || result=1
 echo "STACKCHAN_BRIDGE_STATUS_CONNECTED=$([ "$status_connected_result" -eq 0 ] && echo 1 || echo 0)"
 [ "$status_connected_result" -eq 0 ] || result=1
+if [ "{led_check}" = "1" ]; then
+  for led_pattern in progress success off; do
+    echo "--- stackchanctl led $led_pattern ---"
+    led_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} led "$led_pattern" --json 2>&1)
+    led_result=$?
+    printf '%s\n' "$led_output"
+    echo "STACKCHAN_BRIDGE_LED_${{led_pattern}}_EXIT=$led_result"
+    [ "$led_result" -eq 0 ] || result=1
+    printf '%s\n' "$led_output" | grep -q '"ok": true'
+    led_ok_result=$?
+    echo "STACKCHAN_BRIDGE_LED_${{led_pattern}}_OK=$([ "$led_ok_result" -eq 0 ] && echo 1 || echo 0)"
+    [ "$led_ok_result" -eq 0 ] || result=1
+  done
+fi
 if [ -n "{face_check}" ]; then
   echo "--- stackchanctl face {face_check} ---"
   face_output=""
@@ -611,7 +913,6 @@ if [ "{1 if pose_check else 0}" = "1" ]; then
   pose_status_result=$?
   printf '%s\n' "$pose_status_output"
   echo "STACKCHAN_BRIDGE_POSE_STATUS_EXIT=$pose_status_result"
-  [ "$pose_status_result" -eq 0 ] || result=1
   printf '%s\n' "$pose_status_output" | grep -q '"pan_deg": {pose_pan}'
   pose_pan_seen_result=$?
   printf '%s\n' "$pose_status_output" | grep -q '"tilt_deg": {pose_tilt}'
@@ -637,7 +938,6 @@ if [ "{home_check}" = "1" ]; then
   home_status_result=$?
   printf '%s\n' "$home_status_output"
   echo "STACKCHAN_BRIDGE_HOME_STATUS_EXIT=$home_status_result"
-  [ "$home_status_result" -eq 0 ] || result=1
   printf '%s\n' "$home_status_output" | grep -q '"pan_deg": 0.0'
   home_pan_seen_result=$?
   printf '%s\n' "$home_status_output" | grep -q '"tilt_deg": 0.0'
@@ -776,7 +1076,9 @@ echo "STACKCHAN_BRIDGE_EVENTS_EXIT=$events_result"
 printf '%s\\n' "$events_output" | grep -q 'firmware_ready'
 firmware_ready_result=$?
 echo "STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$([ "$firmware_ready_result" -eq 0 ] && echo 1 || echo 0)"
-[ "$firmware_ready_result" -eq 0 ] || result=1
+if [ "{allow_missing_firmware_ready}" != "1" ]; then
+  [ "$firmware_ready_result" -eq 0 ] || result=1
+fi
 if [ "{reconnect_check}" = "1" ]; then
   device_connected_count=$(printf '%s\n' "$events_output" | grep -c 'device_connected')
   device_disconnected_count=$(printf '%s\n' "$events_output" | grep -c 'device_disconnected')
@@ -799,6 +1101,7 @@ echo "--- micro-ROS Agent motion reconnect tail ---"
 tail -n 120 /tmp/stackchan-agent-motion-reconnect.log || true
 echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
+phase_end "$result"
 exit $result
 """
     return docker_run(
@@ -832,6 +1135,10 @@ def docker_run(
     workdir: str | None = None,
 ) -> int:
     docker_args = ["docker", "run", "--rm", "--net=host"]
+    for name in ENV_PASSTHROUGH:
+        value = os.environ.get(name)
+        if value is not None:
+            docker_args.extend(["-e", f"{name}={value}"])
     for device in devices or []:
         docker_args.append(f"--device={device}")
     if mount_workspace:
@@ -840,6 +1147,11 @@ def docker_run(
         docker_args.extend(["-w", workdir])
     docker_args.extend(["--entrypoint", "/bin/bash", image, "-lc", command])
     completed = subprocess.run(docker_args, cwd=ROOT, check=False)
+    return int(completed.returncode)
+
+
+def run(command: list[str]) -> int:
+    completed = subprocess.run(command, cwd=ROOT, check=False)
     return int(completed.returncode)
 
 

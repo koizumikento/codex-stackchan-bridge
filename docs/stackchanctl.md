@@ -203,6 +203,11 @@ metadata-only results. The bridge backend may return structured
 `UNSUPPORTED_FEATURE` results for audio and camera until firmware-confirmed
 transport exists.
 
+IR transmit is not part of the normal CLI or MCP command surface. Firmware may
+publish bounded `ir_transmit_*` diagnostic events for explicitly contracted
+local adapters, but `stackchanctl`, MCP tools, and normal logs must not expose
+raw IR codes, protocol dumps, or arbitrary transmit payloads.
+
 `nfc wait` remains a CLI/human observation surface until the bridge exposes a
 bounded NFC wait facade. MCP clients should use event tools for NFC-related
 observations for now.
@@ -528,22 +533,61 @@ stackchanctl audio capture --seconds 3 --output mic.wav
 ```
 
 Device exchange should use PCM 16 kHz mono 16-bit, even if the CLI accepts or writes WAV files for human convenience.
+For bridge-backed playback, `stackchanctl audio play <path>` accepts PCM S16LE
+16 kHz mono WAV input (`.wav`) or raw PCM input (`.pcm`). It does not read or
+publish the file while firmware status reports `audio_playback` unavailable, so
+metadata-only unsupported smokes do not require a real audio file.
 
 Audio CLI and MCP results expose metadata only: `device_id`, `command_id`,
 `result_state`, input/output path, duration, byte count, format, sample rate,
 channels, and structured `error` fields. They must not include PCM payloads,
 speech text, transcript text, or raw audio bytes.
 
-Playback and capture share `/stackchan/<device_id>/device/audio/chunks` only
-through `device_id`, `command_id`, `direction`, and monotonic `sequence`.
-Backpressure is not acknowledged per chunk. Malformed chunks, wrong direction,
-wrong command id, sequence gaps, overrun, underrun, and disconnects are
-structured command results or events.
+Playback chunks use `/stackchan/<device_id>/device/audio/playback/chunks`;
+capture chunks use `/stackchan/<device_id>/device/audio/chunks`. Both paths are
+keyed by `device_id`, `command_id`, `direction`, and monotonic `sequence`.
+Both topics use best-effort, volatile, keep-last-8 QoS. Backpressure is not
+acknowledged per chunk. Malformed chunks, wrong direction, wrong command id,
+sequence gaps, overrun, underrun, and disconnects are structured command results
+or events.
 
-The current bridge backend rejects audio play/capture with
-`UNSUPPORTED_FEATURE` until firmware-confirmed device transport exists. CLI JSON
-still reports the baseline metadata contract and never includes PCM bytes. The
-mock backend keeps deterministic responses for CLI development.
+The bridge backend accepts audio play/capture only after firmware status reports
+`audio_playback` or `audio_capture` as available. Devices without
+firmware-confirmed audio transport still return `UNSUPPORTED_FEATURE`. CLI JSON
+reports the baseline metadata contract and never includes PCM bytes. The mock
+backend keeps deterministic responses for CLI development.
+When `audio_playback` is available, the bridge backend sends the public
+`PlayAudio` action, then publishes playback chunks with the same `command_id`
+on `/stackchan/<device_id>/cmd/audio/chunks` starting at sequence `0`. The
+bridge buffers those command-ingress chunks and relays them to
+`/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
+the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
+The bridge also serves the same buffered chunks through
+`/stackchan/<device_id>/audio/playback/next_chunk`; current firmware pulls from
+that helper after action acceptance and still validates sequence, format, and
+payload bounds before speaker playback.
+Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
+bridge; the bridge owns device-session arming and must not rely on a fixed
+sleep before forwarding to firmware. Invalid or unsupported input files return
+structured errors; PCM bytes are never printed in normal output.
+For KOIZUMI-111 diagnostics, developers can set
+`STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
+`64` to move the first playback segment into the action goal. Developers can
+also set `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES` to an even byte count such as
+`64` to split remaining CLI-origin playback transport chunks below the normal
+20 ms / 640 byte cadence while diagnosing serial micro-ROS payload limits. The
+defaults are `0` first-goal bytes and `640` topic/pull chunk bytes; these
+diagnostic settings are local bring-up knobs, not a stable user-facing audio
+quality contract.
+
+When `audio_capture` is available, the bridge backend subscribes to
+`/stackchan/<device_id>/device/audio/chunks` before sending the public
+`CaptureAudio` action, collects only `AudioChunk(direction=CAPTURE)` messages
+with the matching `device_id` and `command_id`, and writes the collected PCM to
+the requested WAV output path. Missing chunks, malformed metadata, odd byte
+lengths, or sequence gaps return structured audio capture errors. Captured PCM
+bytes are written only to the explicit output file and are not printed in
+normal output, JSON, events, or diagnostics.
 
 Audio command results should distinguish transport/session acceptance from
 playback or capture completion. For example, a future `audio play --json` result
@@ -571,10 +615,18 @@ Baseline camera capture is snapshot-only QVGA JPEG with `quality=1..95` and max
 payload 96 KiB. Continuous streaming, follow mode, and video-like frame
 sequences require a separate contract.
 
-The current bridge backend rejects camera capture with `UNSUPPORTED_FEATURE`
-until firmware-confirmed device transport exists. CLI JSON still reports the
-baseline QVGA JPEG metadata contract and never includes JPEG bytes. The mock
-backend keeps deterministic camera validation behavior for CLI development.
+The bridge backend rejects camera capture with `UNSUPPORTED_FEATURE` until
+firmware status reports `camera_snapshot` as available, then forwards the goal
+through `/stackchan/<device_id>/cmd/camera/capture` to
+`/stackchan/<device_id>/device/camera/capture` and writes the returned JPEG
+payload to the explicit `--output` file. Missing, empty, non-JPEG, or oversized
+payloads return structured camera capture errors. CLI JSON still reports the
+baseline QVGA JPEG metadata contract and never includes JPEG bytes or base64.
+If the firmware-owned camera action accepts a goal but does not deliver a
+result before the bridge media-action timeout, the bridge reports
+`CAMERA_CAPTURE_FAILED` instead of surfacing an unclassified CLI `TIMEOUT`.
+The mock backend keeps deterministic camera validation behavior for CLI
+development.
 
 Camera command results should distinguish request acceptance from image
 availability. A future implementation can accept a capture goal, then return
@@ -791,6 +843,11 @@ Environment variables may override convenience settings for automation:
 - `STACKCHANCTL_OUTPUT`
 - `STACKCHANCTL_LOG_LEVEL`
 - `STACKCHANCTL_SOURCE`
+
+Audio bring-up diagnostics may also use:
+
+- `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES`
+- `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES`
 
 ## Mock backend
 

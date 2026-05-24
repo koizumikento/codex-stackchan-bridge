@@ -305,6 +305,11 @@ Fields:
 - `mag`
 - `temperature`
 
+The current K151 bring-up publishes this stream at the firmware scheduler's
+10 Hz cadence when the CoreS3 IMU is available. High-level posture/activity
+events remain separate on `/stackchan/<device_id>/device/events`, preserving the
+rule that raw samples do not appear in `observe` or normal event payloads.
+
 ### `/stackchan/<device_id>/touch/state`
 
 Purpose: public bridge-facing three-zone touch state for the official StackChan K151 body touch panel.
@@ -591,10 +596,103 @@ Rules:
   diagnostic path.
 - Firmware normal diagnostics must not print raw `payload_json` values that can
   bypass bridge redaction.
+- K151 bring-up firmware sources high-level IMU, NFC, and IR/remote events from
+  device adapters while keeping raw IMU samples, raw NFC IDs/UIDs, and raw IR
+  codes out of public events. StackChan-BSP 1.1.0 has examples rather than
+  dedicated NFC/IR wrapper members: NFC follows the BSP `M5UnitUnifiedNFC` on
+  `M5.In_I2C` example, and IR follows the BSP `IRremoteESP8266` GPIO 10 receive
+  example. These adapters may expose only safe diagnostic metadata such as
+  bus/pin selection, I2C object availability, and counters. NFC uses `tag_ref`;
+  IR uses `remote_ref`.
+
+### `/stackchan/<device_id>/cmd/audio/chunks`
+
+Purpose: carry bounded CLI-origin playback chunks from `stackchanctl` to the
+bridge. This is a command payload ingress, not a firmware-owned topic. The
+bridge buffers chunks by `device_id` and `command_id`, then relays them to
+`/stackchan/<device_id>/device/audio/playback/chunks` only after the matching
+firmware-owned playback action goal is accepted. A local diagnostic mode may
+move sequence `0` into the public `PlayAudio` goal instead of this ingress
+topic while the first-payload handoff is being validated.
+The bridge also exposes
+`/stackchan/<device_id>/audio/playback/next_chunk` so firmware can pull the
+next bounded chunk after action acceptance when serial micro-ROS topic delivery
+is unreliable.
+
+Fields and bounds are the same as
+`/stackchan/<device_id>/device/audio/playback/chunks`.
+This ingress accepts `direction=PLAYBACK` only. Capture chunks are firmware
+observations and must not be published on this command topic.
+QoS is best effort, volatile, keep last 8.
+
+### `/stackchan/<device_id>/device/audio/playback/chunks`
+
+Purpose: carry bounded playback audio chunks from the bridge to firmware for
+playback flows coordinated by `/stackchan/<device_id>/device/audio/play`.
+
+Fields, IDL constraints, baseline format, and QoS are the same as
+`/stackchan/<device_id>/device/audio/chunks`. This firmware-owned input topic
+accepts `direction=PLAYBACK` only. It is separate from capture output so the
+firmware does not need to publish and subscribe on the same audio chunk topic
+while micro-ROS is running over serial.
+
+`sequence` is monotonic per `command_id` plus `direction`. At most one playback
+session may be active per device; same-direction concurrent sessions are
+rejected with `FIRMWARE_BUSY`. Malformed chunk size, wrong `direction`, wrong
+`command_id`, sequence gaps, and disconnects mid-stream are structured
+result/event conditions. A small first PLAYBACK payload may be handed to
+firmware in the `/stackchan/<device_id>/device/audio/play` action goal as
+`first_chunk_sequence=0` plus `first_chunk_pcm`; this is currently a local
+diagnostic path, disabled by default. Physical hardware smokes showed that a
+64 byte first-goal payload can be accepted, while 320 byte and 640 byte
+payload transfers still time out or stall on the serial micro-ROS path.
+Remaining playback chunks, if any, continue on this topic starting at the next
+sequence. The CLI bridge backend may temporarily split diagnostic playback
+transport chunks below the normal 640 byte cadence to isolate payload-size
+limits, but this is not a new high-level audio quality mode.
+Before relaying buffered topic chunks, the bridge may wait briefly for the
+firmware subscription to be matched because the topic is best-effort and
+volatile. Firmware must ignore duplicate chunks whose sequence is already
+accepted for the active `command_id`.
+
+### `/stackchan/<device_id>/audio/playback/next_chunk`
+
+Purpose: bridge-owned playback helper service used by firmware to request the
+next CLI-origin playback chunk for an already accepted
+`/stackchan/<device_id>/device/audio/play` session. This is not a Codex command
+surface and does not live under `/cmd`; it is also not firmware-owned and does
+not live under `/device`.
+
+Request fields:
+
+- `meta`
+- `next_sequence`
+
+Response fields:
+
+- `result`
+- `has_chunk`
+- `chunk`
+- `end_of_stream`
+- `buffered_chunks`
+
+Rules:
+
+- `meta.device_id` and `meta.command_id` identify the active playback session.
+- The bridge returns at most one `AudioChunk(direction=PLAYBACK)` with bounded
+  PCM payload.
+- `has_chunk=false` with an accepted `result` means no matching chunk is
+  currently buffered; firmware may retry on a bounded cadence.
+- `end_of_stream=true` is advisory and only applies after the bridge has closed
+  the matching playback relay session.
+- Firmware still validates `device_id`, `command_id`, direction, format,
+  sequence, and payload size before playback. The service is a transport
+  helper, not a raw speaker control.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
-Purpose: carry bounded audio chunks for playback or capture flows coordinated by actions.
+Purpose: carry bounded capture audio chunks from firmware to bridge for capture
+flows coordinated by actions.
 
 Fields:
 
@@ -617,15 +715,13 @@ IDL constraints:
 - 20 ms chunks are 640 bytes.
 - 40 ms chunks are 1280 bytes and are the maximum baseline chunk size.
 
-Playback and capture share the same chunk topic because `direction` and
-`command_id` disambiguate flows. `sequence` is monotonic per `command_id` plus
-`direction`. The baseline permits at most one playback session and one capture
-session per device; same-direction concurrent sessions are rejected with
-`FIRMWARE_BUSY`. Backpressure is not acknowledged per chunk; if a receiver
-overruns, it drops the current chunk, publishes a structured event/error, and
-keeps the flow recoverable. Malformed chunk size, wrong `direction`, wrong
-`command_id`, sequence gaps, and disconnects mid-stream are structured
-result/event conditions.
+This firmware-owned output topic publishes `direction=CAPTURE` chunks only.
+Backpressure is not acknowledged per chunk; if a receiver overruns, it drops the
+current chunk, publishes a structured event/error, and keeps the flow
+recoverable. Malformed chunk size, wrong `direction`, wrong `command_id`,
+sequence gaps, and disconnects mid-stream are structured result/event
+conditions. QoS is best effort, volatile, keep last 8. The chunk stream is
+bounded and has no per-chunk acknowledgement.
 
 ## Baseline services
 
@@ -680,6 +776,9 @@ Rules:
 - Unknown patterns return `UNKNOWN_COMMAND`.
 - LED firmware policy owns brightness/current limits. LED work must be
   non-blocking and must not delay safety, fault, or motion neutral handling.
+- On connected hardware, the bridge forwards validated facade requests to
+  `/stackchan/<device_id>/device/led/set` and reports the firmware result.
+  Bridge-only LED simulation must not be reported as physical LED success.
 
 ### `/stackchan/<device_id>/cmd/get_status`
 
@@ -965,12 +1064,52 @@ Rules:
 
 Purpose: play speech or prompt audio on the device speaker.
 
-Do not put large PCM payloads in a single service request. Coordinate playback with this action and send payload through `/stackchan/<device_id>/device/audio/chunks`.
+Do not put large PCM payloads in a single service request. Coordinate playback
+with this action and send CLI-origin payload through
+`/stackchan/<device_id>/cmd/audio/play` plus the bounded chunk path. The public
+playback action goal may carry a small first PCM payload as
+`first_chunk_present=true`, `first_chunk_sequence=0`, and
+`first_chunk_pcm` bounded to the same 1280 byte maximum as `AudioChunk.pcm`.
+The CLI baseline leaves this field empty and sends all playback chunks through
+the bounded chunk path. Developers may opt into a small first-goal payload for
+local diagnostics, but it must remain bounded and must not become the
+high-volume payload path. The bridge forwards any first-goal payload inside the
+firmware-owned playback action goal, then relays accepted remaining chunks to
+`/stackchan/<device_id>/device/audio/playback/chunks` only after the
+firmware-owned playback action goal is accepted.
+The bridge accepts and forwards the public action to
+`/stackchan/<device_id>/device/audio/play` only after firmware status reports
+`audio_playback` as available. Missing device action servers return structured
+transport or timeout results, not synthetic success.
 
-The bridge scaffold rejects playback goals with `UNSUPPORTED_FEATURE` until it
-can return success only after firmware-confirmed device transport acceptance.
+The bridge accepts playback goals only when firmware status reports
+`audio_playback` as available. Otherwise it rejects playback goals with
+`UNSUPPORTED_FEATURE` until it can return success only after
+firmware-confirmed device transport acceptance.
 Implementations must keep actual PCM chunks on the bounded audio chunk path and
 must not inline bytes in action results, MCP output, events, or normal logs.
+The CLI/bridge playback path may validate the action/capability before opening
+the local audio file, so unsupported hardware smokes can remain metadata-only.
+Once `audio_playback` is available, CLI-origin playback chunks use the accepted
+`command_id` and monotonic `sequence` values on
+`/stackchan/<device_id>/cmd/audio/chunks`. When the diagnostic first-goal
+payload path is enabled, topic chunks start at the next sequence instead. The
+bridge may buffer bounded chunks for a pending command, but it must forward
+them to `/stackchan/<device_id>/device/audio/playback/chunks` only while the
+matching firmware-owned playback session is active.
+Firmware may alternatively pull the next buffered chunk through the
+bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper after
+action acceptance. This helper keeps PCM out of action goals while avoiding
+best-effort topic delivery as the only playback ingress.
+The bridge may mark the pull stream end-of-stream after the CLI-origin chunk
+input has been idle for a bounded interval and the buffered queue is empty; it
+must not wait for the device action result callback before exposing
+`end_of_stream=true`, because firmware may need that observation to finish the
+action.
+The bridge must not use the short synchronous device-command timeout for media
+action result delivery. Playback and capture need a media-action timeout, 35
+seconds by default in the bridge, large enough for goal acceptance, firmware
+buffering, chunk transfer, and terminal result delivery.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
@@ -984,6 +1123,13 @@ Privacy and result rules:
   not that speaker output has completed. Playback start, queued depth,
   completion, underrun, and terminal failure should be observable through action
   feedback, status, or bounded events.
+- Firmware must not mark playback completed solely because the speaker has
+  drained after one accepted chunk. Completion requires end-of-stream plus
+  speaker drain; missing next chunks are `AUDIO_UNDERRUN` after a bounded
+  inter-chunk timeout.
+- Device-side playback chunks are valid only for an active firmware-owned
+  playback session with a matching `command_id`. Firmware must reject orphaned
+  chunks rather than treating the chunk topic as a raw speaker-control command.
 - Playback underrun returns `AUDIO_UNDERRUN` and stops playback.
 - Mic overrun drops the current chunk and publishes `MIC_OVERRUN`; capture may
   continue unless the failure is terminal.
@@ -1047,10 +1193,20 @@ Baseline camera behavior:
   only; they must not inline base64, JPEG bytes, or image payloads
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
   `recoverable=true` unless a later contract adds a narrower error code
-- timeout returns a structured `TIMEOUT` or `CAMERA_CAPTURE_FAILED` result
-- the bridge scaffold rejects capture goals with `UNSUPPORTED_FEATURE` until it
-  can return success only after firmware-confirmed device transport acceptance;
-  result transport must enforce the 96 KiB maximum before exposing metadata to
+- timeout returns a structured `CAMERA_CAPTURE_FAILED` result when the device
+  camera action accepted the goal but did not deliver a result within the
+  bridge media-action timeout
+- the bridge rejects capture goals with `UNSUPPORTED_FEATURE` until firmware
+  status reports `camera_snapshot` as available
+- after capability confirmation, the bridge forwards the goal to
+  `/stackchan/<device_id>/device/camera/capture`; missing or rejecting device
+  action servers return structured transport/rejection results, while accepted
+  device goals that time out before result delivery return bounded
+  `CAMERA_CAPTURE_FAILED` instead of an unclassified CLI timeout
+- the bridge uses the media-action timeout for camera result delivery because
+  firmware frame acquisition and JPEG encoding may exceed the short synchronous
+  service timeout
+- result transport must enforce the 96 KiB maximum before exposing metadata to
   callers
 
 ### `/stackchan/<device_id>/cmd/perform`
@@ -1117,12 +1273,17 @@ Feedback fields:
 - `message`
 
 Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
+The bridge accepts and forwards the public action to
+`/stackchan/<device_id>/device/audio/capture` only after firmware status reports
+`audio_capture` as available. Missing device action servers return structured
+transport or timeout results, not synthetic success.
 
-The bridge scaffold rejects microphone capture goals with `UNSUPPORTED_FEATURE`
-until it can return success only after firmware-confirmed device transport
-acceptance. Captured chunks remain on the bounded audio chunk path and must not
-be surfaced as raw bytes in action summaries, MCP output, events, or normal
-logs.
+The bridge accepts microphone capture goals only when firmware status reports
+`audio_capture` as available. Otherwise it rejects capture goals with
+`UNSUPPORTED_FEATURE` until it can return success only after
+firmware-confirmed device transport acceptance. Captured chunks remain on the
+bounded audio chunk path and must not be surfaced as raw bytes in action
+summaries, MCP output, events, or normal logs.
 
 Baseline chunk policy:
 
@@ -1187,6 +1348,8 @@ Baseline QoS:
 - `/stackchan/<device_id>/device/power/status`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/motion/pose`: reliable, transient local, keep last 1.
 - `/stackchan/<device_id>/device/motion/pose`: reliable, volatile, keep last 2.
+- `/stackchan/<device_id>/cmd/audio/chunks`: best effort, volatile, keep last 8.
+- `/stackchan/<device_id>/device/audio/playback/chunks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - Service and action request/response paths use reliable QoS.
 - Safety/fault signals use reliable QoS and must not be blocked by camera or audio work.

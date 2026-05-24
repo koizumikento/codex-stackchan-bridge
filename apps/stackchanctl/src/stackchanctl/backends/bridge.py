@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
 import math
+import os
+from pathlib import Path
+import time
 from typing import Any, Protocol
+import wave
 
 from stackchanctl.backends.mock import validate_common_request
 from stackchanctl.contract import (
@@ -66,6 +70,45 @@ SENSITIVE_EVENT_MARKERS = (
     "token",
 )
 SENSITIVE_EVENT_KEY_PARTS = ("transcript", "speech_text")
+AUDIO_PLAYBACK_DIRECTION = 1
+AUDIO_CAPTURE_DIRECTION = 2
+AUDIO_PCM_S16LE_FORMAT = 1
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CHANNELS = 1
+AUDIO_CHUNK_BYTES = 640
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 0
+AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
+AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
+AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 1
+CAMERA_JPEG_FORMAT = "jpeg"
+CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
+
+
+def _audio_playback_first_goal_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    return min(max(value, 0), AUDIO_CHUNK_BYTES)
+
+
+def _audio_playback_chunk_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_CHUNK_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_CHUNK_BYTES
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_CHUNK_BYTES
+    value = min(max(value, 2), AUDIO_CHUNK_BYTES)
+    if value % 2:
+        value -= 1
+    return max(value, 2)
 
 
 class BridgeBackendError(RuntimeError):
@@ -84,6 +127,55 @@ class BridgeCommandResponse:
     ok: bool
     result_state: ResultState
     error: ErrorDetail | None = None
+
+
+class _AudioCaptureCollector:
+    def __init__(self, device_id: str, command_id: str) -> None:
+        self.device_id = device_id
+        self.command_id = command_id
+        self._chunks: dict[int, bytes] = {}
+        self.error: ErrorDetail | None = None
+
+    def handle_chunk(self, message) -> None:
+        if getattr(message, "device_id", "") != self.device_id:
+            return
+        if getattr(message, "command_id", "") != self.command_id:
+            return
+        if int(getattr(message, "direction", 0)) != AUDIO_CAPTURE_DIRECTION:
+            return
+        if (
+            int(getattr(message, "format", 0)) != AUDIO_PCM_S16LE_FORMAT
+            or int(getattr(message, "sample_rate", 0)) != AUDIO_SAMPLE_RATE
+            or int(getattr(message, "channels", 0)) != AUDIO_CHANNELS
+        ):
+            self.error = ErrorDetail(
+                code="MALFORMED_AUDIO_CHUNK",
+                message="audio capture chunk metadata did not match PCM S16LE 16 kHz mono",
+                recoverable=True,
+            )
+            return
+        pcm = bytes(getattr(message, "pcm", b""))
+        if len(pcm) % 2:
+            self.error = ErrorDetail(
+                code="MALFORMED_AUDIO_CHUNK",
+                message="audio capture chunk had an odd byte length",
+                recoverable=True,
+            )
+            return
+        self._chunks[int(getattr(message, "sequence", 0))] = pcm
+
+    def pcm(self) -> bytes:
+        if not self._chunks:
+            return b""
+        expected = list(range(max(self._chunks) + 1))
+        if sorted(self._chunks) != expected:
+            self.error = ErrorDetail(
+                code="AUDIO_CAPTURE_FAILED",
+                message="audio capture chunks were not contiguous",
+                recoverable=True,
+            )
+            return b""
+        return b"".join(self._chunks[index] for index in expected)
 
 
 class BridgeClient(Protocol):
@@ -387,6 +479,7 @@ class RclpyBridgeClient:
         try:
             import rclpy
             from rclpy.action import ActionClient
+            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
             from stackchan_msgs.action import (
                 CaptureAudio,
                 CaptureCamera,
@@ -395,6 +488,7 @@ class RclpyBridgeClient:
                 RunMotion,
                 Say,
             )
+            from stackchan_msgs.msg import AudioChunk
             from stackchan_msgs.srv import GetHeadPose, GetPowerStatus, GetStatus, SetFace, SetLed
             from stackchan_msgs.srv import (
                 ClearEventCursor,
@@ -425,8 +519,13 @@ class RclpyBridgeClient:
         self._play_audio_type = PlayAudio
         self._capture_audio_type = CaptureAudio
         self._capture_camera_type = CaptureCamera
+        self._audio_chunk_type = AudioChunk
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
+        self._audio_chunk_publishers = {}
+        self._audio_chunk_qos = QoSProfile(depth=8)
+        self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self._audio_chunk_qos.durability = DurabilityPolicy.VOLATILE
 
     def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
         request = self._get_status_type.Request()
@@ -576,12 +675,28 @@ class RclpyBridgeClient:
     def play_audio(
         self, meta: CommandMeta, path: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del path
+        status = self.get_status(meta, timeout)
+        if not _capability_available(status, "audio_playback"):
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="audio playback requires firmware-confirmed device transport.",
+                    recoverable=False,
+                ),
+            )
+        pcm = _read_audio_playback_pcm(path)
         goal = self._play_audio_type.Goal()
         _copy_meta(goal.meta, meta)
         goal.format = "pcm_s16le"
-        goal.sample_rate = 16000
-        goal.channels = 1
+        goal.sample_rate = AUDIO_SAMPLE_RATE
+        goal.channels = AUDIO_CHANNELS
+        first_goal_bytes = _audio_playback_first_goal_bytes()
+        first_chunk = pcm[:first_goal_bytes]
+        goal.first_chunk_present = bool(first_chunk)
+        goal.first_chunk_sequence = 0
+        goal.first_chunk_pcm = first_chunk
         goal.face_hint = ""
         goal.motion_hint = ""
         return self._send_action_goal(
@@ -590,6 +705,12 @@ class RclpyBridgeClient:
             goal,
             wait=wait,
             timeout=timeout,
+            on_accepted=lambda: self._publish_audio_playback_chunks(
+                meta,
+                pcm[first_goal_bytes:],
+                timeout,
+                start_sequence=1 if first_chunk else 0,
+            ),
         )
 
     def capture_audio(
@@ -601,38 +722,108 @@ class RclpyBridgeClient:
         wait: bool,
         timeout: float,
     ) -> BridgeCommandResponse:
-        del output
+        status = self.get_status(meta, timeout)
+        if not _capability_available(status, "audio_capture"):
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="audio capture requires firmware-confirmed device transport.",
+                    recoverable=False,
+                ),
+            )
+        collector = _AudioCaptureCollector(meta.device_id, meta.command_id)
+        subscription = self._node.create_subscription(
+            self._audio_chunk_type,
+            f"/stackchan/{meta.device_id}/device/audio/chunks",
+            collector.handle_chunk,
+            getattr(self, "_audio_chunk_qos", 8),
+        )
         goal = self._capture_audio_type.Goal()
         _copy_meta(goal.meta, meta)
         goal.format = "pcm_s16le"
-        goal.sample_rate = 16000
-        goal.channels = 1
+        goal.sample_rate = AUDIO_SAMPLE_RATE
+        goal.channels = AUDIO_CHANNELS
         goal.duration_ms = max(1, int(seconds * 1000))
-        return self._send_action_goal(
-            self._capture_audio_type,
-            f"/stackchan/{meta.device_id}/cmd/audio/capture",
-            goal,
-            wait=wait,
-            timeout=timeout,
-        )
+        try:
+            response = self._send_action_goal(
+                self._capture_audio_type,
+                f"/stackchan/{meta.device_id}/cmd/audio/capture",
+                goal,
+                wait=wait,
+                timeout=timeout,
+            )
+        finally:
+            destroy_subscription = getattr(self._node, "destroy_subscription", None)
+            if destroy_subscription is not None:
+                destroy_subscription(subscription)
+        if not response.ok:
+            return response
+        pcm = collector.pcm()
+        if collector.error is not None:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=collector.error,
+            )
+        if not pcm:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="AUDIO_CAPTURE_FAILED",
+                    message="audio capture completed without PCM chunks",
+                    recoverable=True,
+                ),
+            )
+        _write_audio_capture_wav(output, pcm)
+        return response
 
     def capture_camera(
         self, meta: CommandMeta, output: str, quality: int, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
-        del output
+        status = self.get_status(meta, timeout)
+        if not _capability_available(status, "camera_snapshot"):
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="UNSUPPORTED_FEATURE",
+                    message="camera capture requires firmware-confirmed device transport.",
+                    recoverable=False,
+                ),
+            )
+        camera_result = {}
         goal = self._capture_camera_type.Goal()
         _copy_meta(goal.meta, meta)
-        goal.format = "jpeg"
+        goal.format = CAMERA_JPEG_FORMAT
         goal.width = 320
         goal.height = 240
         goal.quality = quality
-        return self._send_action_goal(
+        response = self._send_action_goal(
             self._capture_camera_type,
             f"/stackchan/{meta.device_id}/cmd/camera/capture",
             goal,
             wait=wait,
             timeout=timeout,
+            on_result=lambda result: camera_result.setdefault("image", result.image),
         )
+        if not response.ok:
+            return response
+        image = camera_result.get("image")
+        if image is None:
+            return BridgeCommandResponse(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                error=ErrorDetail(
+                    code="CAMERA_CAPTURE_FAILED",
+                    message="camera capture completed without an image payload",
+                    recoverable=True,
+                ),
+            )
+        _write_camera_capture_jpeg(output, image)
+        return response
 
     def list_events(
         self,
@@ -718,7 +909,15 @@ class RclpyBridgeClient:
         return _head_pose_from_ros(meta, response.result, response.pose, bool(response.stale))
 
     def _send_action_goal(
-        self, action_type, action_name: str, goal, *, wait: bool, timeout: float
+        self,
+        action_type,
+        action_name: str,
+        goal,
+        *,
+        wait: bool,
+        timeout: float,
+        on_accepted=None,
+        on_result=None,
     ) -> BridgeCommandResponse:
         action = self._action_client_type(self._node, action_type, action_name)
         if not action.wait_for_server(timeout_sec=timeout):
@@ -737,12 +936,85 @@ class RclpyBridgeClient:
                     recoverable=False,
                 ),
             )
+        if on_accepted is not None:
+            on_accepted()
         # The facade action result is the bridge's immediate shared Result,
         # not proof that the physical behavior has completed.
         result_future = goal_handle.get_result_async()
         self._spin_future(result_future, timeout)
-        response = _response_from_ros(result_future.result().result.result)
+        action_result = result_future.result().result
+        response = _response_from_ros(action_result.result)
+        if response.ok and on_result is not None:
+            on_result(action_result)
         return _normalize_action_response(response, wait=wait)
+
+    def _audio_chunk_publisher(self, device_id: str):
+        publisher = self._audio_chunk_publishers.get(device_id)
+        if publisher is None:
+            publisher = self._node.create_publisher(
+                self._audio_chunk_type,
+                f"/stackchan/{device_id}/cmd/audio/chunks",
+                getattr(self, "_audio_chunk_qos", 8),
+            )
+            self._audio_chunk_publishers[device_id] = publisher
+        return publisher
+
+    def _publish_audio_playback_chunks(
+        self,
+        meta: CommandMeta,
+        pcm: bytes,
+        timeout: float,
+        *,
+        start_sequence: int = 0,
+    ) -> None:
+        if not pcm:
+            return
+        publisher = self._audio_chunk_publisher(meta.device_id)
+        self._wait_for_audio_playback_subscriber(publisher, timeout)
+        chunk_bytes = _audio_playback_chunk_bytes()
+        for sequence, offset in enumerate(
+            range(0, len(pcm), chunk_bytes),
+            start=start_sequence,
+        ):
+            message = self._audio_chunk_type()
+            message.device_id = meta.device_id
+            message.command_id = meta.command_id
+            message.direction = AUDIO_PLAYBACK_DIRECTION
+            message.sequence = sequence
+            message.format = AUDIO_PCM_S16LE_FORMAT
+            message.sample_rate = AUDIO_SAMPLE_RATE
+            message.channels = AUDIO_CHANNELS
+            message.pcm = pcm[offset : offset + chunk_bytes]
+            publisher.publish(message)
+            self._pace_audio_playback_chunk()
+
+    def _wait_for_audio_playback_subscriber(self, publisher, timeout: float) -> None:
+        get_subscription_count = getattr(publisher, "get_subscription_count", None)
+        if get_subscription_count is None:
+            self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+            return
+        deadline = time.monotonic() + min(
+            max(timeout, 0.0),
+            AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC,
+        )
+        while (
+            get_subscription_count() < AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS
+            and time.monotonic() < deadline
+        ):
+            self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+            spin_once = getattr(self._rclpy, "spin_once", None)
+            if spin_once is not None:
+                spin_once(self._node, timeout_sec=0)
+
+    def _pace_audio_playback_chunk(self) -> None:
+        self._sleep_audio_playback(AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC)
+        spin_once = getattr(self._rclpy, "spin_once", None)
+        if spin_once is not None:
+            spin_once(self._node, timeout_sec=0)
+
+    def _sleep_audio_playback(self, seconds: float) -> None:
+        sleep = getattr(self, "_audio_playback_sleep", time.sleep)
+        sleep(seconds)
 
     def _service_client(self, service_type, device_id: str, tail: str, timeout: float):
         client = self._node.create_client(
@@ -777,6 +1049,137 @@ def _copy_meta(target, meta: CommandMeta) -> None:
     target.source = meta.source
     _copy_created_at(target.created_at, meta.created_at)
     target.priority = _priority_value(meta.priority.value)
+
+
+def _capability_available(status: DeviceStatus, name: str) -> bool:
+    return any(
+        capability.name == name and capability.state == "available"
+        for capability in status.capabilities
+    )
+
+
+def _read_audio_playback_pcm(path: str) -> bytes:
+    source = Path(path)
+    if not source.exists() or not source.is_file():
+        raise BridgeBackendError(
+            "AUDIO_PAYLOAD_NOT_FOUND",
+            "audio playback input file was not found",
+            recoverable=False,
+        )
+    if source.suffix.lower() == ".wav":
+        return _read_audio_playback_wav(source)
+    if source.suffix.lower() == ".pcm":
+        return _validate_audio_playback_pcm(source.read_bytes())
+    raise BridgeBackendError(
+        "UNSUPPORTED_FEATURE",
+        "audio play only supports PCM S16LE 16 kHz mono .wav or .pcm input",
+        recoverable=False,
+    )
+
+
+def _read_audio_playback_wav(path: Path) -> bytes:
+    try:
+        with wave.open(str(path), "rb") as wav:
+            if (
+                wav.getnchannels() != AUDIO_CHANNELS
+                or wav.getsampwidth() != 2
+                or wav.getframerate() != AUDIO_SAMPLE_RATE
+                or wav.getcomptype() != "NONE"
+            ):
+                raise BridgeBackendError(
+                    "UNSUPPORTED_FEATURE",
+                    "audio play only supports PCM S16LE 16 kHz mono WAV input",
+                    recoverable=False,
+                )
+            return _validate_audio_playback_pcm(wav.readframes(wav.getnframes()))
+    except wave.Error as exc:
+        raise BridgeBackendError(
+            "INVALID_AUDIO_PAYLOAD",
+            "audio playback input is not a readable WAV file",
+            recoverable=False,
+        ) from exc
+
+
+def _write_audio_capture_wav(path: str, pcm: bytes) -> None:
+    destination = Path(path)
+    if destination.parent != Path(".") and not destination.parent.exists():
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output directory does not exist",
+            recoverable=False,
+        )
+    try:
+        with wave.open(str(destination), "wb") as wav:
+            wav.setnchannels(AUDIO_CHANNELS)
+            wav.setsampwidth(2)
+            wav.setframerate(AUDIO_SAMPLE_RATE)
+            wav.writeframes(pcm)
+    except OSError as exc:
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output file could not be written",
+            recoverable=False,
+        ) from exc
+    except wave.Error as exc:
+        raise BridgeBackendError(
+            "AUDIO_CAPTURE_FAILED",
+            "audio capture output WAV could not be written",
+            recoverable=False,
+        ) from exc
+
+
+def _write_camera_capture_jpeg(path: str, image) -> None:
+    destination = Path(path)
+    if destination.parent != Path(".") and not destination.parent.exists():
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture output directory does not exist",
+            recoverable=False,
+        )
+    image_format = getattr(image, "format", "")
+    data = bytes(getattr(image, "data", b""))
+    if image_format != CAMERA_JPEG_FORMAT:
+        raise BridgeBackendError(
+            "UNSUPPORTED_FEATURE",
+            "camera capture only supports JPEG payloads",
+            recoverable=False,
+        )
+    if not data:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture image payload was empty",
+            recoverable=True,
+        )
+    if len(data) > CAMERA_MAX_PAYLOAD_BYTES:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture image payload exceeded 96 KiB",
+            recoverable=True,
+        )
+    try:
+        destination.write_bytes(data)
+    except OSError as exc:
+        raise BridgeBackendError(
+            "CAMERA_CAPTURE_FAILED",
+            "camera capture output file could not be written",
+            recoverable=False,
+        ) from exc
+
+
+def _validate_audio_playback_pcm(pcm: bytes) -> bytes:
+    if not pcm:
+        raise BridgeBackendError(
+            "INVALID_AUDIO_PAYLOAD",
+            "audio playback input is empty",
+            recoverable=False,
+        )
+    if len(pcm) % 2 != 0:
+        raise BridgeBackendError(
+            "INVALID_AUDIO_PAYLOAD",
+            "audio playback PCM payload must contain complete 16-bit samples",
+            recoverable=False,
+        )
+    return pcm
 
 
 def _copy_created_at(target, created_at: str) -> None:

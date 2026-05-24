@@ -183,6 +183,8 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "nfc_removed") == 0 ||
          strcmp(name, "nfc_read_failed") == 0 ||
          strcmp(name, "mic_overrun") == 0 ||
+         strcmp(name, "audio_playback_action") == 0 ||
+         strcmp(name, "audio_playback_chunk") == 0 ||
          strcmp(name, "audio_playback_underrun") == 0 ||
          strcmp(name, "audio_capture_started") == 0 ||
          strcmp(name, "audio_capture_finished") == 0 ||
@@ -664,6 +666,26 @@ class EventPublisher {
     char payload[kEventPayloadJsonMaxLength + 1];
     make_reference_payload(payload, sizeof(payload), "remote_ref", "remote", command);
     return publish(DeviceEventKind::RemoteCommandReceived, stamp_ms, "", payload);
+  }
+
+  Result remote_button_pressed(uint32_t stamp_ms) {
+    return publish(DeviceEventKind::RemoteButtonPressed, stamp_ms);
+  }
+
+  Result remote_button_released(uint32_t stamp_ms) {
+    return publish(DeviceEventKind::RemoteButtonReleased, stamp_ms);
+  }
+
+  Result ir_transmit_started(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitStarted, stamp_ms, command_id);
+  }
+
+  Result ir_transmit_finished(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitFinished, stamp_ms, command_id);
+  }
+
+  Result ir_transmit_failed(uint32_t stamp_ms, const char* command_id = "") {
+    return publish(DeviceEventKind::IrTransmitFailed, stamp_ms, command_id);
   }
 
  private:

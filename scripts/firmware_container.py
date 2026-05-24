@@ -179,15 +179,94 @@ def patch_microros_platformio_meta() -> None:
     for meta in libdeps.glob("*/micro_ros_platformio/metas/colcon.meta"):
         data = json.loads(meta.read_text())
         cmake_args = data["names"]["rmw_microxrcedds"]["cmake-args"]
-        patched_args = [
-            "-DRMW_UXRCE_MAX_SERVICES=3"
-            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES=")
-            else arg
-            for arg in cmake_args
-        ]
-        if patched_args == cmake_args:
-            continue
+        patched_args = []
+        clients_seen = False
+        history_seen = False
+        stream_history_input_seen = False
+        stream_history_output_seen = False
+        wait_sets_seen = False
+        guard_condition_seen = False
+        topic_name_max_seen = False
+        services_seen = False
+        publishers_seen = False
+        subscriptions_seen = False
+        for arg in cmake_args:
+            if arg.startswith("-DRMW_UXRCE_MAX_SERVICES="):
+                patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+                services_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_PUBLISHERS="):
+                patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+                publishers_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_SUBSCRIPTIONS="):
+                patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+                subscriptions_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_CLIENTS="):
+                patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+                clients_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_HISTORY="):
+                patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+                history_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_INPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+                stream_history_input_seen = True
+            elif arg.startswith("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT="):
+                patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
+                stream_history_output_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_WAIT_SETS="):
+                patched_args.append("-DRMW_UXRCE_MAX_WAIT_SETS=8")
+                wait_sets_seen = True
+            elif arg.startswith("-DRMW_UXRCE_MAX_GUARD_CONDITION="):
+                patched_args.append("-DRMW_UXRCE_MAX_GUARD_CONDITION=8")
+                guard_condition_seen = True
+            elif arg.startswith("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH="):
+                patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
+                topic_name_max_seen = True
+            elif arg.startswith("-DUCLIENT_CUSTOM_TRANSPORT_MTU=") or arg.startswith(
+                "-DUXR_CONFIG_CUSTOM_TRANSPORT_MTU="
+            ):
+                continue
+            else:
+                patched_args.append(arg)
+        if not services_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SERVICES=16")
+        if not publishers_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_PUBLISHERS=20")
+        if not subscriptions_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4")
+        if not clients_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_CLIENTS=8")
+        if not history_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_HISTORY=16")
+        if not stream_history_input_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_INPUT=8")
+        if not stream_history_output_seen:
+            patched_args.append("-DRMW_UXRCE_STREAM_HISTORY_OUTPUT=8")
+        if not wait_sets_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_WAIT_SETS=8")
+        if not guard_condition_seen:
+            patched_args.append("-DRMW_UXRCE_MAX_GUARD_CONDITION=8")
+        if not topic_name_max_seen:
+            patched_args.append("-DRMW_UXRCE_TOPIC_NAME_MAX_LENGTH=96")
         data["names"]["rmw_microxrcedds"]["cmake-args"] = patched_args
+        client_config = data["names"].setdefault("microxrcedds_client", {})
+        client_args = client_config.setdefault("cmake-args", [])
+        patched_client_args = []
+        client_mtu_seen = False
+        for arg in client_args:
+            if arg.startswith("-DUCLIENT_CUSTOM_TRANSPORT_MTU="):
+                patched_client_args.append("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024")
+                client_mtu_seen = True
+            else:
+                patched_client_args.append(arg)
+        if not client_mtu_seen:
+            patched_client_args.append("-DUCLIENT_CUSTOM_TRANSPORT_MTU=1024")
+        client_config["cmake-args"] = patched_client_args
+        if (
+            patched_args == cmake_args
+            and patched_client_args == client_args
+            and "microxrcedds_client" in data["names"]
+        ):
+            continue
         meta.write_text(json.dumps(data, indent=4) + "\n")
 
 

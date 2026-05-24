@@ -1,0 +1,8 @@
+stackchan_msgs/CommandMeta meta
+uint32 next_sequence
+---
+stackchan_msgs/Result result
+bool has_chunk
+stackchan_msgs/AudioChunk chunk
+bool end_of_stream
+uint32 buffered_chunks

@@ -86,6 +86,57 @@ For bring-up serial diagnostics:
 uv run --no-project python scripts/firmware_platformio.py monitor --port COM3
 ```
 
+Normal builds keep text diagnostics off because USB serial is also the
+micro-ROS transport. For a firmware-only monitor session with the Agent stopped,
+enable `STACKCHAN_SERIAL_DIAGNOSTICS=1`; do not run those text diagnostics while
+the micro-ROS Agent is attached to the same COM port.
+
+If the Agent creates the ROS graph but no samples reach ROS 2, build a
+temporary minimal bring-up profile before changing command behavior:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-minimal-bringup
+```
+
+That profile initializes only `/stackchan/default/device/status` and skips
+optional services, actions, events, and raw telemetry. It is a diagnostic build
+flag, not the normal firmware surface; flash a normal build again after the
+transport/resource isolation smoke.
+
+For a narrower command-path smoke after status works, use the core command
+profile:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-command-bringup
+```
+
+This keeps `/stackchan/default/device/status` plus the firmware-owned face,
+LED, named-motion, and pose services, while still skipping optional events,
+media actions, and raw telemetry. Use it to prove bridge-routed face control
+before re-enabling the full entity set.
+
+To isolate raw telemetry from media/action pressure, add raw telemetry
+publishers to the core command profile:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-raw-telemetry-bringup
+```
+
+This leaves audio actions, camera action, and audio chunk transport disabled.
+
+If that profile passes but the full firmware still shows the ROS graph without
+status samples, add one media/action group at a time:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-audio-chunk-bringup
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-capture-audio-bringup
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-capture-camera-bringup
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-core-play-audio-bringup
+```
+
+These temporary profiles keep the status publisher, core command services, and
+raw telemetry enabled, then add only the named media/action group.
+
 The runner syncs the canonical `ros/stackchan_msgs` package into
 `extra_packages/` before build or upload so `micro_ros_platformio` can generate
 firmware-side headers. When those messages change, regenerate the micro-ROS
@@ -96,11 +147,30 @@ The project uses `microros_stackchan.meta` as a `microros_user_meta` override.
 The same path is also listed as `board_microros_user_meta` for forward
 compatibility with PlatformIO-style board options. The default ESP32 meta in
 the pinned `micro_ros_platformio` commit
-allows one firmware service; StackChan bring-up currently needs
-`/stackchan/default/device/face/set` and
-`/stackchan/default/device/motion/run` plus
-`/stackchan/default/device/motion/pose/set`, so `RMW_UXRCE_MAX_SERVICES` is
-raised to `3`.
+allows one firmware service. StackChan bring-up currently needs four
+firmware-owned services, playback, audio capture, and camera capture action
+servers, eight telemetry/event publishers, one capture chunk publisher, and one
+playback chunk subscription, so the meta raises
+`RMW_UXRCE_MAX_SERVICES` to `16`, `RMW_UXRCE_MAX_PUBLISHERS` to `20`, and
+`RMW_UXRCE_MAX_SUBSCRIPTIONS` to `4`. It also raises
+`RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and keeps
+the input and output reliable stream history at `8`. Action servers create
+result-expiry timers, so this profile also raises `RMW_UXRCE_MAX_WAIT_SETS` and
+`RMW_UXRCE_MAX_GUARD_CONDITION` to `8`. Device-scoped action service topic names
+also exceed the upstream 60 character rmw-microxrcedds default after the `rq` /
+`rr` service prefixes and `Request` / `Reply` suffixes are added, so
+`RMW_UXRCE_TOPIC_NAME_MAX_LENGTH` is raised to `96`. This gives the full entity
+set resource margin without overflowing CoreS3 DRAM. Firmware action servers also use
+bounded QoS depths for goal/result/cancel, feedback, and status paths, with
+best-effort volatile feedback/status topics, so action entities do not starve
+the device status heartbeat on the serial transport.
+If a media action server fails to initialize, the firmware reports that media
+transport as unavailable and keeps status, face, motion, and LED services alive
+for hardware validation. When the media hardware probe succeeded but the
+micro-ROS action server did not initialize, the capability detail code is
+`TRANSPORT_INIT_FAILED`.
+Keep these counts aligned when adding more firmware-owned actions, publishers,
+subscribers, or action timers.
 
 The firmware package also includes hardware-free contract checks:
 
@@ -122,5 +192,6 @@ The current firmware initializes the micro-ROS serial transport, pings the
 Agent, creates a device event publisher on
 `/stackchan/default/device/events`, and publishes a bounded `firmware_ready`
 bring-up event when an Agent is reachable. It also exposes bring-up device-side
-services for face and named motion. LED, audio, camera, and sensor
-services/actions remain follow-up work.
+services for face, named motion, LED, audio playback/capture, and camera
+snapshot transport. Remaining raw sensor services/actions should stay explicit
+follow-up work.

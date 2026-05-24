@@ -248,6 +248,19 @@ void test_event_publisher_drain_through_registry() {
   assert(strstr(converted.payload_json, "tag_ref") != nullptr);
   assert(strstr(converted.payload_json, "raw-nfc-id-456") == nullptr);
 
+  assert(events.remote_command_received(8100, "raw-ir-code-123").ok);
+  events.set_callback(
+      [](const stackchan::DeviceEvent& event, void* raw_context) -> stackchan::Result {
+        CaptureContext* capture = static_cast<CaptureContext*>(raw_context);
+        *capture->event = event;
+        return stackchan::Result::accepted("captured");
+      },
+      &context);
+  assert(events.drain(1).ok);
+  assert(strcmp(converted.event_name, "remote_command_received") == 0);
+  assert(strstr(converted.payload_json, "remote_ref") != nullptr);
+  assert(strstr(converted.payload_json, "raw-ir-code-123") == nullptr);
+
   stackchan::EventPublisher disconnected("desk");
   disconnected.set_callback(capture_event_publish, &registry);
   registry.set_publish_callback(nullptr);

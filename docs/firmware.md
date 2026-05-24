@@ -212,6 +212,42 @@ Expected states:
 - `degraded`: usable locally, but ROS connectivity is missing or partial.
 - `fault`: a safety or hardware error needs to be reported.
 
+Audio playback and capture are action-coordinated behaviors. Firmware accepts
+the action goal first. The firmware-owned `PlayAudio` action goal may carry
+the first bounded PCM segment as `first_chunk_sequence=0`; that action-goal
+handoff is a local diagnostic path and is disabled in the CLI baseline until
+physical hardware smokes prove the action result path remains healthy.
+Playback payload for the matching `command_id` normally uses
+`/stackchan/<device_id>/device/audio/playback/chunks`. Microphone capture
+publishes bounded capture chunks on
+`/stackchan/<device_id>/device/audio/chunks`.
+Playback and capture topics are intentionally separated so firmware does not
+publish and subscribe on the same audio chunk topic over the micro-ROS serial
+transport. Playback must tolerate normal best-effort chunk pacing but report
+`AUDIO_UNDERRUN` if no valid playback chunk arrives before the device-side
+no-chunk timeout. Microphone capture must return a structured
+`AUDIO_CAPTURE_FAILED` terminal result if a recording chunk stalls, rather than
+leaving the bridge to time out without a firmware result. Capture uses the
+baseline 20 ms chunk size for hardware bring-up because the current micro-ROS
+serial path handled 640 byte publishes more reliably than max-size 40 ms
+chunks.
+
+CLI-origin playback chunks enter the bridge on
+`/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe topic
+chunks after the bridge has relayed them to
+`/stackchan/<device_id>/device/audio/playback/chunks` for an accepted
+firmware-owned playback action goal. Current firmware also supports the
+bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper and may
+pull the next chunk by `command_id` and sequence after action acceptance. The
+pull response is still validated as a normal `AudioChunk(direction=PLAYBACK)`;
+the helper is transport plumbing, not a raw audio command surface.
+
+Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
+driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
+a fallback when a board profile cannot produce JPEG frames directly. Camera
+quality values from the ROS action are mapped onto the camera driver quality
+range locally in firmware.
+
 ## Capability status and degraded operation
 
 Firmware should treat hardware features as independently available capabilities.
@@ -340,6 +376,13 @@ firmware attempts an explicit neutral/home recovery and latches `fault` while
 preserving the original structured error. Combined home-plus-motion targets are
 revalidated against firmware degree limits before scheduling.
 
+K151 tuning uses a deliberately visible `nod` profile for bring-up: the
+firmware-owned default duration is 900 ms, the named nod target is up to 28
+degrees at intensity `1.0`, and servo writes use a slower K151 time parameter
+so the motion is observable instead of appearing as a status-only blip. These
+values are still bounded by the firmware hard servo limits and valid
+calibration gate.
+
 Explicit head pose control is a separate safety path from named motion. It uses
 home-frame absolute `pan_deg` and `tilt_deg` values, not StackChan-BSP `X/Y` as
 a planar coordinate system. During K151 bring-up, the bridge keeps the public
@@ -392,6 +435,12 @@ command, safety/fault handling, or device reset. Repeating the same
 pattern/color/duration is idempotent and must not grow an animation queue. LED
 brightness/current limits belong in firmware constants.
 
+Current K151 bring-up firmware exposes `/stackchan/<device_id>/device/led/set`
+as a firmware-owned `SetLed` service and maps the baseline named patterns to
+the 12 RGB LEDs through the StackChan-BSP PY32 IO expander LED API. The bridge
+facade forwards `/stackchan/<device_id>/cmd/led/set` to that device service, so
+LED success is no longer bridge-only simulation on connected hardware.
+
 ### Audio
 
 Audio is a core capability. The firmware should support both output-oriented and input-oriented audio flows while keeping high-level dialog planning outside the device.
@@ -405,6 +454,17 @@ Baseline audio path:
 - Audio transport starts with PCM 16 kHz mono 16-bit.
 - Playback and capture use actions coordinated with bounded audio chunks.
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
+- Audio chunk topics use best-effort, volatile, keep-last-8 QoS. Playback chunks
+  use `/stackchan/<device_id>/device/audio/playback/chunks`; capture chunks use
+  `/stackchan/<device_id>/device/audio/chunks`. A small first playback segment
+  is allowed in the firmware-owned `PlayAudio` goal for local diagnostics, but
+  the CLI baseline keeps playback payload on the chunk topic until hardware
+  validation proves this does not starve action results. The bridge may briefly
+  wait for the firmware playback subscription before forwarding chunks;
+  firmware may pull chunks through
+  `/stackchan/<device_id>/audio/playback/next_chunk` when topic delivery is
+  unreliable, and firmware must ignore duplicate chunks whose sequence is
+  already accepted for the active `command_id`.
 - Chunk streams are keyed by `device_id`, `command_id`, `direction`, and a
   sequence that is monotonic per command and direction.
 - At most one playback and one capture session may be active per device.
@@ -414,6 +474,10 @@ Baseline audio path:
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.
+- Firmware must keep a playback session active while waiting for the next
+  bounded chunk. It may report successful completion only after an explicit
+  end-of-stream observation plus speaker drain, or report `AUDIO_UNDERRUN`
+  after a bounded inter-chunk timeout or terminal playback error.
 - Firmware should publish or return enough metadata for the bridge to distinguish
   queued, playing, completed, underrun, and failed playback without logging PCM
   bytes.
@@ -442,6 +506,44 @@ The PC side may own speech-to-text, text-to-speech, voice activity detection, or
 Firmware normal diagnostics must not print PCM payloads, speech text, or
 transcript text.
 
+The current K151 bring-up probes speaker and microphone availability at boot as
+safe serial diagnostics and reports `audio_playback` / `audio_capture` available
+only when the matching firmware-owned action and chunk transport initialized.
+The bridge accepts public audio actions only when those firmware-confirmed
+transport capabilities are available; devices without the capability still
+return structured `UNSUPPORTED_FEATURE`. The sensor sweep accepts either
+explicit unsupported metadata or capability-gated success while keeping
+PCM/transcript payloads out of normal output and logs.
+
+Firmware playback chunks are not standalone commands. The audio adapter must
+accept `AudioChunk(direction=PLAYBACK)` only after a matching firmware-owned
+playback session has accepted the `command_id`. Chunks with no active session,
+a mismatched `command_id`, unsupported format, invalid size, or sequence gap
+are rejected with structured results such as `UNKNOWN_COMMAND`,
+`UNSUPPORTED_FEATURE`, `MALFORMED_AUDIO_CHUNK`, or `AUDIO_UNDERRUN`. This keeps
+the chunk topic from becoming a raw speaker-control bypass while the
+firmware-owned `PlayAudio` action server is being added.
+
+During hardware bring-up, playback relay diagnostics may print bounded metadata
+for the active playback session. The allowed fields are `command_id`, chunk
+sequence, PCM byte count, accepted/rejected counters, and structured result
+codes such as `AUDIO_UNDERRUN` or `MALFORMED_AUDIO_CHUNK`. These diagnostics
+exist only to distinguish bridge relay timing, firmware chunk rejection,
+speaker `playRaw` failure, and device-side no-chunk timeout; they must not print
+PCM bytes, speech text, transcripts, or any image/NFC/IR payload.
+Playback action diagnostics may also publish or print payload-free action
+stages such as goal request taken, goal response sent, first-goal chunk
+dispatch, result ready, result request taken, and result response sent. The
+firmware event name is `audio_playback_action`. These diagnostics are for
+KOIZUMI-112 style result-path debugging and must stay limited to command id,
+accepted flag, first-chunk byte count, and action/session booleans.
+
+Playback chunk relay diagnostics may also publish payload-free firmware events
+named `audio_playback_chunk`. The payload is limited to stage, sequence, byte
+count, structured result code, accepted/rejected counters, active-session flag,
+pending-request flag, and next expected sequence. It must not include PCM bytes,
+speech text, transcripts, images, NFC tag IDs, IR codes, or protocol dumps.
+
 ### Camera
 
 Camera support should be treated as an independent capability.
@@ -464,6 +566,13 @@ The firmware should not own high-level vision inference. Object detection, face 
 Continuous camera streaming, follow mode, and video-like frame sequences are out
 of the baseline contract. They require a documented resource, transport, and QoS
 decision before implementation.
+
+The K151 firmware initializes the CoreS3 GC0308 through the documented
+`esp_camera` path, prefers QVGA driver-native JPEG capture, falls back to
+RGB565-to-JPEG conversion if native JPEG initialization is unavailable, and
+discards frames above 96 KiB. Normal CLI, MCP, public events, and firmware logs
+continue to omit JPEG bytes, base64, and image payloads; camera failure events
+carry only bounded metadata and the command id.
 
 ### NFC
 
@@ -508,7 +617,12 @@ Sensor data should be separated into two levels:
 
 High-level events are more useful to Codex skills. Raw telemetry is useful for debugging, calibration, and later robot behavior when an explicit stream contract exists. Raw telemetry must not be folded into `/status` or `stackchanctl observe`.
 
-Raw IMU should be supported only as a separate stream from high-level events. If that contract is introduced, the initial raw IMU stream should start around 10-30 Hz, with higher rates treated as a later tuning decision. The firmware can publish lower-rate high-level posture/activity events for Codex while making raw IMU telemetry available to ROS tooling only through the separate stream path.
+Raw IMU is supported only as a separate stream from high-level events. The K151
+bring-up publishes `/stackchan/<device_id>/device/imu/raw` at the existing
+10 Hz scheduler cadence when the CoreS3 IMU is available, with higher rates
+treated as a later tuning decision. The firmware can publish lower-rate
+high-level posture/activity events for Codex while making raw IMU telemetry
+available to ROS tooling only through the separate stream path.
 
 Baseline high-level IMU events:
 
@@ -534,6 +648,27 @@ proximity/light readings, and INA226/AXP2101 power status through those
 device-owned resources. The bridge republishes the corresponding public
 resources under `/stackchan/<device_id>/...` and serves the latest public power
 sample through `/stackchan/<device_id>/cmd/power/status`.
+
+The K151 event bring-up also connects high-level event adapters for the built-in
+CoreS3 IMU, the external StackChan UnitNFC path, and the IR receiver on GPIO 10.
+StackChan-BSP 1.1.0 does not expose a separate high-level NFC or IR wrapper:
+its examples use `M5UnitUnifiedNFC` for NFC and `IRremoteESP8266` for IR.
+Follow that BSP example boundary rather than inventing another direct wire
+path. UnitNFC is added to `M5UnitUnified` on `M5.In_I2C`, matching the
+StackChan-BSP `examples/NFC/Detect` sketch; do not reinitialize Arduino `Wire`
+manually during normal bring-up. The IR receive adapter follows the BSP
+`examples/IR/Receive` sketch's GPIO 10 / `IRrecv` path. IMU samples feed only
+the firmware `ImuEventEstimator`; raw accel and gyro values are not published in
+`observe` or normal events. NFC events use `tag_ref` references derived
+on-device instead of raw tag IDs or UIDs. IR receive events publish semantic
+`remote_button_pressed` and `remote_command_received` observations with a
+`remote_ref`, never raw IR codes or protocol dumps. Text serial diagnostics are
+compile-time opt-in because the default USB serial line is also the micro-ROS
+XRCE-DDS transport. When `STACKCHAN_SERIAL_DIAGNOSTICS=1` is enabled for an
+offline firmware-only monitor session, boot and heartbeat diagnostics may
+include safe adapter metadata such as NFC bus/pin selection, NFC
+detect/identify counters, IR RX pin, decode count, and overflow count, but must
+not print tag IDs, UIDs, raw IR values, or protocol dumps.
 
 Firmware should publish the numeric telemetry at low rates and queue the
 corresponding high-level events without blocking safety, motion-neutral, or
@@ -581,8 +716,10 @@ Baseline firmware event sources:
 - power: `battery_recovered`, `charging_started`, `charging_stopped`,
   `power_source_changed`, `brownout_risk`, `power_fault`
 
-`button_held` uses a firmware-owned 700 ms default threshold. Bridge may
-coalesce repeated events, but hardware bounce belongs on the device side.
+Current K151 bring-up samples CoreS3 BtnA, BtnB, and BtnC through `M5.update()`
+and publishes the bounded button ids `a`, `b`, and `c`. `button_held` uses a
+firmware-owned 700 ms default threshold. Bridge may coalesce repeated events,
+but hardware bounce belongs on the device side.
 
 Device event publication is non-blocking from estimator callbacks. Firmware
 queues bounded `DeviceEvent` records first and drains them later through the
@@ -604,9 +741,44 @@ healthy. The message mirrors `stackchan_msgs/StackChanStatus` and carries:
 
 The bridge treats this topic as the liveness source for dynamic
 connected/disconnected status. If the Agent is unavailable, firmware stays in
-degraded mode, reconnects locally, and emits only serial diagnostics until ROS
-publishers are available again. The exact ROS 2 interface belongs in
+degraded mode and reconnects locally. Normal builds keep the shared USB serial
+transport free of text diagnostics so the micro-ROS Agent receives only XRCE-DDS
+frames; enable `STACKCHAN_SERIAL_DIAGNOSTICS=1` only for a local monitor run
+with no Agent attached. Firmware debounces publish failures and tears down the
+micro-ROS session only after repeated consecutive publish failures, avoiding a
+disconnect loop on a transient post-entity-creation publish miss. The exact ROS
+2 interface belongs in
 [ros-interface.md](ros-interface.md).
+
+For transport isolation during hardware bring-up, the PlatformIO helper can
+build a temporary `STACKCHAN_MICROROS_MINIMAL_BRINGUP=1` profile with
+`--microros-minimal-bringup`. That profile initializes only
+`/stackchan/<device_id>/device/status` and skips optional firmware-owned
+services, actions, event publishing, and raw telemetry. Use it only to
+distinguish status/transport failure from entity-count or optional-resource
+pressure, then restore a normal firmware build before validating the standard
+`stackchanctl -> stackchan_bridge -> firmware` command path.
+
+If the minimal profile proves status transport, the temporary
+`STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1` profile can be built with
+`--microros-core-command-bringup`. It keeps
+`/stackchan/<device_id>/device/status` plus the firmware-owned face, LED,
+named-motion, and pose services, while still skipping optional event, media,
+and raw telemetry entities. Use this only to prove the core command path,
+especially face control, before re-enabling the full firmware entity set.
+
+For entity-pressure diagnosis, `--microros-core-raw-telemetry-bringup` builds
+the same core command profile with raw telemetry publishers re-enabled while
+media actions and audio chunk transport remain disabled. Use it to distinguish
+raw telemetry publisher/sample pressure from audio or camera action pressure.
+If raw telemetry passes but the full profile still loses status samples, use
+the narrower media diagnostics:
+`--microros-core-audio-chunk-bringup`,
+`--microros-core-capture-audio-bringup`,
+`--microros-core-capture-camera-bringup`, and
+`--microros-core-play-audio-bringup`. Each one extends the core raw telemetry
+profile with only the named media/action entity group, so `/stackchan/<device_id>/device/status`
+delivery can be checked before restoring the normal full firmware.
 
 ## Safety policy
 
@@ -703,10 +875,34 @@ Pinning rules:
 - Use `micro_ros_platformio` for PlatformIO integration, pinned to a verified `main` commit SHA rather than a moving branch.
 - Use ROS 2 Jazzy as the initial micro-ROS distro because it is the current LTS direction.
 - Keep `microros_stackchan.meta` aligned with firmware entity counts. The
-  bring-up firmware needs at least three micro-ROS services for
+  bring-up firmware needs at least four micro-ROS services for
   `/stackchan/<device_id>/device/face/set` and
   `/stackchan/<device_id>/device/motion/run` plus
-  `/stackchan/<device_id>/device/motion/pose/set`.
+  `/stackchan/<device_id>/device/motion/pose/set` and
+  `/stackchan/<device_id>/device/led/set`. The full K151 entity set also needs
+  raised publisher, subscription, client, RMW history, reliable stream history,
+  wait-set, and guard-condition limits for telemetry/events plus audio and
+  camera actions. `rcl_action_server_init()` also creates a result-expiry timer,
+  so action-server capacity must account for the timer guard condition, not only
+  the action's visible services and topics. Device-scoped action service topics
+  also need a longer `RMW_UXRCE_TOPIC_NAME_MAX_LENGTH` than the upstream 60
+  character default because rmw-microxrcedds adds `rq` / `rr` prefixes and
+  `Request` / `Reply` suffixes around names such as
+  `/stackchan/default/device/audio/capture/_action/send_goal`. Audio capture
+  chunks use 20 ms PCM S16LE payloads, so `UCLIENT_CUSTOM_TRANSPORT_MTU` is
+  set to 1024 bytes for the `microxrcedds_client` package. This raises the
+  generated `UXR_CONFIG_CUSTOM_TRANSPORT_MTU` and keeps a full 640 byte chunk
+  plus XRCE/message overhead inside one transfer unit. Keep the values in
+  `microros_stackchan.meta` and the
+  PlatformIO helper patcher in sync. Firmware
+  action servers must keep bounded goal/result/cancel, feedback, and status QoS
+  depths, and use best-effort volatile feedback/status topics, so media actions
+  do not starve `/stackchan/<device_id>/device/status`.
+  If a media action server cannot be initialized during bring-up, firmware must
+  degrade that media capability to unavailable rather than suppressing the
+  status heartbeat or core face/motion/LED services. Capability status should
+  use `TRANSPORT_INIT_FAILED` for media hardware that is present but whose
+  micro-ROS action transport could not initialize.
 - Let `StackChan-BSP` resolve `M5Unified`, `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
 - Promote transitive dependencies to explicit pins only if reproducibility breaks.
 - Treat the `FTServo_Arduino` driver as owned by the `StackChan-BSP` layer unless a concrete adapter need appears.
@@ -735,10 +931,10 @@ The first firmware slice should prove the device loop and safety boundary, but i
 7. Enforce servo limits in firmware.
 8. Publish `ACCEPTED`, `COMPLETED`, or `REJECTED` command state through the shared result model.
 9. Add LED command support.
-10. Add audio playback/capture status.
+10. Exercise audio playback/capture on physical hardware.
 11. Add explicitly contracted raw IMU stream.
 12. Add NFC event stream.
-13. Add constrained camera snapshot support.
+13. Exercise constrained camera snapshot support on physical hardware.
 
 Face, motion, LED, audio, camera, NFC, and IMU work should be designed as independent adapters so they can advance in parallel without turning the firmware into a fork of the factory application.
 

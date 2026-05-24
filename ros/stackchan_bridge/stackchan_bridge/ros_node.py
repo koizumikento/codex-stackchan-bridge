@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from stackchan_bridge.audio_session import AudioChunk
@@ -21,6 +22,24 @@ from stackchan_bridge.telemetry import HeadPoseSnapshot, HeadPoseTelemetryStore,
 EVENT_QOS_DEPTH = 32
 DEFAULT_LIVENESS_TIMEOUT_SEC = 3.5
 LIVENESS_CHECK_INTERVAL_SEC = 1.0
+AUDIO_PLAYBACK_DIRECTION = 1
+AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 256
+AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3
+AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03
+AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
+AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
+AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35
+
+
+def _audio_chunk_pcm_size(message: object) -> int:
+    pcm = getattr(message, "pcm", b"")
+    size = getattr(pcm, "size", None)
+    if size is not None:
+        return int(size)
+    try:
+        return len(pcm)
+    except TypeError:
+        return 0
 
 
 def _time_to_string(stamp: object) -> str:
@@ -63,6 +82,11 @@ def _copy_result(result: object, source: object) -> None:
     result.recoverable = source.recoverable
 
 
+def _copy_compressed_image_payload(target: object, source: object) -> None:
+    target.format = getattr(source, "format", "")
+    target.data = bytes(getattr(source, "data", b""))
+
+
 def _copy_command_meta(target: object, source: CommandMeta, created_at: object) -> None:
     target.device_id = source.device_id
     target.command_id = source.command_id
@@ -83,6 +107,10 @@ def _make_timeout_result(message: str) -> Result:
         message=message,
         recoverable=True,
     )
+
+
+def _make_camera_capture_failed_result(message: str) -> Result:
+    return Result.rejected("CAMERA_CAPTURE_FAILED", message, recoverable=True)
 
 
 def _copy_status(response: object, status: object) -> None:
@@ -382,7 +410,7 @@ def _mark_device_available_from_status(
 def main(args: list[str] | None = None) -> None:
     try:
         import rclpy
-        from rclpy.action import ActionServer
+        from rclpy.action import ActionClient, ActionServer
         from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.node import Node
@@ -392,6 +420,7 @@ def main(args: list[str] | None = None) -> None:
         from stackchan_msgs.msg import CapabilityStatus
         from stackchan_msgs.msg import (
             HeadPose,
+            ImuRaw,
             LightRaw,
             PowerStatus,
             ProximityRaw,
@@ -406,6 +435,7 @@ def main(args: list[str] | None = None) -> None:
             GetStatus,
             GetTranscript,
             ListEvents,
+            NextAudioChunk,
             NextEvent,
             SetFace,
             SetHeadPose,
@@ -425,6 +455,9 @@ def main(args: list[str] | None = None) -> None:
     best_effort_depth_8.reliability = ReliabilityPolicy.BEST_EFFORT
     best_effort_depth_10 = QoSProfile(depth=10)
     best_effort_depth_10.reliability = ReliabilityPolicy.BEST_EFFORT
+    action_status_best_effort_depth_1 = QoSProfile(depth=1)
+    action_status_best_effort_depth_1.reliability = ReliabilityPolicy.BEST_EFFORT
+    action_status_best_effort_depth_1.durability = DurabilityPolicy.VOLATILE
     transient_depth_1 = QoSProfile(depth=1)
     transient_depth_1.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
@@ -444,6 +477,10 @@ def main(args: list[str] | None = None) -> None:
             self.declare_parameter("device_command_timeout_sec", 2.0)
             self._device_command_timeout_sec = float(
                 self.get_parameter("device_command_timeout_sec").value
+            )
+            self.declare_parameter("device_media_action_timeout_sec", 35.0)
+            self._device_media_action_timeout_sec = float(
+                self.get_parameter("device_media_action_timeout_sec").value
             )
             registry = DeviceRegistry(
                 _configured_device_records(
@@ -468,17 +505,29 @@ def main(args: list[str] | None = None) -> None:
             self._stackchan_status_type = StackChanStatus
             self._set_face_type = SetFace
             self._set_head_pose_type = SetHeadPose
+            self._set_led_type = SetLed
             self._set_motion_type = SetMotion
             self._command_callback_group = ReentrantCallbackGroup()
             self._device_client_callback_group = ReentrantCallbackGroup()
             self._public_event_publishers = {}
             self._public_status_publishers = {}
+            self._device_audio_capture_clients = {}
+            self._device_audio_play_clients = {}
+            self._device_audio_chunk_publishers = {}
+            self._device_camera_capture_clients = {}
             self._device_face_clients = {}
+            self._device_led_clients = {}
             self._device_head_pose_clients = {}
             self._device_motion_clients = {}
             self._device_event_subscriptions = []
             self._device_status_subscriptions = []
+            self._cmd_audio_chunk_subscriptions = []
             self._speech_audio_subscriptions = []
+            self._pending_playback_chunks = {}
+            self._active_playback_sessions = set()
+            self._closed_playback_sessions = set()
+            self._playback_relay_stats = {}
+            self._playback_chunk_lock = threading.Lock()
             self._telemetry_publishers = {}
             self._telemetry_subscriptions = []
             self._device_last_seen = {}
@@ -528,6 +577,11 @@ def main(args: list[str] | None = None) -> None:
                 f"/stackchan/{device_id}/device/face/set",
                 callback_group=self._device_client_callback_group,
             )
+            self._device_led_clients[device_id] = self.create_client(
+                SetLed,
+                f"/stackchan/{device_id}/device/led/set",
+                callback_group=self._device_client_callback_group,
+            )
             self._device_motion_clients[device_id] = self.create_client(
                 SetMotion,
                 f"/stackchan/{device_id}/device/motion/run",
@@ -537,6 +591,45 @@ def main(args: list[str] | None = None) -> None:
                 SetHeadPose,
                 f"/stackchan/{device_id}/device/motion/pose/set",
                 callback_group=self._device_client_callback_group,
+            )
+            self._device_audio_play_clients[device_id] = ActionClient(
+                self,
+                PlayAudio,
+                f"/stackchan/{device_id}/device/audio/play",
+                callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
+            )
+            self._device_audio_capture_clients[device_id] = ActionClient(
+                self,
+                CaptureAudio,
+                f"/stackchan/{device_id}/device/audio/capture",
+                callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
+            )
+            self._device_camera_capture_clients[device_id] = ActionClient(
+                self,
+                CaptureCamera,
+                f"/stackchan/{device_id}/device/camera/capture",
+                callback_group=self._device_client_callback_group,
+                feedback_sub_qos_profile=action_status_best_effort_depth_1,
+                status_sub_qos_profile=action_status_best_effort_depth_1,
+            )
+            self._device_audio_chunk_publishers[device_id] = self.create_publisher(
+                RosAudioChunk,
+                f"/stackchan/{device_id}/device/audio/playback/chunks",
+                best_effort_depth_8,
+            )
+            self.create_service(
+                NextAudioChunk,
+                f"/stackchan/{device_id}/audio/playback/next_chunk",
+                lambda request, response, device_id=device_id: self._handle_next_audio_chunk(
+                    device_id,
+                    request,
+                    response,
+                ),
+                callback_group=self._command_callback_group,
             )
             self.create_service(
                 ListEvents,
@@ -637,11 +730,29 @@ def main(args: list[str] | None = None) -> None:
                 public_qos=transient_depth_1,
                 device_qos=reliable_depth_2,
             )
+            self._create_telemetry_relay(
+                device_id,
+                "imu/raw",
+                ImuRaw,
+                public_qos=best_effort_depth_10,
+                device_qos=best_effort_depth_10,
+            )
             self._speech_audio_subscriptions.append(
                 self.create_subscription(
                     RosAudioChunk,
                     f"/stackchan/{device_id}/device/audio/chunks",
                     lambda message, device_id=device_id: self._handle_speech_audio_chunk(
+                        device_id,
+                        message,
+                    ),
+                    best_effort_depth_8,
+                )
+            )
+            self._cmd_audio_chunk_subscriptions.append(
+                self.create_subscription(
+                    RosAudioChunk,
+                    f"/stackchan/{device_id}/cmd/audio/chunks",
+                    lambda message, device_id=device_id: self._handle_cmd_audio_chunk(
                         device_id,
                         message,
                     ),
@@ -1106,6 +1217,244 @@ def main(args: list[str] | None = None) -> None:
                     )
                 )
 
+        def _handle_cmd_audio_chunk(self, device_id: str, message: object) -> None:
+            if not _coerce_telemetry_device_id(message, device_id):
+                self.get_logger().warning(
+                    f"dropping playback chunk for unexpected device_id={getattr(message, 'device_id', '')!r}"
+                )
+                return
+            if int(getattr(message, "direction", 0)) != AUDIO_PLAYBACK_DIRECTION:
+                self.get_logger().warning("dropping non-playback chunk on command audio ingress")
+                return
+            command_id = getattr(message, "command_id", "")
+            if not command_id:
+                self.get_logger().warning("dropping playback chunk without command_id")
+                return
+            key = (device_id, command_id)
+            publish_now = False
+            sequence = int(getattr(message, "sequence", 0))
+            pcm_size = _audio_chunk_pcm_size(message)
+            with self._playback_chunk_lock:
+                if key in self._closed_playback_sessions:
+                    self.get_logger().warning(
+                        f"dropping late playback chunk for command_id={command_id!r}"
+                    )
+                    return
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["last_received_monotonic"] = time.monotonic()
+                stats["received"] += 1
+                if key in self._active_playback_sessions:
+                    publish_now = True
+                    buffer = self._pending_playback_chunks.setdefault(key, [])
+                    if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
+                        stats["dropped"] += 1
+                        self.get_logger().warning(
+                            f"dropping playback chunk for command_id={command_id!r}: bridge buffer is full"
+                        )
+                        return
+                    buffer.append(message)
+                    stats["buffered"] += 1
+                else:
+                    buffer = self._pending_playback_chunks.setdefault(key, [])
+                    if len(buffer) >= AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS:
+                        stats["dropped"] += 1
+                        self.get_logger().warning(
+                            f"dropping playback chunk for command_id={command_id!r}: bridge buffer is full"
+                        )
+                        return
+                    buffer.append(message)
+                    stats["buffered"] += 1
+                    if stats["buffered"] == 1:
+                        self.get_logger().info(
+                            "audio playback relay buffered first chunk "
+                            f"device_id={device_id!r} command_id={command_id!r} "
+                            f"sequence={sequence} bytes={pcm_size} "
+                            f"format={int(getattr(message, 'format', 0))} "
+                            f"sample_rate={int(getattr(message, 'sample_rate', 0))} "
+                            f"channels={int(getattr(message, 'channels', 0))}"
+                        )
+            if publish_now:
+                self._publish_device_audio_chunk(device_id, message)
+                return
+
+        def _activate_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
+            key = (device_id, command_id)
+            with self._playback_chunk_lock:
+                self._closed_playback_sessions.discard(key)
+                self._active_playback_sessions.add(key)
+                buffered = list(self._pending_playback_chunks.get(key, []))
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["activated_monotonic"] = time.monotonic()
+            self.get_logger().info(
+                "audio playback relay activated "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"buffered={len(buffered)} received={stats['received']}"
+            )
+            self._wait_for_device_audio_playback_subscription(device_id, command_id)
+            for index, message in enumerate(buffered):
+                self._publish_device_audio_chunk(device_id, message)
+                if index == 0 and int(getattr(message, "sequence", 0)) == 0:
+                    for _retry_index in range(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT - 1):
+                        time.sleep(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC)
+                        self._publish_device_audio_chunk(device_id, message)
+
+        def _handle_next_audio_chunk(
+            self,
+            device_id: str,
+            request: object,
+            response: object,
+        ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
+            key = (device_id, meta.command_id)
+            next_sequence = int(getattr(request, "next_sequence", 0))
+            chunk = None
+            buffered_chunks = 0
+            with self._playback_chunk_lock:
+                queue = self._pending_playback_chunks.setdefault(key, [])
+                while queue and int(getattr(queue[0], "sequence", 0)) < next_sequence:
+                    queue.pop(0)
+                if queue and int(getattr(queue[0], "sequence", 0)) == next_sequence:
+                    chunk = queue.pop(0)
+                buffered_chunks = len(queue)
+                active = key in self._active_playback_sessions
+                closed = key in self._closed_playback_sessions
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                idle_reference = float(
+                    stats.get("last_received_monotonic")
+                    or stats.get("activated_monotonic")
+                    or 0.0
+                )
+                if (
+                    active
+                    and chunk is None
+                    and buffered_chunks == 0
+                    and idle_reference > 0.0
+                    and time.monotonic() - idle_reference >= AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC
+                ):
+                    self._active_playback_sessions.discard(key)
+                    self._closed_playback_sessions.add(key)
+                    active = False
+                    closed = True
+                    self.get_logger().info(
+                        "audio playback pull closed idle input "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"next_sequence={next_sequence}"
+                    )
+            if not active and not closed:
+                _copy_result(
+                    response.result,
+                    Result.rejected(
+                        "FIRMWARE_BUSY",
+                        "audio playback pull requested before session activation",
+                        recoverable=True,
+                    ),
+                )
+                response.has_chunk = False
+                response.end_of_stream = False
+                response.buffered_chunks = buffered_chunks
+                return response
+            _copy_result(response.result, Result.accepted("audio playback chunk pull ok"))
+            response.has_chunk = chunk is not None
+            response.end_of_stream = closed and chunk is None and buffered_chunks == 0
+            response.buffered_chunks = buffered_chunks
+            if chunk is not None:
+                self._copy_audio_chunk_response(response.chunk, chunk)
+                if next_sequence == 0:
+                    self.get_logger().info(
+                        "audio playback pull served first chunk "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"bytes={_audio_chunk_pcm_size(chunk)} buffered={buffered_chunks}"
+                    )
+            return response
+
+        def _copy_audio_chunk_response(self, target: object, source: object) -> None:
+            target.device_id = getattr(source, "device_id", "")
+            target.command_id = getattr(source, "command_id", "")
+            target.direction = int(getattr(source, "direction", 0))
+            target.sequence = int(getattr(source, "sequence", 0))
+            target.format = int(getattr(source, "format", 0))
+            target.sample_rate = int(getattr(source, "sample_rate", 0))
+            target.channels = int(getattr(source, "channels", 0))
+            target.pcm = bytes(getattr(source, "pcm", b""))
+
+        def _wait_for_device_audio_playback_subscription(
+            self,
+            device_id: str,
+            command_id: str,
+        ) -> None:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            if publisher is None or not hasattr(publisher, "get_subscription_count"):
+                return
+            deadline = time.monotonic() + AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC
+            match_count = int(publisher.get_subscription_count())
+            while match_count <= 0 and time.monotonic() < deadline:
+                time.sleep(AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC)
+                match_count = int(publisher.get_subscription_count())
+            self.get_logger().info(
+                "audio playback relay subscription match "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"subscriptions={match_count}"
+            )
+
+        def _finish_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
+            key = (device_id, command_id)
+            with self._playback_chunk_lock:
+                self._active_playback_sessions.discard(key)
+                pending = self._pending_playback_chunks.pop(key, [])
+                self._closed_playback_sessions.add(key)
+                stats = self._playback_relay_stats.pop(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+            self.get_logger().info(
+                "audio playback relay finished "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"received={stats['received']} buffered={stats['buffered']} "
+                f"published={stats['published']} dropped={stats['dropped']} "
+                f"pending={len(pending)}"
+            )
+
+        def _publish_device_audio_chunk(self, device_id: str, message: object) -> None:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            command_id = getattr(message, "command_id", "")
+            key = (device_id, command_id)
+            sequence = int(getattr(message, "sequence", 0))
+            pcm_size = _audio_chunk_pcm_size(message)
+            if publisher is None:
+                with self._playback_chunk_lock:
+                    stats = self._playback_relay_stats.setdefault(
+                        key,
+                        {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                    )
+                    stats["dropped"] += 1
+                self.get_logger().warning(
+                    f"dropping playback chunk for unconfigured device_id={device_id!r}"
+                )
+                return
+            with self._playback_chunk_lock:
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["published"] += 1
+                published_count = stats["published"]
+            if published_count == 1:
+                self.get_logger().info(
+                    "audio playback relay published first chunk "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"sequence={sequence} bytes={pcm_size}"
+                )
+            publisher.publish(message)
+
         def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:
             if not _coerce_telemetry_device_id(message, device_id):
                 self.get_logger().warning(
@@ -1271,14 +1620,63 @@ def main(args: list[str] | None = None) -> None:
             request: object,
             response: object,
         ) -> object:
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.set_led(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 request.pattern,
                 request.color,
                 request.duration_ms,
             )
-            _copy_result(response.result, command_response.result)
+            if not command_response.result.ok:
+                _copy_result(response.result, command_response.result)
+                return response
+
+            device_result = self._call_device_led_set(device_id, request, meta)
+            _copy_result(response.result, device_result)
             return response
+
+        def _call_device_led_set(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_led_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' is not configured"
+                )
+            if not client.wait_for_service(timeout_sec=0.1):
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' is unavailable"
+                )
+
+            device_request = self._set_led_type.Request()
+            _copy_command_meta(
+                device_request.meta,
+                meta,
+                getattr(request.meta, "created_at", device_request.meta.created_at),
+            )
+            device_request.pattern = request.pattern
+            device_request.color = request.color
+            device_request.duration_ms = request.duration_ms
+
+            future = client.call_async(device_request)
+            deadline = time.monotonic() + self._device_command_timeout_sec
+            while not future.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not future.done():
+                future.cancel()
+                return _make_timeout_result(
+                    f"firmware LED service for '{device_id}' timed out"
+                )
+            try:
+                device_response = future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(
+                    f"firmware LED service for '{device_id}' failed: {exc}"
+                )
+            return _result_from_ros(device_response.result)
 
         def _handle_run_motion(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
@@ -1429,12 +1827,20 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_play_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.play_audio(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 sample_rate=int(request.sample_rate),
                 channels=int(request.channels),
             )
+            if command_response.result.ok:
+                device_result = self._call_device_audio_play(device_id, request, meta)
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
             result = PlayAudio.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
@@ -1445,13 +1851,21 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_capture_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.capture_audio(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 sample_rate=int(request.sample_rate),
                 channels=int(request.channels),
                 duration_ms=int(request.duration_ms),
             )
+            if command_response.result.ok:
+                device_result = self._call_device_audio_capture(device_id, request, meta)
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
             result = CaptureAudio.Result()
             _copy_result(result.result, command_response.result)
             if command_response.result.ok:
@@ -1462,20 +1876,250 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_capture_camera(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.capture_camera(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 format=request.format,
                 width=int(request.width),
                 height=int(request.height),
                 quality=int(request.quality),
             )
+            if command_response.result.ok:
+                device_result, device_image = self._call_device_camera_capture(
+                    device_id, request, meta
+                )
+                command_response = type(command_response)(
+                    command_response.device_id,
+                    command_response.command_id,
+                    device_result,
+                )
+            else:
+                device_image = None
             result = CaptureCamera.Result()
             _copy_result(result.result, command_response.result)
+            if command_response.result.ok and device_image is not None:
+                _copy_compressed_image_payload(result.image, device_image)
             if command_response.result.ok:
                 goal_handle.succeed()
             else:
                 goal_handle.abort()
             return result
+
+        def _call_device_camera_capture(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> tuple[Result, object | None]:
+            client = self._device_camera_capture_clients.get(device_id)
+            if client is None:
+                return (
+                    _make_transport_result(
+                        f"firmware camera capture action for '{device_id}' is not configured"
+                    ),
+                    None,
+                )
+            goal = CaptureCamera.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.width = int(request.width)
+            goal.height = int(request.height)
+            goal.quality = int(request.quality)
+            return self._send_device_camera_capture_goal(
+                client,
+                goal,
+                f"camera capture action for '{device_id}'",
+                timeout_sec=self._device_media_action_timeout_sec,
+            )
+
+        def _call_device_audio_play(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_audio_play_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware audio playback action for '{device_id}' is not configured"
+                )
+            goal = PlayAudio.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.sample_rate = int(request.sample_rate)
+            goal.channels = int(request.channels)
+            goal.first_chunk_present = bool(
+                getattr(request, "first_chunk_present", False)
+            )
+            goal.first_chunk_sequence = int(
+                getattr(request, "first_chunk_sequence", 0)
+            )
+            goal.first_chunk_pcm = bytes(getattr(request, "first_chunk_pcm", b""))
+            goal.face_hint = getattr(request, "face_hint", "")
+            goal.motion_hint = getattr(request, "motion_hint", "")
+            return self._send_device_action_goal(
+                client,
+                goal,
+                f"audio playback action for '{device_id}'",
+                timeout_sec=self._device_media_action_timeout_sec,
+                on_accepted=lambda: self._activate_playback_chunk_relay(
+                    device_id,
+                    meta.command_id,
+                ),
+                on_finished=lambda: self._finish_playback_chunk_relay(
+                    device_id,
+                    meta.command_id,
+                ),
+            )
+
+        def _call_device_audio_capture(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result:
+            client = self._device_audio_capture_clients.get(device_id)
+            if client is None:
+                return _make_transport_result(
+                    f"firmware audio capture action for '{device_id}' is not configured"
+                )
+            goal = CaptureAudio.Goal()
+            _copy_command_meta(
+                goal.meta,
+                meta,
+                getattr(request.meta, "created_at", goal.meta.created_at),
+            )
+            goal.format = request.format
+            goal.sample_rate = int(request.sample_rate)
+            goal.channels = int(request.channels)
+            goal.duration_ms = int(request.duration_ms)
+            timeout_sec = max(
+                self._device_media_action_timeout_sec,
+                (goal.duration_ms / 1000.0) + 2.0,
+            )
+            return self._send_device_action_goal(
+                client,
+                goal,
+                f"audio capture action for '{device_id}'",
+                timeout_sec=timeout_sec,
+            )
+
+        def _send_device_camera_capture_goal(
+            self,
+            client: object,
+            goal: object,
+            label: str,
+            *,
+            timeout_sec: float | None = None,
+        ) -> tuple[Result, object | None]:
+            if not client.wait_for_server(timeout_sec=0.1):
+                return _make_transport_result(f"firmware {label} is unavailable"), None
+
+            goal_future = client.send_goal_async(goal)
+            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
+            if wait_result is not None:
+                return wait_result, None
+            try:
+                device_goal_handle = goal_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} failed: {exc}"), None
+            if device_goal_handle is None or not getattr(device_goal_handle, "accepted", False):
+                return (
+                    Result.rejected(
+                        "UNKNOWN_COMMAND",
+                        f"firmware {label} rejected the goal",
+                        recoverable=False,
+                    ),
+                    None,
+                )
+
+            result_future = device_goal_handle.get_result_async()
+            wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
+            if wait_result is not None:
+                return (
+                    _make_camera_capture_failed_result(f"firmware {label} timed out"),
+                    None,
+                )
+            try:
+                result_response = result_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return (
+                    _make_camera_capture_failed_result(
+                        f"firmware {label} result failed: {exc}"
+                    ),
+                    None,
+                )
+            action_result = result_response.result
+            return _result_from_ros(action_result.result), action_result.image
+
+        def _send_device_action_goal(
+            self,
+            client: object,
+            goal: object,
+            label: str,
+            *,
+            timeout_sec: float | None = None,
+            on_accepted=None,
+            on_finished=None,
+        ) -> Result:
+            if not client.wait_for_server(timeout_sec=0.1):
+                return _make_transport_result(f"firmware {label} is unavailable")
+
+            goal_future = client.send_goal_async(goal)
+            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
+            if wait_result is not None:
+                return wait_result
+            try:
+                device_goal_handle = goal_future.result()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                return _make_transport_result(f"firmware {label} failed: {exc}")
+            if device_goal_handle is None or not getattr(device_goal_handle, "accepted", False):
+                return Result.rejected(
+                    "UNKNOWN_COMMAND",
+                    f"firmware {label} rejected the goal",
+                    recoverable=False,
+                )
+            if on_accepted is not None:
+                on_accepted()
+
+            try:
+                result_future = device_goal_handle.get_result_async()
+                wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
+                if wait_result is not None:
+                    return wait_result
+                try:
+                    result_response = result_future.result()
+                except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                    return _make_transport_result(f"firmware {label} result failed: {exc}")
+                return _result_from_ros(result_response.result.result)
+            finally:
+                if on_finished is not None:
+                    on_finished()
+
+        def _wait_for_future(
+            self,
+            future: object,
+            label: str,
+            *,
+            timeout_sec: float | None = None,
+        ) -> Result | None:
+            deadline = time.monotonic() + (
+                self._device_command_timeout_sec if timeout_sec is None else timeout_sec
+            )
+            while not future.done() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if future.done():
+                return None
+            future.cancel()
+            return _make_timeout_result(f"firmware {label} timed out")
 
     rclpy.init(args=args)
     node = StackChanBridgeNode()
