@@ -99,13 +99,18 @@ uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --u
 uv run --no-project python scripts/firmware_platformio.py monitor --port COM3 --baud 921600
 ```
 
-This profile prints bounded `sensor_input_diag` lines for touch zone
-intensities, LTR553 register/read status, proximity/light raw readings, power
-telemetry, and whether the diagnostic profile released the internal I2C path
-for camera init. It initializes only the touch, power, and LTR553 sensor
-adapters to separate sensor wiring/read failures from optional adapter pressure.
-Stop the micro-ROS Agent first and flash a normal build again after the monitor
-run.
+This profile keeps the same runtime serial baud as the normal firmware; the
+`--upload-speed 115200` option above is only the flashing speed. Open the
+monitor at 921600 bps immediately after upload. The diagnostic prints
+`sensor_input_diag_stage` boot markers before touching M5 or sensor adapters
+and waits briefly at `pre_m5_begin` so the first visible line shows whether text
+output is alive before hardware init. It then prints bounded `sensor_input_diag`
+lines for touch zone intensities, LTR553 register/read status,
+proximity/light raw readings, power telemetry, and whether the diagnostic
+profile released the internal I2C path for camera init. It initializes only the
+touch, power, and LTR553 sensor adapters to separate sensor wiring/read
+failures from optional adapter pressure. Stop the micro-ROS Agent first and
+flash a normal build again after the monitor run.
 
 If the Agent creates the ROS graph but no samples reach ROS 2, build a
 temporary minimal bring-up profile before changing command behavior:

@@ -359,10 +359,15 @@ hardware bring-up issue complete.
   ```
 
   During manual touch, near/far, and light/dark stimuli, inspect the bounded
-  `sensor_input_diag` fields: `touch_zone_mask`, `touch_i0..touch_i2`,
-  `ltr553_part_ok`, `ltr553_manufacturer_ok`, `ps_read_ok`, `ps_raw`,
-  `als_read_ok`, `als_raw`, `power_voltage_v`, and
-  `in_i2c_released_for_camera`. This diagnostic profile is local firmware
+  `sensor_input_diag_stage` boot markers and then the `sensor_input_diag`
+  fields: `touch_zone_mask`, `touch_i0..touch_i2`, `ltr553_part_ok`,
+  `ltr553_manufacturer_ok`, `ps_read_ok`, `ps_raw`, `als_read_ok`, `als_raw`,
+  `power_voltage_v`, and `in_i2c_released_for_camera`. The profile keeps the
+  normal runtime serial baud, currently 921600 bps. The `--upload-speed 115200`
+  examples are flashing-only settings and do not change the firmware runtime
+  transport. The diagnostic waits briefly at `pre_m5_begin`; open the monitor
+  immediately after upload so missing text can be separated from a later
+  hardware-init hang. This diagnostic profile is local firmware
   maintenance only; do not run it with the Agent attached to the same USB
   serial transport, and restore a normal firmware build before standard ROS 2
   validation.
@@ -1185,6 +1190,37 @@ KOIZUMI-112 diagnostic firmware update:
   finished` with `received=9`, `published=9`, `dropped=0`, and `pending=0`.
   Audio capture and camera capture remain `UNSUPPORTED_FEATURE` for this
   play-audio bring-up firmware profile.
+
+### 2026-05-24 KOIZUMI-127 sensor diagnostic serial text isolation
+
+- `--sensor-input-diagnostics` now keeps the same runtime serial baud as the
+  normal firmware and no longer adds USB CDC build flags. `--upload-speed
+  115200 --no-stub` was used only as the stable flashing path.
+- Firmware contract tests passed:
+
+  ```powershell
+  uv run --no-project python -m unittest discover -s firmware/m5stackchan-microros/tests
+  ```
+
+- Diagnostic firmware built and uploaded on COM3 with:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --sensor-input-diagnostics
+  ```
+
+- A 20 second PlatformIO monitor capture at 921600 bps still showed only the
+  PlatformIO monitor header and no `sensor_input_diag_stage` or
+  `sensor_input_diag` firmware text. This means the remaining blocker is not a
+  runtime baud change; it is the mismatch between the proven micro-ROS serial
+  transport and the standalone `Serial.print` diagnostic path.
+- Normal firmware was restored immediately after the diagnostic run:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+  uv run --no-project python scripts/firmware_platformio.py plan --json --port COM3
+  ```
+
+  The plan reported `upload_status: current`.
 
 ## Cleanup
 

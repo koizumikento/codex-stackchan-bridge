@@ -166,6 +166,12 @@ void stackchan_diag_println(const T& value) {
 #endif
 }
 
+void stackchan_diag_flush() {
+#if STACKCHAN_SERIAL_DIAGNOSTICS
+  Serial.flush();
+#endif
+}
+
 stackchan::StateMachine state_machine;
 char current_face[16] = "neutral";
 char current_motion[16] = "idle";
@@ -176,8 +182,11 @@ unsigned long last_agent_attempt_ms = 0;
 unsigned long microros_connected_since_ms = 0;
 unsigned long last_bringup_event_enqueue_ms = 0;
 unsigned long last_sensor_input_diag_ms = 0;
+unsigned long last_sensor_input_diag_report_ms = 0;
+unsigned long sensor_input_diag_stage_started_ms = 0;
 constexpr uint8_t kMicrorosMaxConsecutivePublishFailures = 3;
 bool microros_connected = false;
+uint8_t sensor_input_diag_stage = 0;
 uint8_t microros_bringup_event_enqueue_count = 0;
 uint32_t microros_bringup_event_total_enqueue_count = 0;
 uint32_t microros_publish_attempt_count = 0;
@@ -954,17 +963,74 @@ void initialize_sensor_adapters() {
 }
 
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
-void initialize_sensor_input_diagnostic_adapters() {
-  stackchan_touch_sensor.begin();
-  stackchan_touch_sensor_initialized = true;
+void print_sensor_input_diagnostics(uint32_t now_ms);
 
-  m5::INA226_Class::config_t config;
-  config.shunt_res = 0.01f;
-  config.max_expected_current = 8.19f;
-  stackchan_power_monitor.config(config);
-  stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
+void print_sensor_input_diag_stage(const char* stage) {
+  stackchan_diag_print("stackchan sensor_input_diag_stage ms=");
+  stackchan_diag_print(millis());
+  stackchan_diag_print(" stage=");
+  stackchan_diag_println(stage);
+  stackchan_diag_flush();
+}
 
-  ltr553_sensor_initialized = initialize_ltr553_sensor();
+void run_sensor_input_diagnostic_loop(uint32_t now_ms) {
+  constexpr unsigned long kSensorInputDiagStartupHoldMs = 8000;
+  constexpr unsigned long kSensorInputDiagPeriodMs = 250;
+  if (now_ms - last_sensor_input_diag_ms < kSensorInputDiagPeriodMs) {
+    return;
+  }
+  last_sensor_input_diag_ms = now_ms;
+
+  if (sensor_input_diag_stage == 0) {
+    print_sensor_input_diag_stage("pre_m5_begin");
+    if (now_ms - sensor_input_diag_stage_started_ms >= kSensorInputDiagStartupHoldMs) {
+      sensor_input_diag_stage = 1;
+    }
+    return;
+  }
+
+  if (sensor_input_diag_stage == 1) {
+    print_sensor_input_diag_stage("m5_begin_start");
+    M5.begin();
+    Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
+    print_sensor_input_diag_stage("m5_begin_done");
+    sensor_input_diag_stage = 2;
+    return;
+  }
+
+  if (sensor_input_diag_stage == 2) {
+    print_sensor_input_diag_stage("touch_begin_start");
+    stackchan_touch_sensor.begin();
+    stackchan_touch_sensor_initialized = true;
+    print_sensor_input_diag_stage("touch_begin_done");
+    sensor_input_diag_stage = 3;
+    return;
+  }
+
+  if (sensor_input_diag_stage == 3) {
+    print_sensor_input_diag_stage("power_begin_start");
+    m5::INA226_Class::config_t config;
+    config.shunt_res = 0.01f;
+    config.max_expected_current = 8.19f;
+    stackchan_power_monitor.config(config);
+    stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
+    print_sensor_input_diag_stage(
+        stackchan_power_monitor_initialized ? "power_begin_done" : "power_begin_failed");
+    sensor_input_diag_stage = 4;
+    return;
+  }
+
+  if (sensor_input_diag_stage == 4) {
+    print_sensor_input_diag_stage("ltr553_begin_start");
+    ltr553_sensor_initialized = initialize_ltr553_sensor();
+    print_sensor_input_diag_stage(
+        ltr553_sensor_initialized ? "ltr553_begin_done" : "ltr553_begin_failed");
+    sensor_input_diag_stage = 5;
+    return;
+  }
+
+  M5.update();
+  print_sensor_input_diagnostics(now_ms);
 }
 #endif
 
@@ -1090,10 +1156,10 @@ stackchan::PowerStatusTelemetry read_power_status_telemetry(uint32_t now_ms) {
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
 void print_sensor_input_diagnostics(uint32_t now_ms) {
   constexpr unsigned long kSensorInputDiagPeriodMs = 250;
-  if (now_ms - last_sensor_input_diag_ms < kSensorInputDiagPeriodMs) {
+  if (now_ms - last_sensor_input_diag_report_ms < kSensorInputDiagPeriodMs) {
     return;
   }
-  last_sensor_input_diag_ms = now_ms;
+  last_sensor_input_diag_report_ms = now_ms;
 
   const stackchan::TouchStateTelemetry touch = read_touch_state_telemetry(now_ms);
   const stackchan::ProximityRawTelemetry proximity =
@@ -5984,13 +6050,8 @@ void publish_runtime_telemetry(uint32_t now_ms) {
 void setup() {
   Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
-  M5.begin();
-  Serial.begin(STACKCHAN_MICROROS_SERIAL_BAUD);
-  delay(200);
-  initialize_sensor_input_diagnostic_adapters();
-  stackchan_diag_println("stackchan sensor_input_diag_mode active=true");
-  show_neutral_face();
-  state_machine.booted();
+  sensor_input_diag_stage_started_ms = millis();
+  print_sensor_input_diag_stage("setup_enter");
   return;
 #endif
   servo_adapter_init_result = initialize_servo_adapter();
@@ -6050,12 +6111,12 @@ void setup() {
 
 void loop() {
   const unsigned long now = millis();
-  M5.update();
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS
-  print_sensor_input_diagnostics(static_cast<uint32_t>(now));
+  run_sensor_input_diagnostic_loop(static_cast<uint32_t>(now));
   delay(50);
   return;
 #endif
+  M5.update();
   step_motion_scheduler(now);
   update_servo_health_cache(now);
 
