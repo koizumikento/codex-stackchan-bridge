@@ -868,7 +868,14 @@ def _mock_command_failure(request: CommandRequest) -> CommandResult | None:
 
 def _command_payload(request: CommandRequest) -> dict[str, Any]:
     if request.command_type is CommandType.SAY:
-        return {"type": "say", "text_length": len(request.args["text"])}
+        payload: dict[str, Any] = {
+            "type": "say",
+            "text_length": len(request.args["text"]),
+        }
+        voice = str(request.args.get("voice", "")).strip()
+        if voice:
+            payload["voice_profile"] = voice
+        return payload
     if request.command_type is CommandType.FACE:
         return {"type": "face", "name": request.args["name"]}
     if request.command_type is CommandType.MOTION:

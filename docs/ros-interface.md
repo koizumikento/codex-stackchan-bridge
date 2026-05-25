@@ -967,8 +967,26 @@ Purpose: request speech output from text.
 
 This is a bridge facade action. The bridge owns TTS, voice selection, speech policy, and coordination with face/motion hints. Firmware must not receive `text` or `voice` fields. After TTS, the bridge sends audio through `/stackchan/<device_id>/cmd/audio/play` or the corresponding device audio path.
 
-The current bridge scaffold validates and accepts `say` requests but does not
-claim speech playback completion until TTS/audio routing is implemented.
+The bridge implementation uses a local TTS provider boundary. The first
+supported provider is a local VOICEVOX Engine HTTP service. That service is an
+operator-started local dependency, not a cloud account, mobile app, firmware
+module, or Codex-facing API. The bridge selects a documented voice profile and
+maps that profile to provider-local details such as a VOICEVOX `speaker_id`.
+CLI, MCP, public events, and normal logs must expose only the voice profile
+name, not raw provider IDs, speech text, synthesized PCM, or provider request
+bodies.
+
+When TTS is enabled, `/stackchan/<device_id>/cmd/say` completes only after the
+bridge has synthesized bounded local audio and the firmware-owned audio
+playback action returns a terminal result. Provider-disabled, unknown-profile,
+synthesis-failed, unsupported-audio, playback-failed, and timeout cases return
+structured `Result` failures. Firmware still receives only audio playback
+goals and chunks; it must not receive `text`, `voice`, provider endpoint
+configuration, or provider credentials.
+
+If no TTS provider is configured, the action returns `UNSUPPORTED_FEATURE`.
+The earlier accept-only scaffold behavior remains a historical bring-up note,
+not the completion contract for local TTS.
 
 Goal fields:
 
@@ -986,6 +1004,17 @@ Feedback fields:
 
 - `progress`
 - `message`
+
+Bridge-owned TTS events:
+
+- `tts_started`
+- `tts_finished`
+- `tts_failed`
+
+These events may include bounded metadata such as `device_id`, `command_id`,
+`voice_profile`, provider kind, and audio format. They must not include speech
+text, provider request payloads, raw VOICEVOX speaker names/IDs as the public
+voice selector, PCM bytes, transcript text, or secrets.
 
 ### `/stackchan/<device_id>/cmd/motion/run`
 

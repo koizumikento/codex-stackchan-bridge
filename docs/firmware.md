@@ -30,6 +30,8 @@ flowchart LR
 - Do not make the PC-side bridge responsible for the only copy of hardware safety limits.
 - Do not expose raw hardware controls as the default public interface.
 - Do not make the firmware depend on a specific Codex skill implementation.
+- Do not receive speech text, voice profile names, provider-specific speaker
+  IDs, TTS provider endpoints, credentials, or cloud/mobile TTS bindings.
 - Do not fork the M5Stack factory firmware as the project baseline.
 
 ## Design stance
@@ -231,6 +233,15 @@ leaving the bridge to time out without a firmware result. Capture uses the
 baseline 20 ms chunk size for hardware bring-up because the current micro-ROS
 serial path handled 640 byte publishes more reliably than max-size 40 ms
 chunks.
+
+Speech synthesis remains PC-side. `/stackchan/<device_id>/cmd/say` may use a
+local bridge-owned TTS provider such as VOICEVOX, but firmware only receives
+the resulting bounded audio playback goal and playback chunks on
+`/stackchan/<device_id>/device/audio/play` and
+`/stackchan/<device_id>/device/audio/playback/chunks`. Firmware diagnostics
+must not print speech text, provider payloads, PCM payloads, provider speaker
+IDs, or provider endpoint details outside an explicit local maintenance/debug
+mode.
 
 CLI-origin playback chunks enter the bridge on
 `/stackchan/<device_id>/cmd/audio/chunks`. Firmware should only observe topic

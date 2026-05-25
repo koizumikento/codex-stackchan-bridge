@@ -329,7 +329,10 @@ def _build_tool_request(
     if name == "say":
         text = _required_string(arguments, "text").strip()
         command_type = CommandType.SAY
-        command_args: dict[str, Any] = {"text": text}
+        command_args: dict[str, Any] = {
+            "text": text,
+            "voice": _optional_string(arguments, "voice", "").strip(),
+        }
     elif name == "face":
         command_type = CommandType.FACE
         command_args = {"name": _required_string(arguments, "name").strip()}
@@ -519,7 +522,7 @@ def _optional_priority(arguments: Mapping[str, Any], key: str, default: Priority
 def _allowed_argument_keys(name: str) -> set[str]:
     keys = {"device_id", "priority", "timeout"}
     if name == "say":
-        keys.update({"text", "wait"})
+        keys.update({"text", "voice", "wait"})
     elif name in {"face", "motion"}:
         keys.add("name")
         if name == "motion":
@@ -566,6 +569,7 @@ def _tool_schema(name: str) -> dict[str, Any]:
 
     if name == "say":
         properties["text"] = {"type": "string"}
+        properties["voice"] = {"type": "string"}
         required.append("text")
     elif name in {"face", "motion"}:
         properties["name"] = {"type": "string"}

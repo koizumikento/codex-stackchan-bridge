@@ -645,6 +645,20 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(stdout, "ACCEPTED say device=default command_id=cmd-test-0001\n")
 
+    def test_say_json_reports_voice_profile_without_text(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["say", "--voice", "default", "hello", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(
+            payload["command"],
+            {"type": "say", "text_length": 5, "voice_profile": "default"},
+        )
+        self.assertNotIn("hello", stdout)
+
     def test_cli_closes_backend_when_supported(self) -> None:
         class ClosingBackend:
             def __init__(self) -> None:

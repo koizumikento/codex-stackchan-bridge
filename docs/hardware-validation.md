@@ -83,6 +83,33 @@ hardware bring-up issue complete.
   A successful Agent connection logs `session established`, then creates the
   participant, topic, publisher, and datawriter for
   `/stackchan/default/device/events`.
+- For local TTS validation, start VOICEVOX as an operator-owned local service
+  before running `say` smokes:
+
+  ```powershell
+  docker compose up -d voicevox
+  ```
+
+  If the bridge runs in a compose service on the same network, configure
+  `STACKCHAN_TTS_ENDPOINT=http://voicevox:50021`. If the bridge runs through
+  the repository Python Docker helpers and reaches the host-published port, use
+  `STACKCHAN_TTS_ENDPOINT=http://host.docker.internal:50021`. From the host,
+  use `http://localhost:50021` for direct diagnostics. Do not put provider
+  endpoints, raw speaker IDs, generated audio, or speech text into Linear
+  comments or normal logs; record only profile names, command IDs, result
+  codes, and audible observations.
+
+  The same-container smoke can run a TTS-backed `say` check with local TTS
+  enabled on the bridge:
+
+  ```powershell
+  $env:STACKCHAN_TTS_ENDPOINT='http://host.docker.internal:50021'
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 120 --say-check "はい" --say-voice default
+  ```
+
+  The smoke expects `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`, and
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`.
 - If the Agent creates the graph but all topic echoes time out, isolate the
   transport/status path with the temporary minimal firmware profile:
 
@@ -270,6 +297,24 @@ hardware bring-up issue complete.
 
 ## Audio
 
+- For TTS-backed speech, confirm
+  `stackchanctl --backend bridge say --voice default "テスト終わったよ" --json`
+  synthesizes through the local provider, routes audio through the firmware
+  playback action, and returns only metadata such as `text_length`,
+  `voice_profile`, `device_id`, `command_id`, and structured result state.
+  Public events may include `tts_started`, `tts_finished`, or `tts_failed` with
+  bounded metadata only. They must not include speech text, provider request
+  bodies, raw provider speaker IDs, PCM bytes, or transcript text.
+- 2026-05-25 KOIZUMI-138 local VOICEVOX smoke reached the firmware-owned
+  `PlayAudio` goal but did not complete audible TTS playback. The bridge
+  synthesized local VOICEVOX output, normalized it to 16 kHz mono PCM, exposed
+  only `text_length` and `voice_profile`, and emitted `tts_started`. The
+  connected COM3 hardware reported `audio_playback` available. Remaining
+  failure modes were firmware `NextAudioChunk` `pull_response_timeout` at
+  sequence `0` with 640 byte chunks, and topic sequence gaps ending in
+  `AUDIO_UNDERRUN` with 128 byte chunks. See `tmp/tts_bridge_smoke_10.log` and
+  `tmp/tts_bridge_smoke_12.log` from that run, and track the transport fix in
+  KOIZUMI-140 before marking KOIZUMI-138 complete.
 - Before firmware reports audio capabilities as available, confirm
   `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
   capture return structured `UNSUPPORTED_FEATURE` results while still reporting

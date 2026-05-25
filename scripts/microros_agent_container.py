@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,7 @@ DEFAULT_EVENT_TYPE = "stackchan_msgs/msg/StackChanEvent"
 ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
+    "STACKCHAN_TTS_ENDPOINT",
 )
 ROS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_build_stamp"
 ROS_MSGS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_stackchan_msgs_build_stamp"
@@ -198,6 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--face-check",
         default="",
         help="Set this face through stackchanctl and verify observe reports it.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-check",
+        default="",
+        help="Run this text through stackchanctl say with local TTS enabled.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-voice",
+        default="default",
+        help="Bridge-owned voice profile used by --say-check.",
     )
     tcp_pty_bridge.add_argument(
         "--allow-missing-firmware-ready",
@@ -807,6 +819,10 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     reconnect_check = "1" if args.reconnect_check else "0"
     disconnect_face_command = args.disconnect_face_command.strip()
     face_check = args.face_check.strip()
+    say_check = args.say_check.strip()
+    say_check_arg = shlex.quote(say_check)
+    say_voice = shlex.quote(args.say_voice.strip() or "default")
+    say_tts_enabled = "1" if say_check else "0"
     led_check = "1" if args.led_check else "0"
     motion_check = args.motion_check.strip()
     motion_disconnect_check = args.motion_disconnect_check.strip()
@@ -819,6 +835,7 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     home_check = "1" if args.home_check else "0"
     soak_seconds = max(0, int(args.soak_seconds))
     soak_interval_seconds = max(1, int(args.soak_interval_seconds))
+    media_action_timeout = f"{float(args.timeout):.1f}"
     setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
@@ -826,6 +843,11 @@ set +e
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:${{PYTHONPATH:-}}
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
+bridge_args=""
+if [ "{say_tts_enabled}" = "1" ]; then
+  export STACKCHAN_TTS_ENDPOINT="${{STACKCHAN_TTS_ENDPOINT:-http://host.docker.internal:50021}}"
+  bridge_args="--ros-args -p tts_enabled:=true -p tts_endpoint:=$STACKCHAN_TTS_ENDPOINT -p device_media_action_timeout_sec:={media_action_timeout}"
+fi
 socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2>/tmp/stackchan-socat.log &
 socat_pid=$!
 agent_pid=
@@ -845,7 +867,7 @@ for i in $(seq 1 50); do
 done
 phase_end 0
 phase_start "bridge startup" BRIDGE_STARTUP
-"$bridge_node" >/tmp/stackchan-bridge.log 2>&1 &
+"$bridge_node" $bridge_args >/tmp/stackchan-bridge.log 2>&1 &
 bridge_pid=$!
 for i in $(seq 1 80); do
   ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
@@ -922,6 +944,32 @@ if [ -n "{face_check}" ]; then
   face_seen_result=$?
   echo "STACKCHAN_BRIDGE_FACE_SEEN=$([ "$face_seen_result" -eq 0 ] && echo 1 || echo 0)"
   [ "$face_seen_result" -eq 0 ] || result=1
+fi
+if [ -n "{say_check}" ]; then
+  echo "--- stackchanctl say ---"
+  say_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} say --voice {say_voice} {say_check_arg} --wait --json 2>&1)
+  say_result=$?
+  printf '%s\n' "$say_output"
+  echo "STACKCHAN_BRIDGE_SAY_EXIT=$say_result"
+  [ "$say_result" -eq 0 ] || result=1
+  printf '%s\n' "$say_output" | grep -q '"result_state": "COMPLETED"'
+  say_completed_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_COMPLETED=$([ "$say_completed_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_completed_result" -eq 0 ] || result=1
+  printf '%s\n' "$say_output" | grep -q '"voice_profile":'
+  say_voice_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=$([ "$say_voice_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_voice_result" -eq 0 ] || result=1
+  sleep 1
+  say_events_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} events list --json 2>&1)
+  say_events_result=$?
+  printf '%s\n' "$say_events_output"
+  echo "STACKCHAN_BRIDGE_SAY_EVENTS_EXIT=$say_events_result"
+  [ "$say_events_result" -eq 0 ] || result=1
+  printf '%s\n' "$say_events_output" | grep -q '"event_name": "tts_finished"'
+  say_tts_finished_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=$([ "$say_tts_finished_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_tts_finished_result" -eq 0 ] || result=1
 fi
 if [ -n "{motion_check}" ]; then
   echo "--- stackchanctl motion {motion_check} ---"

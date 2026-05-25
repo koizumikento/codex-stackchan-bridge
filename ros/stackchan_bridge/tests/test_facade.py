@@ -134,6 +134,12 @@ class FacadeTests(unittest.TestCase):
 
         self.assertEqual(bridge.say(meta(), "hello").result.state, STATE_ACCEPTED)
 
+    def test_say_rejects_empty_text_without_logging_payload(self) -> None:
+        response = facade().say(meta(), "")
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "UNKNOWN_COMMAND")
+
     def test_media_actions_remain_unsupported_until_firmware_confirmed_transport_exists(self) -> None:
         bridge = facade()
 

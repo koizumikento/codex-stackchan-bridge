@@ -224,8 +224,15 @@ class StackChanBridgeFacade:
         checked = self._validate(meta)
         if checked is not None:
             return checked
+        if not text.strip():
+            result = Result.rejected(
+                "UNKNOWN_COMMAND",
+                "say requires non-empty text",
+                recoverable=False,
+            )
+            self._record_error(meta, result, connected=True)
+            return CommandResponse(meta.device_id, meta.command_id, result)
 
-        del text
         status = self._mark_accepted(meta)
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 

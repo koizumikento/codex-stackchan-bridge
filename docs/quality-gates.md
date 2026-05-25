@@ -42,6 +42,10 @@ Required for CLI changes:
 - Audio command tests cover accepted playback/capture, timeout, underrun,
   overrun, unsupported firmware, malformed chunk, disconnect mid-stream, and
   absence of PCM, speech text, and transcript text in CLI JSON or diagnostics.
+- Say/TTS tests cover provider-disabled, unknown voice profile, local provider
+  synthesis failure, audio playback failure, timeout, mock metadata parity, and
+  absence of speech text, provider request bodies, raw provider speaker IDs,
+  PCM, and transcript text in CLI JSON, MCP results, events, and diagnostics.
 - Camera command tests cover QVGA JPEG metadata, `quality=1..95`, max 96 KiB,
   timeout, oversized payload handling, unsupported firmware, and absence of
   image bytes/base64 in CLI JSON or diagnostics.
@@ -128,6 +132,10 @@ Required for bridge event changes:
 - Audio routing tests cover command_id/direction separation, no per-chunk ACK
   assumption, overrun/underrun mapping, same-direction `FIRMWARE_BUSY`, and
   bounded queue behavior.
+- TTS routing tests cover local provider selection, VOICEVOX adapter error
+  mapping, 16 kHz mono PCM normalization, voice profile config, event
+  redaction, and forwarding synthesized audio through the same playback relay
+  used by `/stackchan/<device_id>/cmd/audio/play`.
 - Camera routing tests cover metadata-only command results, oversize discard,
   timeout/failure propagation, and no image bytes in public observations.
 - `perform` remains reserved unless implemented; if implemented, bridge tests

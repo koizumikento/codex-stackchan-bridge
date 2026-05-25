@@ -248,6 +248,7 @@ class McpStdioTests(unittest.TestCase):
             self.assertNotIn("maintenance", tool["name"])
             self.assertNotIn("calibration", tool["name"])
         schemas = {tool["name"]: tool["inputSchema"] for tool in responses[1]["result"]["tools"]}
+        self.assertIn("voice", schemas["say"]["properties"])
         self.assertEqual(
             schemas["motion_pose"]["properties"]["duration_ms"]["anyOf"],
             [
@@ -320,6 +321,31 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(structured["metadata"]["priority"], "NORMAL")
         self.assertEqual(structured["command"], {"type": "face", "name": "happy"})
         self.assertEqual(json.loads(result["content"][0]["text"]), structured)
+
+    def test_mock_say_tool_accepts_voice_profile_without_returning_text(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-say",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "say",
+                        "arguments": {"text": "hello", "voice": "default"},
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(
+            structured["command"],
+            {"type": "say", "text_length": 5, "voice_profile": "default"},
+        )
+        self.assertNotIn("hello", responses[0]["result"]["content"][0]["text"])
 
     def test_observe_tool_returns_status_shape(self) -> None:
         code, responses, stderr = run_mcp(

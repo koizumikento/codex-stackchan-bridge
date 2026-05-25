@@ -222,7 +222,13 @@ class BridgeClient(Protocol):
         raise NotImplementedError
 
     def say(
-        self, meta: CommandMeta, text: str, *, wait: bool, timeout: float
+        self,
+        meta: CommandMeta,
+        text: str,
+        voice: str,
+        *,
+        wait: bool,
+        timeout: float,
     ) -> BridgeCommandResponse:
         raise NotImplementedError
 
@@ -385,6 +391,7 @@ class BridgeBackend:
             return client.say(
                 request.meta,
                 str(request.args["text"]),
+                str(request.args.get("voice", "")),
                 wait=request.wait,
                 timeout=request.timeout,
             )
@@ -656,12 +663,18 @@ class RclpyBridgeClient:
         )
 
     def say(
-        self, meta: CommandMeta, text: str, *, wait: bool, timeout: float
+        self,
+        meta: CommandMeta,
+        text: str,
+        voice: str,
+        *,
+        wait: bool,
+        timeout: float,
     ) -> BridgeCommandResponse:
         goal = self._say_type.Goal()
         _copy_meta(goal.meta, meta)
         goal.text = text
-        goal.voice = ""
+        goal.voice = voice
         goal.face_hint = ""
         goal.motion_hint = ""
         return self._send_action_goal(
@@ -1482,7 +1495,14 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
     if request.command_type is CommandType.LED:
         return {"type": "led", "pattern": request.args["pattern"]}
     if request.command_type is CommandType.SAY:
-        return {"type": "say", "text_length": len(str(request.args["text"]))}
+        payload: dict[str, Any] = {
+            "type": "say",
+            "text_length": len(str(request.args["text"])),
+        }
+        voice = str(request.args.get("voice", "")).strip()
+        if voice:
+            payload["voice_profile"] = voice
+        return payload
     if request.command_type is CommandType.AUDIO_PLAY:
         return {
             "type": "audio.play",

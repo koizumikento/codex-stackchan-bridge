@@ -21,6 +21,7 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_stackchan_status,
     _records_after_event_id,
     _sequence_for_event_id,
+    _select_playback_chunk_for_pull,
     _meta_from_ros,
     _normalize_device_ids,
     _reject_external_safety_priority,
@@ -36,6 +37,34 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RosNodeHelperTests(unittest.TestCase):
+    def test_select_playback_chunk_for_pull_is_idempotent_for_same_sequence(self) -> None:
+        queue = [
+            SimpleNamespace(sequence=4, pcm=b"old"),
+            SimpleNamespace(sequence=5, pcm=b"five"),
+            SimpleNamespace(sequence=6, pcm=b"six"),
+        ]
+
+        first, buffered = _select_playback_chunk_for_pull(queue, 5)
+        retry, retry_buffered = _select_playback_chunk_for_pull(queue, 5)
+
+        self.assertEqual(first.pcm, b"five")
+        self.assertEqual(retry.pcm, b"five")
+        self.assertEqual(buffered, 2)
+        self.assertEqual(retry_buffered, 2)
+        self.assertEqual([chunk.sequence for chunk in queue], [5, 6])
+
+    def test_select_playback_chunk_for_pull_discards_acknowledged_sequences(self) -> None:
+        queue = [
+            SimpleNamespace(sequence=5, pcm=b"five"),
+            SimpleNamespace(sequence=6, pcm=b"six"),
+        ]
+
+        chunk, buffered = _select_playback_chunk_for_pull(queue, 6)
+
+        self.assertEqual(chunk.pcm, b"six")
+        self.assertEqual(buffered, 1)
+        self.assertEqual([item.sequence for item in queue], [6])
+
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
             def __init__(self) -> None:
@@ -368,6 +397,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03",
             "AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5",
             "AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35",
+            "AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.02",
             "_wait_for_device_audio_playback_subscription",
             "audio playback relay subscription match",
             "action_status_best_effort_depth_1",

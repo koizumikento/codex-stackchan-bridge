@@ -53,6 +53,7 @@ class FakeBridgeClient:
         self.power_status_args = None
         self.move_head_pose_args = None
         self.home_head_pose_args = None
+        self.say_args = None
         self.play_audio_args = None
         self.capture_audio_args = None
         self.capture_camera_args = None
@@ -140,8 +141,9 @@ class FakeBridgeClient:
         )
 
     def say(
-        self, meta, text: str, *, wait: bool, timeout: float
+        self, meta, text: str, voice: str, *, wait: bool, timeout: float
     ) -> BridgeCommandResponse:
+        self.say_args = (meta.device_id, text, voice, wait, timeout)
         return BridgeCommandResponse(
             ok=True,
             result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
@@ -402,15 +404,20 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertIsNone(client.home_head_pose_args)
 
     def test_bridge_say_wait_can_complete(self) -> None:
+        client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(
-            ["--backend", "bridge", "say", "hello", "--wait", "--json"],
-            FakeBridgeClient(),
+            ["--backend", "bridge", "say", "--voice", "default", "hello", "--wait", "--json"],
+            client,
         )
 
         self.assertEqual(code, 0, stderr)
         payload = json.loads(stdout)
         self.assertEqual(payload["result_state"], "COMPLETED")
-        self.assertEqual(payload["command"], {"type": "say", "text_length": 5})
+        self.assertEqual(
+            payload["command"],
+            {"type": "say", "text_length": 5, "voice_profile": "default"},
+        )
+        self.assertEqual(client.say_args, ("default", "hello", "default", True, 5.0))
 
     def test_created_at_is_copied_to_ros_time(self) -> None:
         class Stamp:

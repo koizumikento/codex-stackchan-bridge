@@ -8,6 +8,11 @@ run Linux containers. Windows, Linux, and macOS hosts should all use the same
 repository runner commands below. ROS 2, colcon, rosdep, rclpy, and interface
 generation dependencies stay inside the container.
 
+The repository also includes an optional `compose.yaml` for local helper
+services such as VOICEVOX. Compose is not the primary ROS 2 runner and does not
+replace the Python helper scripts below; it is a convenience layer for services
+that the bridge may call.
+
 ## Build The Image
 
 From the repository root:
@@ -40,6 +45,45 @@ shells. If a non-interactive command needs it, source it explicitly:
 ```bash
 source /opt/ros/jazzy/setup.bash
 ```
+
+## Optional Local TTS Service
+
+Start a local VOICEVOX Engine service when validating
+`/stackchan/<device_id>/cmd/say` with local TTS:
+
+```bash
+docker compose up -d voicevox
+```
+
+From a compose-attached bridge container, use:
+
+```bash
+STACKCHAN_TTS_ENDPOINT=http://voicevox:50021
+```
+
+From the existing Python Docker helpers or another container that reaches the
+host-published port, use:
+
+```bash
+STACKCHAN_TTS_ENDPOINT=http://host.docker.internal:50021
+```
+
+The normal host URL is:
+
+```bash
+http://localhost:50021
+```
+
+The `ros2` compose profile is a convenience shell built from the same
+micro-ROS Agent Dockerfile used by `scripts/microros_agent_container.py`:
+
+```bash
+docker compose --profile ros2 run --rm ros2
+```
+
+Keep using the Python helpers for the documented ROS 2 smoke, micro-ROS Agent,
+host serial TCP bridge, stale-build guard, and hardware validation flows unless
+a specific diagnostic calls for compose.
 
 ## Run A One-Off ROS Command
 

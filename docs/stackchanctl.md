@@ -221,6 +221,7 @@ consume them safely.
 
 ```bash
 stackchanctl say "テスト終わったよ"
+stackchanctl say --voice default "テスト終わったよ"
 stackchanctl face happy
 stackchanctl motion nod
 stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500
@@ -264,9 +265,22 @@ Expected backend behavior:
 
 - Normalize text.
 - Send a speech request to the bridge facade.
-- Optionally choose a face or motion while speaking.
-- Return after the request is accepted. The current bridge scaffold does not
-  claim speech playback completion.
+- Optionally select a bridge-owned voice profile with `--voice <profile>`.
+- Optionally choose a face or motion while speaking when that policy is
+  implemented.
+- With the bridge backend and TTS enabled, return after local synthesis and the
+  firmware-owned audio playback action reach a terminal result.
+- With the mock backend, keep deterministic metadata-only behavior and do not
+  synthesize audio.
+
+The CLI/MCP command result must not print speech text, synthesized PCM,
+provider request payloads, raw provider speaker IDs, or provider credentials.
+The command metadata may include `text_length` and the selected
+`voice_profile`.
+
+Bridge TTS configuration belongs to `stackchan_bridge`, not CLI config. The CLI
+may pass a profile name, but it must not own provider endpoints, secrets, or
+speaker-ID safety policy.
 
 ### `face`
 

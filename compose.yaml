@@ -1,0 +1,25 @@
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+    ports:
+      - "50021:50021"
+
+  ros2:
+    profiles:
+      - ros2
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile.microros-agent
+    working_dir: /workspaces/codex-stackchan-bridge
+    volumes:
+      - .:/workspaces/codex-stackchan-bridge
+    depends_on:
+      - voicevox
+    environment:
+      FASTRTPS_DEFAULT_PROFILES_FILE: /tmp/disable_fastdds_shm.xml
+      STACKCHAN_TTS_ENDPOINT: http://voicevox:50021
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    command: bash

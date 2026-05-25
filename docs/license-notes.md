@@ -35,6 +35,22 @@ Use the permissive, library-shaped parts of the ecosystem as dependencies. Treat
 - License: Apache-2.0.
 - Usage: OK as design reference. Avoid copying code into the firmware unless Apache-2.0 notice and compatibility are deliberately handled.
 
+### VOICEVOX Engine
+
+- Role: optional local TTS service for bridge-owned `/stackchan/<device_id>/cmd/say`.
+- License shape: external runtime service with its own engine and voice terms.
+- Usage: OK to call as an operator-provided local HTTP service. Do not vendor
+  the engine, voice libraries, model assets, dictionaries, or character voices
+  into this repository without a separate documented license and distribution
+  decision.
+- Credit: docs, examples, and voice profile config must preserve a
+  `required_credit` string and `terms_url` for every distributable profile.
+  Character-specific terms may require visible credit in demos or generated
+  media, even when local use is free.
+- Project stance: expose bridge-owned profile names such as `default`, not raw
+  provider IDs, as the normal CLI/MCP selector. The bridge may map a profile to
+  a VOICEVOX `speaker_id` locally.
+
 ## Practical rules
 
 - Prefer `StackChan-BSP` for hardware access.
@@ -42,6 +58,9 @@ Use the permissive, library-shaped parts of the ecosystem as dependencies. Treat
 - Do not vendor full factory firmware, mobile app, server, or remote-control code.
 - Do not base this project on a fork of the M5Stack factory firmware.
 - Do not depend on X/Twitter mirrors or unofficial reposts as source material.
+- Do not commit generated speech audio, bundled TTS models, or provider
+  runtime artifacts unless the license and redistribution terms are explicitly
+  documented.
 - Re-check license state before importing any upstream code, because the official repositories are still active.
 
 ## Why this matters

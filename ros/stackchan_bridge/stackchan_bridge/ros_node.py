@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
+from types import SimpleNamespace
 
 from stackchan_bridge.audio_session import AudioChunk
 from stackchan_bridge.event_aggregator import EventAggregator
@@ -18,17 +20,46 @@ from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRe
 from stackchan_bridge.speech_node import SpeechEvent, SpeechSessionProcessor
 from stackchan_bridge.speech_session import SpeechTranscript, SpeechTranscriptStore
 from stackchan_bridge.telemetry import HeadPoseSnapshot, HeadPoseTelemetryStore, PowerStatusSnapshot, PowerTelemetryStore
+from stackchan_bridge.tts_provider import (
+    AUDIO_CHANNELS,
+    AUDIO_CHUNK_BYTES,
+    AUDIO_CHUNK_FORMAT_ID,
+    AUDIO_FORMAT,
+    AUDIO_SAMPLE_RATE,
+    DEFAULT_TTS_TIMEOUT_SEC,
+    TtsAudio,
+    TtsProviderError,
+    VoiceProfile,
+    VoiceVoxTtsProvider,
+    default_voice_profiles,
+)
 
 EVENT_QOS_DEPTH = 32
 DEFAULT_LIVENESS_TIMEOUT_SEC = 3.5
 LIVENESS_CHECK_INTERVAL_SEC = 1.0
 AUDIO_PLAYBACK_DIRECTION = 1
-AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 256
+AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS = 1024
 AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3
 AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
 AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35
+AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
+
+
+def _audio_playback_chunk_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_CHUNK_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_CHUNK_BYTES
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_CHUNK_BYTES
+    value = min(max(value, 2), AUDIO_CHUNK_BYTES)
+    if value % 2:
+        value -= 1
+    return max(value, 2)
 
 
 def _audio_chunk_pcm_size(message: object) -> int:
@@ -40,6 +71,23 @@ def _audio_chunk_pcm_size(message: object) -> int:
         return len(pcm)
     except TypeError:
         return 0
+
+
+def _playback_chunk_sequence(message: object) -> int:
+    return int(getattr(message, "sequence", 0))
+
+
+def _select_playback_chunk_for_pull(
+    queue: list[object], next_sequence: int
+) -> tuple[object | None, int]:
+    while queue and _playback_chunk_sequence(queue[0]) < next_sequence:
+        queue.pop(0)
+    chunk = None
+    if queue and _playback_chunk_sequence(queue[0]) == next_sequence:
+        # The firmware may retry the same service request after a transport
+        # timeout. Keep the chunk until a later sequence proves it was accepted.
+        chunk = queue[0]
+    return chunk, len(queue)
 
 
 def _time_to_string(stamp: object) -> str:
@@ -66,6 +114,20 @@ def _normalize_device_ids(value: object) -> list[str]:
         if device_id and device_id not in device_ids:
             device_ids.append(device_id)
     return device_ids or ["default"]
+
+
+def _normalize_voice_profile_names(value: object) -> list[str]:
+    raw_profiles = [value] if isinstance(value, str) else list(value or [])
+    profiles: list[str] = []
+    for raw_profile in raw_profiles:
+        profile = str(raw_profile).strip()
+        if (
+            profile
+            and profile not in profiles
+            and all(character.isalnum() or character in "_-" for character in profile)
+        ):
+            profiles.append(profile)
+    return profiles or ["default"]
 
 
 def _configured_device_records(
@@ -482,6 +544,8 @@ def main(args: list[str] | None = None) -> None:
             self._device_media_action_timeout_sec = float(
                 self.get_parameter("device_media_action_timeout_sec").value
             )
+            self._tts_provider = None
+            self._tts_default_voice = "default"
             registry = DeviceRegistry(
                 _configured_device_records(
                     configured_device_ids,
@@ -507,6 +571,7 @@ def main(args: list[str] | None = None) -> None:
             self._set_head_pose_type = SetHeadPose
             self._set_led_type = SetLed
             self._set_motion_type = SetMotion
+            self._audio_chunk_type = RosAudioChunk
             self._command_callback_group = ReentrantCallbackGroup()
             self._device_client_callback_group = ReentrantCallbackGroup()
             self._public_event_publishers = {}
@@ -535,11 +600,70 @@ def main(args: list[str] | None = None) -> None:
             self._head_pose_type = HeadPose
             self._capability_status_type = CapabilityStatus
             self._action_servers = []
+            self._configure_tts_provider()
             for device_id in configured_device_ids:
                 self._create_device_resources(device_id)
             self._liveness_timer = self.create_timer(
                 LIVENESS_CHECK_INTERVAL_SEC,
                 self._expire_stale_devices,
+            )
+
+        def _configure_tts_provider(self) -> None:
+            self.declare_parameter("tts_enabled", False)
+            if not bool(self.get_parameter("tts_enabled").value):
+                self._tts_provider = None
+                return
+            default_endpoint = os.environ.get("STACKCHAN_TTS_ENDPOINT", "")
+            self.declare_parameter("tts_endpoint", default_endpoint)
+            endpoint = str(self.get_parameter("tts_endpoint").value or "").strip()
+            self.declare_parameter("tts_timeout_sec", DEFAULT_TTS_TIMEOUT_SEC)
+            timeout_sec = float(self.get_parameter("tts_timeout_sec").value)
+            self.declare_parameter("tts_default_voice", "default")
+            self._tts_default_voice = str(
+                self.get_parameter("tts_default_voice").value or "default"
+            ).strip() or "default"
+            self.declare_parameter("tts_voice_profiles", ["default"])
+            profile_names = _normalize_voice_profile_names(
+                self.get_parameter("tts_voice_profiles").value
+            )
+            profiles = default_voice_profiles(endpoint)
+            configured_profiles: dict[str, VoiceProfile] = {}
+            for profile_name in profile_names:
+                base = f"tts_voice_profile.{profile_name}"
+                default_profile = profiles.get(profile_name) or profiles["default"]
+                self.declare_parameter(f"{base}.provider", default_profile.provider)
+                self.declare_parameter(f"{base}.speaker_id", default_profile.speaker_id)
+                self.declare_parameter(f"{base}.endpoint", default_profile.endpoint)
+                self.declare_parameter(
+                    f"{base}.required_credit",
+                    default_profile.required_credit,
+                )
+                self.declare_parameter(f"{base}.terms_url", default_profile.terms_url)
+                provider = str(self.get_parameter(f"{base}.provider").value or "").strip()
+                if provider != "voicevox":
+                    self.get_logger().warning(
+                        f"ignoring unsupported TTS provider for voice profile {profile_name!r}"
+                    )
+                    continue
+                configured_profiles[profile_name] = VoiceProfile(
+                    name=profile_name,
+                    provider=provider,
+                    speaker_id=int(self.get_parameter(f"{base}.speaker_id").value),
+                    endpoint=str(self.get_parameter(f"{base}.endpoint").value or "").strip(),
+                    required_credit=str(
+                        self.get_parameter(f"{base}.required_credit").value or ""
+                    ).strip(),
+                    terms_url=str(self.get_parameter(f"{base}.terms_url").value or "").strip(),
+                )
+            if not configured_profiles:
+                self.get_logger().warning("TTS is enabled but no voice profiles are configured")
+                self._tts_provider = None
+                return
+            self._tts_provider = VoiceVoxTtsProvider(
+                profiles=configured_profiles,
+                default_profile=self._tts_default_voice,
+                endpoint=endpoint,
+                timeout_sec=timeout_sec,
             )
 
         def _create_device_resources(self, device_id: str) -> None:
@@ -1303,6 +1427,8 @@ def main(args: list[str] | None = None) -> None:
                     for _retry_index in range(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT - 1):
                         time.sleep(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC)
                         self._publish_device_audio_chunk(device_id, message)
+                if index < len(buffered) - 1:
+                    time.sleep(AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC)
 
         def _handle_next_audio_chunk(
             self,
@@ -1317,11 +1443,10 @@ def main(args: list[str] | None = None) -> None:
             buffered_chunks = 0
             with self._playback_chunk_lock:
                 queue = self._pending_playback_chunks.setdefault(key, [])
-                while queue and int(getattr(queue[0], "sequence", 0)) < next_sequence:
-                    queue.pop(0)
-                if queue and int(getattr(queue[0], "sequence", 0)) == next_sequence:
-                    chunk = queue.pop(0)
-                buffered_chunks = len(queue)
+                chunk, buffered_chunks = _select_playback_chunk_for_pull(
+                    queue,
+                    next_sequence,
+                )
                 active = key in self._active_playback_sessions
                 closed = key in self._closed_playback_sessions
                 stats = self._playback_relay_stats.setdefault(
@@ -1385,6 +1510,42 @@ def main(args: list[str] | None = None) -> None:
             target.sample_rate = int(getattr(source, "sample_rate", 0))
             target.channels = int(getattr(source, "channels", 0))
             target.pcm = bytes(getattr(source, "pcm", b""))
+
+        def _buffer_synthesized_playback_chunks(
+            self,
+            device_id: str,
+            meta: CommandMeta,
+            audio: TtsAudio,
+        ) -> None:
+            chunk_bytes = _audio_playback_chunk_bytes()
+            for sequence, start in enumerate(range(0, len(audio.pcm), chunk_bytes)):
+                message = self._audio_chunk_type()
+                message.device_id = device_id
+                message.command_id = meta.command_id
+                message.direction = AUDIO_PLAYBACK_DIRECTION
+                message.sequence = sequence
+                message.format = AUDIO_CHUNK_FORMAT_ID
+                message.sample_rate = audio.sample_rate
+                message.channels = audio.channels
+                message.pcm = audio.pcm[start : start + chunk_bytes]
+                self._handle_cmd_audio_chunk(device_id, message)
+
+        def _tts_playback_request(
+            self,
+            ros_meta: object,
+            request: object,
+        ) -> object:
+            return SimpleNamespace(
+                meta=ros_meta,
+                format=AUDIO_FORMAT,
+                sample_rate=AUDIO_SAMPLE_RATE,
+                channels=AUDIO_CHANNELS,
+                first_chunk_present=False,
+                first_chunk_sequence=0,
+                first_chunk_pcm=b"",
+                face_hint=getattr(request, "face_hint", ""),
+                motion_hint=getattr(request, "motion_hint", ""),
+            )
 
         def _wait_for_device_audio_playback_subscription(
             self,
@@ -1813,15 +1974,131 @@ def main(args: list[str] | None = None) -> None:
 
         def _handle_say(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
+            meta = _meta_from_ros(request.meta, device_id)
             command_response = self.facade.say(
-                _meta_from_ros(request.meta, device_id),
+                meta,
                 request.text,
             )
             result = Say.Result()
-            _copy_result(result.result, command_response.result)
-            if command_response.result.ok:
+            if not command_response.result.ok:
+                _copy_result(result.result, command_response.result)
+                goal_handle.abort()
+                return result
+            if self._tts_provider is None:
+                tts_result = Result.rejected(
+                    "UNSUPPORTED_FEATURE",
+                    "local TTS provider is not configured",
+                    recoverable=False,
+                )
+                _copy_result(result.result, tts_result)
+                goal_handle.abort()
+                return result
+            voice_profile = str(getattr(request, "voice", "") or "").strip()
+            if not voice_profile:
+                voice_profile = self._tts_default_voice
+            self._handle_speech_event(
+                SpeechEvent(
+                    device_id=device_id,
+                    event_name="tts_started",
+                    command_id=meta.command_id,
+                    source="bridge",
+                    payload={
+                        "voice_profile": voice_profile,
+                        "provider": getattr(self._tts_provider, "provider_kind", "local"),
+                    },
+                )
+            )
+            try:
+                profile, audio = self._tts_provider.synthesize(
+                    str(request.text),
+                    voice_profile,
+                )
+            except TtsProviderError as exc:
+                tts_result = Result.rejected(
+                    exc.code,
+                    str(exc),
+                    recoverable=exc.recoverable,
+                )
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": voice_profile,
+                            "provider": getattr(self._tts_provider, "provider_kind", "local"),
+                            "error_code": exc.code,
+                        },
+                    )
+                )
+                _copy_result(result.result, tts_result)
+                goal_handle.abort()
+                return result
+            if (
+                audio.format != AUDIO_FORMAT
+                or audio.sample_rate != AUDIO_SAMPLE_RATE
+                or audio.channels != AUDIO_CHANNELS
+            ):
+                tts_result = Result.rejected(
+                    "TTS_AUDIO_UNSUPPORTED",
+                    "local TTS provider returned unsupported audio format",
+                    recoverable=True,
+                )
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "error_code": tts_result.error_code,
+                        },
+                    )
+                )
+                _copy_result(result.result, tts_result)
+                goal_handle.abort()
+                return result
+            self._buffer_synthesized_playback_chunks(device_id, meta, audio)
+            playback_result = self._call_device_audio_play(
+                device_id,
+                self._tts_playback_request(request.meta, request),
+                meta,
+            )
+            _copy_result(result.result, playback_result)
+            if playback_result.ok:
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_finished",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "format": audio.format,
+                            "sample_rate": audio.sample_rate,
+                            "channels": audio.channels,
+                        },
+                    )
+                )
                 goal_handle.succeed()
             else:
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "error_code": playback_result.error_code,
+                        },
+                    )
+                )
                 goal_handle.abort()
             return result
 

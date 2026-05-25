@@ -138,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     say = subparsers.add_parser("say")
+    say.add_argument("--voice")
     say.add_argument("text", nargs="+")
 
     face = subparsers.add_parser("face")
@@ -271,7 +272,10 @@ def build_request(
 
     command_args: dict[str, object]
     if command_type is CommandType.SAY:
-        command_args = {"text": " ".join(args.text).strip()}
+        command_args = {
+            "text": " ".join(args.text).strip(),
+            "voice": (args.voice or "").strip(),
+        }
     elif command_type is CommandType.FACE:
         command_args = {"name": args.name.strip()}
     elif command_type is CommandType.MOTION:
