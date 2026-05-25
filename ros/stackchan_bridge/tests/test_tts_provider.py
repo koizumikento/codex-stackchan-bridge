@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 import wave
 
@@ -12,6 +13,8 @@ from stackchan_bridge.tts_provider import (
     VoiceVoxTtsProvider,
     decode_wav_to_pcm_s16le_mono_16k,
     default_voice_profiles,
+    trim_pcm_s16le_silence,
+    tune_voicevox_query_payload,
 )
 
 
@@ -63,6 +66,51 @@ class TtsProviderTests(unittest.TestCase):
         self.assertEqual(audio.sample_rate, AUDIO_SAMPLE_RATE)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1][1], b'{"accent_phrases":[]}')
+
+    def test_voicevox_adapter_applies_transport_tuning(self) -> None:
+        calls: list[tuple[str, bytes, dict[str, str]]] = []
+
+        def post(url: str, data: bytes, headers: dict[str, str], timeout: float) -> bytes:
+            calls.append((url, data, headers))
+            if url.endswith("/audio_query?text=hello&speaker=3"):
+                return b'{"accent_phrases":[],"speedScale":1.0}'
+            if url.endswith("/synthesis?speaker=3"):
+                return wav_bytes()
+            raise AssertionError(url)
+
+        provider = VoiceVoxTtsProvider(
+            profiles=default_voice_profiles("http://voicevox:50021"),
+            default_profile="default",
+            speed_scale=3.0,
+            pre_phoneme_length=0.0,
+            post_phoneme_length=0.0,
+            http_post=post,
+        )
+
+        _profile, _audio = provider.synthesize("hello", "default")
+
+        tuned_query = json.loads(calls[1][1].decode("utf-8"))
+        self.assertEqual(tuned_query["speedScale"], 3.0)
+        self.assertEqual(tuned_query["prePhonemeLength"], 0.0)
+        self.assertEqual(tuned_query["postPhonemeLength"], 0.0)
+
+    def test_tune_voicevox_query_payload_rejects_invalid_json(self) -> None:
+        with self.assertRaises(TtsProviderError) as raised:
+            tune_voicevox_query_payload(b"not-json", speed_scale=2.0)
+
+        self.assertEqual(raised.exception.code, "TTS_SYNTHESIS_FAILED")
+
+    def test_trim_pcm_s16le_silence_preserves_margin(self) -> None:
+        samples = [0, 10, 400, 800, 900, 400, 5, 0]
+        pcm = b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples)
+
+        trimmed = trim_pcm_s16le_silence(pcm, threshold=512, margin_samples=1)
+
+        decoded = [
+            int.from_bytes(trimmed[index : index + 2], "little", signed=True)
+            for index in range(0, len(trimmed), 2)
+        ]
+        self.assertEqual(decoded, [400, 800, 900, 400])
 
     def test_unknown_voice_profile_is_structured_error(self) -> None:
         provider = VoiceVoxTtsProvider(

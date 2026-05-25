@@ -66,12 +66,22 @@ class VoiceVoxTtsProvider:
         default_profile: str = "default",
         endpoint: str = "",
         timeout_sec: float = DEFAULT_TTS_TIMEOUT_SEC,
+        speed_scale: float | None = None,
+        pre_phoneme_length: float | None = None,
+        post_phoneme_length: float | None = None,
+        silence_trim_threshold: int = 0,
+        silence_trim_margin_samples: int = 0,
         http_post: HttpPost | None = None,
     ) -> None:
         self._profiles = dict(profiles)
         self._default_profile = default_profile
         self._endpoint = endpoint.rstrip("/")
         self._timeout_sec = timeout_sec
+        self._speed_scale = speed_scale
+        self._pre_phoneme_length = pre_phoneme_length
+        self._post_phoneme_length = post_phoneme_length
+        self._silence_trim_threshold = max(0, int(silence_trim_threshold))
+        self._silence_trim_margin_samples = max(0, int(silence_trim_margin_samples))
         self._http_post = http_post or _http_post
 
     @property
@@ -95,9 +105,22 @@ class VoiceVoxTtsProvider:
                 recoverable=False,
             )
         query = self._audio_query(endpoint, profile.speaker_id, text)
+        query = tune_voicevox_query_payload(
+            query,
+            speed_scale=self._speed_scale,
+            pre_phoneme_length=self._pre_phoneme_length,
+            post_phoneme_length=self._post_phoneme_length,
+        )
         validate_voicevox_query_payload(query)
         wav_bytes = self._synthesis(endpoint, profile.speaker_id, query)
-        return profile, decode_wav_to_pcm_s16le_mono_16k(wav_bytes)
+        audio = decode_wav_to_pcm_s16le_mono_16k(wav_bytes)
+        return profile, TtsAudio(
+            pcm=trim_pcm_s16le_silence(
+                audio.pcm,
+                threshold=self._silence_trim_threshold,
+                margin_samples=self._silence_trim_margin_samples,
+            )
+        )
 
     def _audio_query(self, endpoint: str, speaker_id: int, text: str) -> bytes:
         query = urllib.parse.urlencode({"text": text, "speaker": speaker_id})
@@ -193,6 +216,75 @@ def decode_wav_to_pcm_s16le_mono_16k(wav_bytes: bytes) -> TtsAudio:
     if sys.byteorder != "little":
         normalized.byteswap()
     return TtsAudio(pcm=normalized.tobytes())
+
+
+def tune_voicevox_query_payload(
+    payload: bytes,
+    *,
+    speed_scale: float | None = None,
+    pre_phoneme_length: float | None = None,
+    post_phoneme_length: float | None = None,
+) -> bytes:
+    """Apply bridge-owned VOICEVOX transport tuning to an audio_query payload."""
+
+    if speed_scale is None and pre_phoneme_length is None and post_phoneme_length is None:
+        return payload
+    try:
+        query = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TtsProviderError(
+            "TTS_SYNTHESIS_FAILED",
+            "local TTS provider returned invalid audio query JSON",
+            recoverable=True,
+        ) from exc
+    if not isinstance(query, dict):
+        raise TtsProviderError(
+            "TTS_SYNTHESIS_FAILED",
+            "local TTS provider returned invalid audio query JSON",
+            recoverable=True,
+        )
+    if speed_scale is not None:
+        query["speedScale"] = max(0.1, float(speed_scale))
+    if pre_phoneme_length is not None:
+        query["prePhonemeLength"] = max(0.0, float(pre_phoneme_length))
+    if post_phoneme_length is not None:
+        query["postPhonemeLength"] = max(0.0, float(post_phoneme_length))
+    return json.dumps(query, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def trim_pcm_s16le_silence(
+    pcm: bytes,
+    *,
+    threshold: int,
+    margin_samples: int = 0,
+) -> bytes:
+    """Trim leading and trailing near-silence from little-endian signed 16-bit PCM."""
+
+    if threshold <= 0 or len(pcm) < 2:
+        return pcm
+    sample_bytes = pcm[: len(pcm) - (len(pcm) % 2)]
+    samples = array.array("h")
+    samples.frombytes(sample_bytes)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    first = None
+    last = None
+    for index, sample in enumerate(samples):
+        if abs(int(sample)) > threshold:
+            first = index
+            break
+    if first is None:
+        return pcm
+    for index in range(len(samples) - 1, first - 1, -1):
+        if abs(int(samples[index])) > threshold:
+            last = index
+            break
+    start = max(0, first - max(0, margin_samples))
+    stop = min(len(samples), (last or first) + max(0, margin_samples) + 1)
+    trimmed = samples[start:stop]
+    if sys.byteorder != "little":
+        trimmed.byteswap()
+    return trimmed.tobytes()
 
 
 def _mix_to_mono(samples: array.array, channels: int) -> array.array:

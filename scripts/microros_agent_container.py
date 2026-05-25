@@ -22,6 +22,11 @@ ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
     "STACKCHAN_TTS_ENDPOINT",
+    "STACKCHAN_TTS_POST_PHONEME_LENGTH",
+    "STACKCHAN_TTS_PRE_PHONEME_LENGTH",
+    "STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS",
+    "STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD",
+    "STACKCHAN_TTS_SPEED_SCALE",
 )
 ROS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_build_stamp"
 ROS_MSGS_BUILD_STAMP = f"{WORKSPACE}/install/.stackchan_ros_stackchan_msgs_build_stamp"
@@ -846,7 +851,12 @@ result=0
 bridge_args=""
 if [ "{say_tts_enabled}" = "1" ]; then
   export STACKCHAN_TTS_ENDPOINT="${{STACKCHAN_TTS_ENDPOINT:-http://host.docker.internal:50021}}"
-  bridge_args="--ros-args -p tts_enabled:=true -p tts_endpoint:=$STACKCHAN_TTS_ENDPOINT -p device_media_action_timeout_sec:={media_action_timeout}"
+  export STACKCHAN_TTS_SPEED_SCALE="${{STACKCHAN_TTS_SPEED_SCALE:-3.0}}"
+  export STACKCHAN_TTS_PRE_PHONEME_LENGTH="${{STACKCHAN_TTS_PRE_PHONEME_LENGTH:-0.0}}"
+  export STACKCHAN_TTS_POST_PHONEME_LENGTH="${{STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.0}}"
+  export STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD="${{STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-512}}"
+  export STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS="${{STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS:-20.0}}"
+  bridge_args="--ros-args -p tts_enabled:=true -p tts_endpoint:=$STACKCHAN_TTS_ENDPOINT -p tts_speed_scale:=$STACKCHAN_TTS_SPEED_SCALE -p tts_pre_phoneme_length:=$STACKCHAN_TTS_PRE_PHONEME_LENGTH -p tts_post_phoneme_length:=$STACKCHAN_TTS_POST_PHONEME_LENGTH -p tts_silence_trim_threshold:=$STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD -p tts_silence_trim_margin_ms:=$STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS -p device_media_action_timeout_sec:={media_action_timeout}"
 fi
 socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2>/tmp/stackchan-socat.log &
 socat_pid=$!

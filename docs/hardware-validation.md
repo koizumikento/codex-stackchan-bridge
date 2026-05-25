@@ -104,7 +104,14 @@ hardware bring-up issue complete.
 
   ```powershell
   $env:STACKCHAN_TTS_ENDPOINT='http://host.docker.internal:50021'
-  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 120 --say-check "はい" --say-voice default
+  $env:STACKCHAN_TTS_SPEED_SCALE='3.0'
+  $env:STACKCHAN_TTS_PRE_PHONEME_LENGTH='0.0'
+  $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.0'
+  $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='512'
+  $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='20.0'
+  $env:STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES='64'
+  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='64'
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
   ```
 
   The smoke expects `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
@@ -1398,6 +1405,35 @@ KOIZUMI-112 diagnostic firmware update:
 
   `stackchanctl face happy` returned `ok=true`, `result_state=ACCEPTED`, and
   the follow-up observe reported `connected: true` and `face: happy`.
+
+### 2026-05-25 KOIZUMI-138/140 local TTS playback transport follow-up
+
+- Added bridge-owned VOICEVOX transport tuning parameters for local `say`
+  smokes: `tts_speed_scale`, `tts_pre_phoneme_length`,
+  `tts_post_phoneme_length`, `tts_silence_trim_threshold`, and
+  `tts_silence_trim_margin_ms`. The Docker helper passes matching
+  `STACKCHAN_TTS_*` environment variables when `--say-check` is used.
+- Added synthesized-audio silence trimming after WAV normalization. Direct
+  local provider diagnostics against the operator-owned VOICEVOX service
+  showed the short smoke utterance fell from 19796 PCM bytes to 4778 bytes
+  with `speed_scale=3.0`, zero pre/post phoneme length, and threshold 512.
+- Added a first-goal PCM path for TTS playback and made synthesized playback
+  pull-only. This prevents the bridge from publishing remaining chunks on the
+  topic faster than firmware can request them through
+  `/stackchan/default/audio/playback/next_chunk`.
+- Same-container smoke over COM3 with
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64`,
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64`, and the TTS tuning above
+  completed the `say` command and observed `tts_finished`. The bridge logged
+  pull-only activation with `received=74`, then finished with `pending=0`.
+  The overall smoke returned non-zero only because the active firmware profile
+  did not emit `firmware_ready` during that run.
+- An immediate repeat before the device had fully settled timed out with the
+  previous `FIRMWARE_BUSY` state still visible in status, and a 128 byte
+  follow-up run hit `TRANSPORT_DISCONNECTED` before audio chunk validation.
+  Keep 128 byte and larger playback service responses tracked as follow-up
+  risk; 320 byte service responses had already failed to advance beyond the
+  next-chunk pull path.
 
 ## Cleanup
 

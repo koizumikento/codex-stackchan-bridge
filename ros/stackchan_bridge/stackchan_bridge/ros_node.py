@@ -45,6 +45,8 @@ AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
 AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35
 AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64
+AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 
 
@@ -60,6 +62,50 @@ def _audio_playback_chunk_bytes() -> int:
     if value % 2:
         value -= 1
     return max(value, 2)
+
+
+def _audio_playback_first_goal_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT
+    value = min(max(value, 0), AUDIO_CHUNK_BYTES)
+    if value % 2:
+        value -= 1
+    return max(value, 0)
+
+
+def _optional_positive_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0.0 else None
+
+
+def _optional_nonnegative_float(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0.0 else None
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
 
 
 def _audio_chunk_pcm_size(message: object) -> int:
@@ -591,6 +637,7 @@ def main(args: list[str] | None = None) -> None:
             self._pending_playback_chunks = {}
             self._active_playback_sessions = set()
             self._closed_playback_sessions = set()
+            self._pull_only_playback_sessions = set()
             self._playback_relay_stats = {}
             self._playback_chunk_lock = threading.Lock()
             self._telemetry_publishers = {}
@@ -618,6 +665,42 @@ def main(args: list[str] | None = None) -> None:
             endpoint = str(self.get_parameter("tts_endpoint").value or "").strip()
             self.declare_parameter("tts_timeout_sec", DEFAULT_TTS_TIMEOUT_SEC)
             timeout_sec = float(self.get_parameter("tts_timeout_sec").value)
+            self.declare_parameter(
+                "tts_speed_scale",
+                _env_float("STACKCHAN_TTS_SPEED_SCALE", 0.0),
+            )
+            speed_scale = _optional_positive_float(self.get_parameter("tts_speed_scale").value)
+            self.declare_parameter(
+                "tts_pre_phoneme_length",
+                _env_float("STACKCHAN_TTS_PRE_PHONEME_LENGTH", -1.0),
+            )
+            pre_phoneme_length = _optional_nonnegative_float(
+                self.get_parameter("tts_pre_phoneme_length").value
+            )
+            self.declare_parameter(
+                "tts_post_phoneme_length",
+                _env_float("STACKCHAN_TTS_POST_PHONEME_LENGTH", -1.0),
+            )
+            post_phoneme_length = _optional_nonnegative_float(
+                self.get_parameter("tts_post_phoneme_length").value
+            )
+            self.declare_parameter(
+                "tts_silence_trim_threshold",
+                _env_int("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD", 0),
+            )
+            silence_trim_threshold = max(
+                0,
+                int(self.get_parameter("tts_silence_trim_threshold").value),
+            )
+            self.declare_parameter(
+                "tts_silence_trim_margin_ms",
+                _env_float("STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS", 20.0),
+            )
+            silence_trim_margin_samples = round(
+                max(0.0, float(self.get_parameter("tts_silence_trim_margin_ms").value))
+                * AUDIO_SAMPLE_RATE
+                / 1000.0
+            )
             self.declare_parameter("tts_default_voice", "default")
             self._tts_default_voice = str(
                 self.get_parameter("tts_default_voice").value or "default"
@@ -664,6 +747,11 @@ def main(args: list[str] | None = None) -> None:
                 default_profile=self._tts_default_voice,
                 endpoint=endpoint,
                 timeout_sec=timeout_sec,
+                speed_scale=speed_scale,
+                pre_phoneme_length=pre_phoneme_length,
+                post_phoneme_length=post_phoneme_length,
+                silence_trim_threshold=silence_trim_threshold,
+                silence_trim_margin_samples=silence_trim_margin_samples,
             )
 
         def _create_device_resources(self, device_id: str) -> None:
@@ -1409,6 +1497,7 @@ def main(args: list[str] | None = None) -> None:
             with self._playback_chunk_lock:
                 self._closed_playback_sessions.discard(key)
                 self._active_playback_sessions.add(key)
+                pull_only = key in self._pull_only_playback_sessions
                 buffered = list(self._pending_playback_chunks.get(key, []))
                 stats = self._playback_relay_stats.setdefault(
                     key,
@@ -1418,8 +1507,11 @@ def main(args: list[str] | None = None) -> None:
             self.get_logger().info(
                 "audio playback relay activated "
                 f"device_id={device_id!r} command_id={command_id!r} "
-                f"buffered={len(buffered)} received={stats['received']}"
+                f"buffered={len(buffered)} received={stats['received']} "
+                f"pull_only={pull_only}"
             )
+            if pull_only:
+                return
             self._wait_for_device_audio_playback_subscription(device_id, command_id)
             for index, message in enumerate(buffered):
                 self._publish_device_audio_chunk(device_id, message)
@@ -1516,9 +1608,20 @@ def main(args: list[str] | None = None) -> None:
             device_id: str,
             meta: CommandMeta,
             audio: TtsAudio,
+            *,
+            start_sequence: int = 0,
+            pcm_offset: int = 0,
+            pull_only: bool = False,
         ) -> None:
+            if pull_only:
+                key = (device_id, meta.command_id)
+                with self._playback_chunk_lock:
+                    self._pull_only_playback_sessions.add(key)
             chunk_bytes = _audio_playback_chunk_bytes()
-            for sequence, start in enumerate(range(0, len(audio.pcm), chunk_bytes)):
+            for sequence, start in enumerate(
+                range(pcm_offset, len(audio.pcm), chunk_bytes),
+                start=start_sequence,
+            ):
                 message = self._audio_chunk_type()
                 message.device_id = device_id
                 message.command_id = meta.command_id
@@ -1534,17 +1637,24 @@ def main(args: list[str] | None = None) -> None:
             self,
             ros_meta: object,
             request: object,
+            audio: TtsAudio,
         ) -> object:
+            first_goal_bytes = min(_audio_playback_first_goal_bytes(), len(audio.pcm))
+            if first_goal_bytes % 2:
+                first_goal_bytes -= 1
+            first_chunk = audio.pcm[:first_goal_bytes]
             return SimpleNamespace(
                 meta=ros_meta,
                 format=AUDIO_FORMAT,
                 sample_rate=AUDIO_SAMPLE_RATE,
                 channels=AUDIO_CHANNELS,
-                first_chunk_present=False,
+                first_chunk_present=bool(first_chunk),
                 first_chunk_sequence=0,
-                first_chunk_pcm=b"",
+                first_chunk_pcm=first_chunk,
                 face_hint=getattr(request, "face_hint", ""),
                 motion_hint=getattr(request, "motion_hint", ""),
+                next_chunk_offset=first_goal_bytes,
+                next_chunk_sequence=1 if first_chunk else 0,
             )
 
         def _wait_for_device_audio_playback_subscription(
@@ -1570,6 +1680,7 @@ def main(args: list[str] | None = None) -> None:
             key = (device_id, command_id)
             with self._playback_chunk_lock:
                 self._active_playback_sessions.discard(key)
+                self._pull_only_playback_sessions.discard(key)
                 pending = self._pending_playback_chunks.pop(key, [])
                 self._closed_playback_sessions.add(key)
                 stats = self._playback_relay_stats.pop(
@@ -2061,10 +2172,18 @@ def main(args: list[str] | None = None) -> None:
                 _copy_result(result.result, tts_result)
                 goal_handle.abort()
                 return result
-            self._buffer_synthesized_playback_chunks(device_id, meta, audio)
+            playback_request = self._tts_playback_request(request.meta, request, audio)
+            self._buffer_synthesized_playback_chunks(
+                device_id,
+                meta,
+                audio,
+                start_sequence=int(getattr(playback_request, "next_chunk_sequence", 0)),
+                pcm_offset=int(getattr(playback_request, "next_chunk_offset", 0)),
+                pull_only=True,
+            )
             playback_result = self._call_device_audio_play(
                 device_id,
-                self._tts_playback_request(request.meta, request),
+                playback_request,
                 meta,
             )
             _copy_result(result.result, playback_result)
