@@ -349,6 +349,10 @@ hardware bring-up issue complete.
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 8 --stimulus-window-seconds 20
   ```
 
+  For a focused sensor/event rerun where audio and camera behavior is not under
+  test, add `--skip-media-smoke` to avoid spending the sweep budget on unrelated
+  media commands.
+
   During the printed stimulus window:
 
   | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |
@@ -361,6 +365,19 @@ hardware bring-up issue complete.
   | Power | Connect/disconnect USB power or use a known safe low-power fixture. | `charging_started`, `charging_stopped`, `power_source_changed`, `battery_low`, `battery_recovered`, `brownout_risk`, `power_fault` | Only bounded power state/fault code; no raw maintenance/control payloads. |
   | NFC | Present one tag, remove it, then try a read-failure case such as quick removal. | `nfc_detected`, `nfc_removed`, `nfc_read_failed` | Public events/logs must not expose tag IDs, UIDs, or raw tag payloads. |
   | IR/remote | Press and release a known remote button near the receiver. | `remote_button_pressed`, `remote_button_released`, `remote_command_received` | Public events/logs must not expose raw IR codes, protocol dumps, or remote IDs. |
+
+  While the stimulus window is open, the runner also captures live device-side
+  samples from `/stackchan/default/device/touch/state`,
+  `/stackchan/default/device/proximity/raw`,
+  `/stackchan/default/device/light/raw`,
+  `/stackchan/default/device/power/status`, and
+  `/stackchan/default/device/events`. Use
+  `STACKCHAN_SENSOR_SWEEP_LIVE_TOUCH_ACTIVE_SEEN`,
+  `STACKCHAN_SENSOR_SWEEP_LIVE_PROXIMITY_NONZERO_SEEN`,
+  `STACKCHAN_SENSOR_SWEEP_LIVE_LIGHT_NONZERO_SEEN`,
+  `STACKCHAN_SENSOR_SWEEP_LIVE_POWER_SAMPLE_SEEN`, and
+  `STACKCHAN_SENSOR_SWEEP_LIVE_EVENT_SAMPLE_SEEN` to distinguish "no event
+  emitted" from "raw input never changed during the stimulus window".
 
   The runner emits
   `STACKCHAN_EVENT_STIMULUS_{BUTTON,IMU,TOUCH,PROXIMITY,LIGHT,POWER,NFC,IR}_STATUS=PASS`

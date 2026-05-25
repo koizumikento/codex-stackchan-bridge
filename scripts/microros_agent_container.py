@@ -120,8 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help=(
             "Optional manual stimulus window before event classification. Use it "
-            "to pick up/tilt/shake the device, present/remove NFC tags, or press "
-            "IR remote buttons while the Agent and bridge are connected."
+            "to touch/release the touch surface, move near/far from the proximity "
+            "sensor, change light, pick up/tilt/shake the device, present/remove "
+            "NFC tags, or press IR remote buttons while the Agent and bridge are "
+            "connected."
         ),
     )
     tcp_pty_sweep.add_argument(
@@ -135,6 +137,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="JPEG quality used by the hardware camera smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--skip-media-smoke",
+        action="store_true",
+        help=(
+            "Skip audio playback, audio capture, and camera smoke checks. Use "
+            "for focused sensor/event sweeps where media behavior is not under "
+            "test."
+        ),
     )
     tcp_pty_sweep.add_argument(
         "--skip-build",
@@ -544,6 +555,61 @@ run_topic_once() {{
   fi
 }}
 
+run_live_stimulus_capture() {{
+  window="$1"
+  if [ "$window" -le 0 ]; then
+    return
+  fi
+  echo "--- live stimulus topic capture (${{window}}s) ---"
+  echo "Apply touch, proximity, light, power, IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
+  touch_live=/tmp/stackchan-live-touch.log
+  proximity_live=/tmp/stackchan-live-proximity.log
+  light_live=/tmp/stackchan-live-light.log
+  power_live=/tmp/stackchan-live-power.log
+  events_live=/tmp/stackchan-live-events.log
+  rm -f "$touch_live" "$proximity_live" "$light_live" "$power_live" "$events_live"
+
+  timeout "$window" ros2 topic echo /stackchan/default/device/touch/state stackchan_msgs/msg/TouchState >"$touch_live" 2>&1 &
+  touch_pid=$!
+  timeout "$window" ros2 topic echo /stackchan/default/device/proximity/raw stackchan_msgs/msg/ProximityRaw >"$proximity_live" 2>&1 &
+  proximity_pid=$!
+  timeout "$window" ros2 topic echo /stackchan/default/device/light/raw stackchan_msgs/msg/LightRaw >"$light_live" 2>&1 &
+  light_pid=$!
+  timeout "$window" ros2 topic echo /stackchan/default/device/power/status stackchan_msgs/msg/PowerStatus >"$power_live" 2>&1 &
+  power_pid=$!
+  timeout "$window" ros2 topic echo /stackchan/default/device/events stackchan_msgs/msg/StackChanEvent >"$events_live" 2>&1 &
+  events_pid=$!
+
+  wait "$touch_pid" "$proximity_pid" "$light_pid" "$power_pid" "$events_pid" 2>/dev/null || true
+
+  echo "--- live touch samples ---"
+  cat "$touch_live" || true
+  echo "--- live proximity samples ---"
+  cat "$proximity_live" || true
+  echo "--- live light samples ---"
+  cat "$light_live" || true
+  echo "--- live power samples ---"
+  cat "$power_live" || true
+  echo "--- live event samples ---"
+  cat "$events_live" || true
+
+  grep -Eq 'zone_mask: [1-9]|- [1-9][0-9]*' "$touch_live"
+  touch_active_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_LIVE_TOUCH_ACTIVE_SEEN=$([ "$touch_active_result" -eq 0 ] && echo 1 || echo 0)"
+  grep -Eq 'raw: [1-9][0-9]*|signal: 0[.][0-9]*[1-9]' "$proximity_live"
+  proximity_nonzero_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_LIVE_PROXIMITY_NONZERO_SEEN=$([ "$proximity_nonzero_result" -eq 0 ] && echo 1 || echo 0)"
+  grep -Eq 'raw: [1-9][0-9]*|illuminance_lux: [1-9][0-9]*|illuminance_lux: 0[.][0-9]*[1-9]' "$light_live"
+  light_nonzero_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_LIVE_LIGHT_NONZERO_SEEN=$([ "$light_nonzero_result" -eq 0 ] && echo 1 || echo 0)"
+  grep -Eq 'voltage_v:|power_source:' "$power_live"
+  power_sample_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_LIVE_POWER_SAMPLE_SEEN=$([ "$power_sample_result" -eq 0 ] && echo 1 || echo 0)"
+  grep -Eq 'event_name:' "$events_live"
+  event_sample_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_LIVE_EVENT_SAMPLE_SEEN=$([ "$event_sample_result" -eq 0 ] && echo 1 || echo 0)"
+}}
+
 run_power_status() {{
   echo "--- stackchanctl power status ---"
   power_output=""
@@ -651,8 +717,7 @@ stimulus_window_ran=0
 if [ "{max(0, int(args.stimulus_window_seconds))}" -gt 0 ]; then
   stimulus_window_ran=1
   echo "--- manual hardware stimulus window ({max(0, int(args.stimulus_window_seconds))}s) ---"
-  echo "Apply button, IMU, NFC, and IR/remote stimuli now. Normal logs/events will be redaction-scanned afterwards."
-  sleep {max(0, int(args.stimulus_window_seconds))}
+  run_live_stimulus_capture {max(0, int(args.stimulus_window_seconds))}
 fi
 echo "STACKCHAN_EVENT_STIMULUS_WINDOW_RAN=$stimulus_window_ran"
 
@@ -667,7 +732,13 @@ run_topic_once "public_light" "/stackchan/default/light/raw" "stackchan_msgs/msg
 run_topic_once "device_power" "/stackchan/default/device/power/status" "stackchan_msgs/msg/PowerStatus"
 run_topic_once "public_power" "/stackchan/default/power/status" "stackchan_msgs/msg/PowerStatus"
 run_power_status
-run_media_smoke
+if [ "{1 if args.skip_media_smoke else 0}" -eq 1 ]; then
+  echo "--- media smoke skipped ---"
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SMOKE_SKIPPED=1"
+else
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SMOKE_SKIPPED=0"
+  run_media_smoke
+fi
 run_topic_once "device_events" "/stackchan/default/device/events" "stackchan_msgs/msg/StackChanEvent"
 run_topic_once "public_events" "/stackchan/default/events" "stackchan_msgs/msg/StackChanEvent"
 
