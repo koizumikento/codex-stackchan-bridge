@@ -232,6 +232,14 @@ def add_microros_diagnostic_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     profile.add_argument(
+        "--microros-board-init-bringup",
+        action="store_true",
+        help=(
+            "Build a temporary diagnostic firmware that enables selected board "
+            "initialization stages before the status-only micro-ROS loop."
+        ),
+    )
+    profile.add_argument(
         "--microros-core-command-bringup",
         action="store_true",
         help=(
@@ -288,6 +296,20 @@ def add_microros_diagnostic_arguments(parser: argparse.ArgumentParser) -> None:
             "Build a firmware-only serial monitor diagnostic for K151 touch, "
             "proximity, light, and power reads. Do not attach the micro-ROS "
             "Agent to the same COM port while this profile is running."
+        ),
+    )
+    parser.add_argument(
+        "--board-init-stage",
+        type=int,
+        choices=range(0, 15),
+        metavar="0..14",
+        default=0,
+        help=(
+            "Stage for --microros-board-init-bringup: 0=status only, "
+            "1=M5.begin, 2=IO expander, 3=servo UART, 4=servo read, "
+            "5=touch, 6=IMU probe, 7=power monitor, 8=LTR553, 9=NFC, "
+            "10=IR, 11=audio probes, 12=camera, 13=calibration/servo "
+            "health, 14=neutral face."
         ),
     )
 
@@ -351,6 +373,11 @@ def firmware_build_flags(
     flags = calibration_maintenance_build_flags(args, parser)
     if getattr(args, "microros_minimal_bringup", False):
         flags.append("-D STACKCHAN_MICROROS_MINIMAL_BRINGUP=1")
+    if getattr(args, "microros_board_init_bringup", False):
+        flags.append("-D STACKCHAN_MICROROS_BOARD_INIT_BRINGUP=1")
+        flags.append(f"-D STACKCHAN_MICROROS_BOARD_INIT_STAGE={args.board_init_stage}")
+    elif getattr(args, "board_init_stage", 0) != 0:
+        parser.error("--board-init-stage requires --microros-board-init-bringup")
     if getattr(args, "microros_core_command_bringup", False):
         flags.append("-D STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1")
     if getattr(args, "microros_core_raw_telemetry_bringup", False):

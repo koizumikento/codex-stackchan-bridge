@@ -88,6 +88,14 @@
 #define STACKCHAN_MICROROS_MINIMAL_BRINGUP 0
 #endif
 
+#ifndef STACKCHAN_MICROROS_BOARD_INIT_BRINGUP
+#define STACKCHAN_MICROROS_BOARD_INIT_BRINGUP 0
+#endif
+
+#ifndef STACKCHAN_MICROROS_BOARD_INIT_STAGE
+#define STACKCHAN_MICROROS_BOARD_INIT_STAGE 0
+#endif
+
 #ifndef STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
 #define STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP 0
 #endif
@@ -112,7 +120,12 @@
 #define STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP 0
 #endif
 
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP && STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
+#if STACKCHAN_MICROROS_MINIMAL_BRINGUP && \
+    (STACKCHAN_MICROROS_BOARD_INIT_BRINGUP || STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP)
+#error "Select only one micro-ROS bring-up profile"
+#endif
+
+#if STACKCHAN_MICROROS_BOARD_INIT_BRINGUP && STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP
 #error "Select only one micro-ROS bring-up profile"
 #endif
 
@@ -125,6 +138,8 @@
    STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP || \
    STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP || \
    STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP)
+#define STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP \
+  (STACKCHAN_MICROROS_MINIMAL_BRINGUP || STACKCHAN_MICROROS_BOARD_INIT_BRINGUP)
 
 #if STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP
 #error "Core media diagnostic profiles extend the core raw telemetry bring-up profile"
@@ -266,6 +281,7 @@ constexpr uint8_t kLtr553ManufacturerId = 0x87;
 constexpr uint8_t kLtr553AlsDataCh1Low = 0x88;
 constexpr uint8_t kLtr553PsDataLow = 0x8D;
 constexpr uint8_t kLtr553ExpectedManufacturerId = 0x05;
+constexpr uint32_t kLtr553I2cFreq = 100000;
 constexpr float kLtr553PsFullScale = 2047.0f;
 constexpr float kLtr553AlsIntegrationFactor = 2.0f;
 enum class MotionSchedulerPhase {
@@ -472,6 +488,10 @@ bool firmware_publish_callback(
     stackchan::DevicePublisherTopic topic,
     const void* message,
     void* user_data);
+stackchan::Result load_calibration_from_nvs();
+stackchan::Result apply_calibration_maintenance_action();
+void update_servo_health_cache(unsigned long now, bool force);
+void show_neutral_face();
 stackchan::Result validate_motion_servo_target(
     const stackchan::ServoTarget& target,
     const char* label);
@@ -752,9 +772,12 @@ int servo_degrees_to_raw(int default_zero_pos, int degrees) {
   return default_zero_pos + deci_degrees * 16 / 50;
 }
 
-stackchan::Result initialize_servo_adapter() {
+stackchan::Result initialize_m5_bsp_adapter() {
   M5.begin();
+  return stackchan::Result::accepted("M5 BSP initialized");
+}
 
+stackchan::Result initialize_io_expander_adapter() {
   const unsigned long start_ms = millis();
   while (!io_expander.begin()) {
     if (millis() - start_ms > kIoExpanderInitTimeoutMs) {
@@ -771,14 +794,20 @@ stackchan::Result initialize_servo_adapter() {
   io_expander.setLedCount(kRgbLedCount);
   stackchan_led_initialized = true;
   delay(200);
+  return stackchan::Result::accepted("StackChan IO expander initialized");
+}
 
+stackchan::Result initialize_servo_uart_adapter() {
   if (!servo_bus.begin(UART_NUM_1, kServoUartBaud, kServoTxPin, kServoRxPin)) {
     return stackchan::Result::rejected(
         "SERVO_READ_FAILED",
         "StackChan servo UART initialization failed",
         true);
   }
+  return stackchan::Result::accepted("StackChan servo UART initialized");
+}
 
+stackchan::Result verify_servo_position_read() {
   int yaw_raw = -1;
   int pitch_raw = -1;
   if (!read_servo_raw_positions(&yaw_raw, &pitch_raw)) {
@@ -791,45 +820,48 @@ stackchan::Result initialize_servo_adapter() {
   return stackchan::Result::accepted("servo adapter initialized");
 }
 
+stackchan::Result initialize_servo_adapter() {
+  stackchan::Result result = initialize_m5_bsp_adapter();
+  if (!result.ok) {
+    return result;
+  }
+  result = initialize_io_expander_adapter();
+  if (!result.ok) {
+    return result;
+  }
+  result = initialize_servo_uart_adapter();
+  if (!result.ok) {
+    return result;
+  }
+  return verify_servo_position_read();
+}
+
 bool ltr553_write_register(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(kLtr553Address);
-  Wire.write(reg);
-  Wire.write(value);
-  return Wire.endTransmission() == 0;
+  return M5.In_I2C.writeRegister8(kLtr553Address, reg, value, kLtr553I2cFreq);
 }
 
 bool ltr553_read_register(uint8_t reg, uint8_t* value) {
   if (value == nullptr) {
     return false;
   }
-  Wire.beginTransmission(kLtr553Address);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(kLtr553Address, static_cast<uint8_t>(1)) != 1) {
-    return false;
-  }
-  *value = Wire.read();
-  return true;
+  return M5.In_I2C.readRegister(
+      kLtr553Address,
+      reg,
+      value,
+      1,
+      kLtr553I2cFreq);
 }
 
 bool ltr553_read_block(uint8_t start_reg, uint8_t* values, size_t length) {
   if (values == nullptr || length == 0 || length > 8) {
     return false;
   }
-  Wire.beginTransmission(kLtr553Address);
-  Wire.write(start_reg);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(kLtr553Address, static_cast<uint8_t>(length)) != length) {
-    return false;
-  }
-  for (size_t index = 0; index < length; ++index) {
-    values[index] = Wire.read();
-  }
-  return true;
+  return M5.In_I2C.readRegister(
+      kLtr553Address,
+      start_reg,
+      values,
+      length,
+      kLtr553I2cFreq);
 }
 
 float calculate_ltr553_lux(uint16_t ch0, uint16_t ch1) {
@@ -941,28 +973,43 @@ bool initialize_camera_adapter() {
   return true;
 }
 
-void initialize_sensor_adapters() {
+void initialize_touch_adapter() {
   stackchan_touch_sensor.begin();
   stackchan_touch_sensor_initialized = true;
+}
 
+void initialize_imu_adapter() {
   stackchan_imu_initialized = M5.Imu.isEnabled();
+}
 
+void initialize_power_monitor_adapter() {
   m5::INA226_Class::config_t config;
   config.shunt_res = 0.01f;
   config.max_expected_current = 8.19f;
   stackchan_power_monitor.config(config);
   stackchan_power_monitor_initialized = stackchan_power_monitor.begin();
-  ltr553_sensor_initialized = initialize_ltr553_sensor();
+}
 
-  stackchan_nfc_initialized = initialize_nfc_adapter();
-
+void initialize_ir_adapter() {
   stackchan_irrecv.setUnknownThreshold(kIrMinUnknownSize);
   stackchan_irrecv.setTolerance(kIrTolerancePercentage);
   stackchan_irrecv.enableIRIn();
   stackchan_ir_initialized = true;
+}
 
+void initialize_audio_probe_adapters() {
   stackchan_audio_playback_initialized = M5.Speaker.isEnabled();
   stackchan_audio_capture_initialized = M5.Mic.isEnabled();
+}
+
+void initialize_sensor_adapters() {
+  initialize_touch_adapter();
+  initialize_imu_adapter();
+  initialize_power_monitor_adapter();
+  ltr553_sensor_initialized = initialize_ltr553_sensor();
+  stackchan_nfc_initialized = initialize_nfc_adapter();
+  initialize_ir_adapter();
+  initialize_audio_probe_adapters();
   stackchan_camera_snapshot_initialized = initialize_camera_adapter();
 }
 
@@ -1038,11 +1085,93 @@ void run_sensor_input_diagnostic_loop(uint32_t now_ms) {
 }
 #endif
 
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP
 void initialize_minimal_microros_bringup() {
   stackchan::Result publisher_result =
       device_publishers.initialize(STACKCHAN_DEVICE_ID);
   if (!publisher_result.ok) {
+    last_error = publisher_result;
+  }
+  device_publishers.set_publish_callback(firmware_publish_callback);
+  state_machine.booted();
+}
+#endif
+
+#if STACKCHAN_MICROROS_BOARD_INIT_BRINGUP
+stackchan::Result initialize_board_init_bringup_stage() {
+  stackchan::Result result = stackchan::Result::accepted("board init stage skipped");
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 1
+  result = initialize_m5_bsp_adapter();
+  if (!result.ok) {
+    return result;
+  }
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 2
+  result = initialize_io_expander_adapter();
+  if (!result.ok) {
+    return result;
+  }
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 3
+  result = initialize_servo_uart_adapter();
+  if (!result.ok) {
+    return result;
+  }
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 4
+  result = verify_servo_position_read();
+  if (!result.ok) {
+    return result;
+  }
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 5
+  initialize_touch_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 6
+  initialize_imu_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 7
+  initialize_power_monitor_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 8
+  ltr553_sensor_initialized = initialize_ltr553_sensor();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 9
+  stackchan_nfc_initialized = initialize_nfc_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 10
+  initialize_ir_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 11
+  initialize_audio_probe_adapters();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 12
+  stackchan_camera_snapshot_initialized = initialize_camera_adapter();
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 13
+  calibration_maintenance_result = apply_calibration_maintenance_action();
+  if (!calibration_maintenance_result.ok) {
+    return calibration_maintenance_result;
+  }
+  calibration_load_result = load_calibration_from_nvs();
+  if (!calibration_load_result.ok) {
+    return calibration_load_result;
+  }
+  update_servo_health_cache(millis(), true);
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_STAGE >= 14
+  show_neutral_face();
+#endif
+  return result;
+}
+
+void initialize_board_init_microros_bringup() {
+  stackchan::Result board_init_result = initialize_board_init_bringup_stage();
+  stackchan::Result publisher_result =
+      device_publishers.initialize(STACKCHAN_DEVICE_ID);
+  if (!board_init_result.ok) {
+    last_error = board_init_result;
+  } else if (!publisher_result.ok) {
     last_error = publisher_result;
   }
   device_publishers.set_publish_callback(firmware_publish_callback);
@@ -1197,7 +1326,7 @@ void print_sensor_input_diagnostics(uint32_t now_ms) {
   stackchan_diag_print(static_cast<int>(touch.intensities[2]));
   stackchan_diag_print(" ltr553_init=");
   stackchan_diag_print(ltr553_sensor_initialized ? "true" : "false");
-  stackchan_diag_print(" ltr553_bus=wire");
+  stackchan_diag_print(" ltr553_bus=in_i2c");
   stackchan_diag_print(" ltr553_part_ok=");
   stackchan_diag_print(ltr553_part_id_read_ok ? "true" : "false");
   stackchan_diag_print(" ltr553_part_id=");
@@ -2483,7 +2612,7 @@ bool initialize_microros_entities() {
               "status_publisher_init")) {
     return false;
   }
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP
   if (!stackchan_msgs__msg__StackChanStatus__init(&status_ros_message)) {
     stackchan_diag_println("stackchan micro_ros_step=status_message_init result=false");
     return false;
@@ -3576,7 +3705,7 @@ bool initialize_microros_entities() {
 
 void destroy_microros_entities() {
   if (microros_entities_initialized) {
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP
     {
       stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
       rcl_ret_t fini_result =
@@ -3819,7 +3948,7 @@ bool firmware_publish_callback(
     return false;
   }
 
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP || \
     (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP)
   if (topic != stackchan::DevicePublisherTopic::Status) {
     return true;
@@ -3969,7 +4098,7 @@ void update_agent_connection(bool connected) {
 }
 
 void queue_bringup_event_if_ready(unsigned long now) {
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP || \
     (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP)
   (void)now;
   return;
@@ -5954,7 +6083,7 @@ void publish_status_heartbeat() {
 }
 
 void publish_runtime_telemetry(uint32_t now_ms) {
-#if STACKCHAN_MICROROS_MINIMAL_BRINGUP || \
+#if STACKCHAN_MICROROS_STATUS_ONLY_BRINGUP || \
     (STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP && !STACKCHAN_MICROROS_CORE_RAW_TELEMETRY_BRINGUP)
   (void)now_ms;
   return;
@@ -6074,6 +6203,10 @@ void setup() {
   initialize_minimal_microros_bringup();
   return;
 #endif
+#if STACKCHAN_MICROROS_BOARD_INIT_BRINGUP
+  initialize_board_init_microros_bringup();
+  return;
+#endif
   servo_adapter_init_result = initialize_servo_adapter();
   stackchan_diag_print("stackchan servo_adapter_init ok=");
   stackchan_diag_print(servo_adapter_init_result.ok ? "true" : "false");
@@ -6137,6 +6270,20 @@ void loop() {
   return;
 #endif
 #if STACKCHAN_MICROROS_MINIMAL_BRINGUP
+  if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
+    update_agent_connection(try_connect_microros_agent());
+    last_agent_attempt_ms = now;
+  }
+
+  if (now - last_heartbeat_ms >= 1000) {
+    publish_status_heartbeat();
+    last_heartbeat_ms = now;
+  }
+
+  delay(10);
+  return;
+#endif
+#if STACKCHAN_MICROROS_BOARD_INIT_BRINGUP
   if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
     update_agent_connection(try_connect_microros_agent());
     last_agent_attempt_ms = now;

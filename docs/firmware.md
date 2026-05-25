@@ -764,8 +764,10 @@ for touch intensities, LTR553 part/manufacturer and read status,
 proximity/light raw readings, power telemetry, and whether the diagnostic
 profile released the internal I2C path for camera init. The profile initializes
 only the touch, power, and LTR553 sensor adapters so it can distinguish sensor
-wiring/read
-failures from optional adapter pressure. This is a local maintenance/debug
+wiring/read failures from optional adapter pressure. LTR553 register access
+uses the managed `M5.In_I2C` path; do not switch it back to direct `Wire`
+transactions because direct bus ownership can block micro-ROS Agent bring-up.
+This is a local maintenance/debug
 profile only, not a normal ROS, CLI, or MCP command surface; restore a normal
 firmware build after the monitor run.
 
@@ -779,6 +781,18 @@ only to distinguish status/transport failure from entity-count,
 optional-resource, or board-initialization pressure, then restore a normal
 firmware build before validating the standard
 `stackchanctl -> stackchan_bridge -> firmware` command path.
+
+If the minimal profile proves the transport/status path, the temporary
+`STACKCHAN_MICROROS_BOARD_INIT_BRINGUP=1` profile can be built with
+`--microros-board-init-bringup --board-init-stage N` to add board
+initialization before the same status-only micro-ROS loop. Stages are
+incremental: `0` status only, `1` `M5.begin()`, `2` IO expander/LED setup, `3`
+servo UART setup, `4` servo position read, `5` touch sensor, `6` IMU probe,
+`7` power monitor, `8` LTR553 proximity/light, `9` NFC unit, `10` IR receiver,
+`11` audio capability probes, `12` camera init, `13` calibration load and servo
+health, and `14` neutral face/display. Use this only to find the first board
+initialization stage that blocks status transport, then restore a normal
+firmware build.
 
 If the minimal profile proves status transport, the temporary
 `STACKCHAN_MICROROS_CORE_COMMAND_BRINGUP=1` profile can be built with

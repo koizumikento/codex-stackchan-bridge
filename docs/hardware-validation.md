@@ -96,6 +96,18 @@ hardware bring-up issue complete.
   to validate face, motion, audio, camera, events, or raw telemetry. Restore a
   normal PlatformIO upload before marking the standard bridge command path
   ready.
+- If minimal status works but normal firmware drops the Agent handshake, add
+  board initialization back incrementally before the same status-only loop:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-board-init-bringup --board-init-stage 1
+  ```
+
+  Use stages `0` through `14`: status only, `M5.begin()`, IO expander/LED,
+  servo UART, servo position read, touch sensor, IMU probe, power monitor,
+  LTR553 proximity/light, NFC unit, IR receiver, audio probes, camera init,
+  calibration plus servo health, and neutral face/display. Record the first stage that loses
+  `/stackchan/default/device/status`, then restore normal firmware.
 - Before rebuilding or uploading firmware during repeated smoke work, inspect
   the local PlatformIO state:
 
@@ -1286,6 +1298,44 @@ KOIZUMI-112 diagnostic firmware update:
 - Normal firmware was restored again after the true minimal status check, and
   `uv run --no-project python scripts/firmware_platformio.py plan --json --port
   COM3` reported `upload_status: current` with no diagnostic build flags.
+
+### 2026-05-25 KOIZUMI-129 board-init staged status isolation
+
+- Added `--microros-board-init-bringup --board-init-stage N` so board hardware
+  initialization can be reintroduced before the same status-only micro-ROS loop.
+  The stage map now separates touch, IMU, power, LTR553, NFC, IR, audio probes,
+  and camera init instead of treating all sensor adapters as one opaque step.
+- Stages `1` through `4` passed on COM3: `M5.begin()`, IO expander/LED, servo
+  UART, and servo position read all preserved
+  `/stackchan/default/device/status`.
+- The original combined sensor stage stopped before the Agent saw any serial
+  bytes. After splitting sensor stages, touch, IMU, and power passed, while the
+  first LTR553 stage reproduced the zero-byte transport symptom.
+- LTR553 register access was changed from direct `Wire` calls to the managed
+  `M5.In_I2C` path, matching the earlier UnitNFC bring-up lesson that direct
+  `Wire.begin(...)` style handling can regress micro-ROS Agent bring-up.
+- After the LTR553 fix, stages `8` through `14` passed: LTR553, NFC, IR, audio
+  probes, camera init, calibration plus servo health, and neutral face/display.
+- Normal firmware was restored and confirmed current:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub
+  uv run --no-project python scripts/firmware_platformio.py plan --json --port COM3
+  ```
+
+  The plan reported `upload_status: current` with no diagnostic build flags.
+- A normal-firmware direct status echo through the host serial TCP bridge and
+  same-container micro-ROS Agent reported `connected: true`, `state: ready`,
+  and available `face`, `motion`, `led`, `audio_playback`, `audio_capture`, and
+  `camera_snapshot` capabilities.
+- A bridge-routed face smoke also passed:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 15 --face-check happy
+  ```
+
+  `stackchanctl face happy` returned `ok=true`, `result_state=ACCEPTED`, and
+  the follow-up observe reported `connected: true` and `face: happy`.
 
 ## Cleanup
 

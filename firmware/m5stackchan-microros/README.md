@@ -109,8 +109,9 @@ lines for touch zone intensities, LTR553 register/read status,
 proximity/light raw readings, power telemetry, and whether the diagnostic
 profile released the internal I2C path for camera init. It initializes only the
 touch, power, and LTR553 sensor adapters to separate sensor wiring/read
-failures from optional adapter pressure. Stop the micro-ROS Agent first and
-flash a normal build again after the monitor run.
+failures from optional adapter pressure. LTR553 uses the managed `M5.In_I2C`
+path; avoid direct `Wire` bus ownership here. Stop the micro-ROS Agent first
+and flash a normal build again after the monitor run.
 
 If the Agent creates the ROS graph but no samples reach ROS 2, build a
 temporary minimal bring-up profile before changing command behavior:
@@ -124,6 +125,20 @@ optional services, actions, events, raw telemetry, and board hardware adapters
 such as M5/BSP, servo, sensor, audio, and camera initialization. It is a
 diagnostic build flag, not the normal firmware surface; flash a normal build
 again after the transport/resource isolation smoke.
+
+If minimal status works but normal firmware does not, add board initialization
+back one stage at a time:
+
+```bash
+uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --microros-board-init-bringup --board-init-stage 1
+```
+
+`--board-init-stage` is incremental: `0` status only, `1` `M5.begin()`, `2` IO
+expander/LED setup, `3` servo UART setup, `4` servo position read, `5` touch
+sensor, `6` IMU probe, `7` power monitor, `8` LTR553 proximity/light, `9` NFC
+unit, `10` IR receiver, `11` audio probes, `12` camera init, `13` calibration
+load and servo health, and `14` neutral face/display. Restore a normal build
+after this diagnostic run.
 
 For a narrower command-path smoke after status works, use the core command
 profile:
