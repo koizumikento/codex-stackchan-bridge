@@ -33,7 +33,31 @@ def open_serial_port(args: argparse.Namespace) -> serial.Serial:
     if args.rts != "unchanged":
         ser.rts = args.rts == "active"
     ser.open()
+    apply_reset_pulse(
+        ser,
+        args.reset_pulse,
+        args.reset_pulse_seconds,
+        args.reset_settle_seconds,
+    )
     return ser
+
+
+def apply_reset_pulse(
+    ser: serial.Serial,
+    line: str,
+    pulse_seconds: float,
+    settle_seconds: float,
+) -> None:
+    if line == "none":
+        return
+    setattr(ser, line, True)
+    try:
+        if pulse_seconds > 0:
+            time.sleep(pulse_seconds)
+    finally:
+        setattr(ser, line, False)
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
 
 
 def main() -> int:
@@ -54,6 +78,29 @@ def main() -> int:
         "--one-shot",
         action="store_true",
         help="Exit after the first TCP client disconnects.",
+    )
+    parser.add_argument(
+        "--reset-pulse",
+        choices=("none", "dtr", "rts"),
+        default="none",
+        help=(
+            "Briefly pulse a control line active after opening the serial port, "
+            "then return it inactive before accepting TCP clients. Use "
+            "--reset-pulse rts to recover ESP32-S3 runtime serial after a "
+            "stale micro-ROS Agent session without reflashing."
+        ),
+    )
+    parser.add_argument(
+        "--reset-pulse-seconds",
+        type=float,
+        default=0.25,
+        help="Seconds to hold the reset pulse active (default: 0.25).",
+    )
+    parser.add_argument(
+        "--reset-settle-seconds",
+        type=float,
+        default=0.25,
+        help="Seconds to wait after returning the pulsed line inactive (default: 0.25).",
     )
     add_control_line_argument(
         parser,
@@ -83,7 +130,7 @@ def main() -> int:
             print(
                 f"serial_tcp_bridge listening {args.host}:{args.tcp_port} "
                 f"<-> {args.serial_port}@{args.baud} "
-                f"dtr={args.dtr} rts={args.rts}",
+                f"dtr={args.dtr} rts={args.rts} reset_pulse={args.reset_pulse}",
                 flush=True,
             )
             while True:

@@ -21,6 +21,7 @@ def load_module():
 
 class FakeSerial:
     def __init__(self) -> None:
+        self.history = []
         self.port = None
         self.baudrate = None
         self.timeout = None
@@ -30,6 +31,11 @@ class FakeSerial:
         self.opened = False
         self.open_dtr = None
         self.open_rts = None
+
+    def __setattr__(self, name, value) -> None:
+        object.__setattr__(self, name, value)
+        if name in {"dtr", "rts"} and "history" in self.__dict__:
+            self.history.append((name, value))
 
     def open(self) -> None:
         self.opened = True
@@ -49,6 +55,9 @@ class SerialTcpBridgeTests(unittest.TestCase):
                 baud=921600,
                 dtr="inactive",
                 rts="inactive",
+                reset_pulse="none",
+                reset_pulse_seconds=0.0,
+                reset_settle_seconds=0.0,
             )
         )
 
@@ -72,12 +81,37 @@ class SerialTcpBridgeTests(unittest.TestCase):
                 baud=921600,
                 dtr="unchanged",
                 rts="unchanged",
+                reset_pulse="none",
+                reset_pulse_seconds=0.0,
+                reset_settle_seconds=0.0,
             )
         )
 
         self.assertTrue(fake.opened)
         self.assertIsNone(fake.open_dtr)
         self.assertIsNone(fake.open_rts)
+
+    def test_open_serial_port_can_pulse_rts_after_open(self) -> None:
+        module = load_module()
+        fake = FakeSerial()
+        module.serial.Serial = lambda: fake
+
+        module.open_serial_port(
+            types.SimpleNamespace(
+                serial_port="COM3",
+                baud=921600,
+                dtr="inactive",
+                rts="inactive",
+                reset_pulse="rts",
+                reset_pulse_seconds=0.0,
+                reset_settle_seconds=0.0,
+            )
+        )
+
+        self.assertTrue(fake.opened)
+        self.assertFalse(fake.open_rts)
+        self.assertEqual(fake.history[-2:], [("rts", True), ("rts", False)])
+        self.assertFalse(fake.rts)
 
 
 if __name__ == "__main__":

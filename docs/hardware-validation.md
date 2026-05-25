@@ -45,6 +45,10 @@ hardware bring-up issue complete.
   because active DTR/RTS can interact with auto-reset or boot control lines.
   Use `--dtr active`, `--rts active`, or `unchanged` only for a deliberate
   reset-line diagnostic.
+  If repeated Agent sessions fail to re-establish XRCE while COM3 still shows
+  byte traffic, restart the host bridge with `--reset-pulse rts`; this briefly
+  pulses RTS active after opening COM3, then returns it inactive before
+  accepting the Agent TCP client.
 
   The repository Agent image builds micro-ROS Agent from source against the
   same ROS 2 Jazzy base used by `stackchan_bridge`; prefer it for bridge/CLI
@@ -1469,6 +1473,33 @@ KOIZUMI-112 diagnostic firmware update:
   host serial TCP bridge alone did not recover it; a PlatformIO upload/hard
   reset did. Track this as a reconnect/recovery blocker instead of a TTS chunk
   size result.
+
+### 2026-05-26 KOIZUMI-142 serial Agent reconnect recovery
+
+- Reproduced the stale reconnect shape where COM3 still had bidirectional byte
+  traffic, but repeated same-container Agent starts did not publish bridge
+  status or observe `firmware_ready`.
+- A manual pyserial RTS pulse recovered the session without a PlatformIO upload
+  or firmware rebuild. The next status smoke reported
+  `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`,
+  `STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=1`, Agent `session established`, and
+  `firmware_version: bringup`.
+- `scripts/serial_tcp_bridge.py` now supports `--reset-pulse rts` so the host
+  serial bridge can apply the same short RTS pulse immediately after opening
+  COM3, then return RTS inactive before listening for the Agent TCP client.
+- Validated the integrated recovery path with:
+
+  ```powershell
+  uv run --no-project --with pyserial python scripts/serial_tcp_bridge.py --serial-port COM3 --baud 921600 --host 0.0.0.0 --tcp-port 11411 --reset-pulse rts
+  ```
+
+  followed by `tcp-pty-bridge-smoke --skip-build`; the smoke exited 0 with
+  `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`,
+  `STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=1`, and Agent `session established`.
+- Do not run the reset pulse while another Agent, monitor, or bridge process
+  owns COM3. Stop the existing host bridge first and confirm no non-shell
+  `serial_tcp_bridge.py` process remains. Keep plain inactive DTR/RTS as the
+  default for already healthy sessions.
 
 ## Cleanup
 
