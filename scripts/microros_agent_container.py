@@ -841,6 +841,7 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     soak_seconds = max(0, int(args.soak_seconds))
     soak_interval_seconds = max(1, int(args.soak_interval_seconds))
     media_action_timeout = f"{float(args.timeout):.1f}"
+    status_attempt_limit = max(12, min(60, int((float(args.timeout) + 3.0) // 4.0)))
     setup_script = ros_smoke_setup_script(args)
     command = f"""
 set +e
@@ -900,7 +901,7 @@ status_output=""
 status_result=1
 status_connected_result=1
 status_attempt=0
-for status_attempt in $(seq 1 12); do
+for status_attempt in $(seq 1 {status_attempt_limit}); do
   status_output=$(timeout 4 ros2 topic echo --once /stackchan/default/status 2>&1)
   status_result=$?
   printf '%s\n' "$status_output" | grep -q 'connected: true'

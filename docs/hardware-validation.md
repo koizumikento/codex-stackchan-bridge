@@ -110,7 +110,7 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='512'
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='20.0'
   $env:STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES='64'
-  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='64'
+  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='96'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
   ```
 
@@ -1434,6 +1434,41 @@ KOIZUMI-112 diagnostic firmware update:
   Keep 128 byte and larger playback service responses tracked as follow-up
   risk; 320 byte service responses had already failed to advance beyond the
   next-chunk pull path.
+
+### 2026-05-26 KOIZUMI-141 TTS chunk-size and recovery follow-up
+
+- Rebuilt and uploaded the normal firmware to COM3 through the repository
+  PlatformIO helper with `--upload-speed 115200 --no-stub`. The upload
+  completed and hard-reset the board through the PlatformIO path.
+- A build-backed same-container bridge smoke after upload confirmed the normal
+  status path: `STACKCHAN_BRIDGE_STATUS_CONNECTED=1`,
+  `STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=1`, and `firmware_version: bringup`.
+- `scripts/microros_agent_container.py tcp-pty-bridge-smoke` now scales the
+  public status wait loop with `--timeout` instead of always using 12 attempts.
+  This prevents long TTS smokes from sending `say` before a slow Agent/session
+  startup has had a fair chance to publish `/stackchan/default/status`.
+- With a fresh PlatformIO reset and
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64`,
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=96`, and the documented VOICEVOX TTS
+  tuning, the TTS smoke reached `STACKCHAN_BRIDGE_SAY_COMPLETED=1` and
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. The bridge logged pull-only
+  activation with `received=50` and finish with `pending=0`.
+- The 96 byte run emitted late `pull_response_without_active_goal` events after
+  result completion, but the action result and `tts_finished` event were
+  complete. Treat 96 bytes as the current fastest validated TTS playback chunk
+  size for this hardware path; keep 64 bytes as the conservative fallback.
+- With another fresh PlatformIO reset and
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=128`, status connected in two attempts
+  and `firmware_ready` was observed, but `stackchanctl say` timed out. The
+  bridge buffered sequence 1 with 128 bytes, but the playback relay never
+  activated before the action timeout. Treat 128 byte service responses as too
+  large or too slow for the current serial micro-ROS playback path.
+- A separate recovery issue remains: after one successful Agent session, later
+  same-container Agent starts can fail to establish an XRCE session even though
+  the host serial TCP bridge reports bytes in both directions. Restarting the
+  host serial TCP bridge alone did not recover it; a PlatformIO upload/hard
+  reset did. Track this as a reconnect/recovery blocker instead of a TTS chunk
+  size result.
 
 ## Cleanup
 
