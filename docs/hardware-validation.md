@@ -1774,6 +1774,23 @@ KOIZUMI-112 diagnostic firmware update:
   topic chunks and had 24 pending jitter entries. Treat the window environment
   variables as diagnostic controls only. Reducing service round trips needs an
   explicit ACK/window or bundle contract instead of blind topic flooding.
+- After adding ACK/window fields to `NextAudioChunk`, a topic-first smoke with
+  64-byte chunks, speed 6, initial window 8, lookahead 8, and delayed service
+  fallback still failed with `AUDIO_UNDERRUN`. Firmware timed out waiting for
+  the empty helper response around sequence 2, then saw the republished missing
+  chunks only after the action had already failed. Reducing lookahead to 1 also
+  failed. This confirms that ACK metadata alone is not enough; topic-first
+  playback needs a transport loop that does not depend on helper-service
+  responses returning before the firmware gap timeout.
+- The same firmware and bridge still completed the current reliable fallback:
+  `STACKCHAN_TTS_LOADED_PLAYBACK=0`,
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`,
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64`,
+  `STACKCHAN_TTS_SPEED_SCALE=6.0`,
+  `STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD=1024`, and
+  `STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=0.0` completed `stackchanctl say あ`
+  with `tts_finished`. The smoke checks took roughly 133 s because the path is
+  still service-round-trip bound, but it remains the known-good speech baseline.
 
 ## Cleanup
 
