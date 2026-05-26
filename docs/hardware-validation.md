@@ -1718,6 +1718,28 @@ KOIZUMI-112 diagnostic firmware update:
   repeated `pull_response_timeout` and out-of-order topic chunks. Treat the
   loaded path as the current correctness baseline and the topic-first path as a
   latency investigation path until sequence recovery is fixed.
+- The follow-up hypothesis is that the 1000 ms firmware `NextAudioChunk`
+  timeout is shorter than the observed serial service response timing during
+  fallback. A diagnostic build raises the pull timeout to 2500 ms and pending
+  gap timeout to 5000 ms for topic-first comparison; keep loaded playback as
+  the default until the clean smoke result is known.
+- For the next topic-first smoke, set
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS=0` to bypass the
+  bridge's topic-republish-first policy and answer `NextAudioChunk` with a
+  fallback chunk immediately. This isolates whether serial latency comes from
+  service response size or from the deliberate NACK/republish cycle.
+- Topic-first smoke with
+  `STACKCHAN_TTS_LOADED_PLAYBACK=0`,
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64`, and
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS=0` completed
+  `stackchanctl say あ` successfully. The device reached `pull_end_of_stream`
+  and the bridge emitted `tts_finished`; smoke checks still took roughly 179 s,
+  so this is a correctness baseline, not an acceptable latency profile.
+- The same immediate-fallback test with the default 160-byte topic chunks still
+  failed with `AUDIO_UNDERRUN`. Firmware saw repeated `pull_response_timeout`
+  for later sequences even though the bridge logged served fallback chunks.
+  Keep 64-byte service chunks as the current reliable serial ceiling for
+  topic-first diagnostics.
 
 ## Cleanup
 

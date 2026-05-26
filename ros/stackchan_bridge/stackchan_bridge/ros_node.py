@@ -58,6 +58,9 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES"
+AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS"
+)
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 
@@ -111,6 +114,17 @@ def _audio_playback_pull_only() -> bool:
         "yes",
         "on",
     }
+
+
+def _audio_playback_pull_service_fallback_after_nacks() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS_ENV)
+    if raw_value is None:
+        return AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS
+    return min(max(value, 0), 16)
 
 
 def _audio_playback_loaded_tts() -> bool:
@@ -1660,7 +1674,8 @@ def main(args: list[str] | None = None) -> None:
                 if active and not pull_only and chunk is not None:
                     nack_counts = stats.setdefault("pull_nack_counts", {})
                     nack_count = int(nack_counts.get(next_sequence, 0))
-                    if nack_count < AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS:
+                    fallback_after_nacks = _audio_playback_pull_service_fallback_after_nacks()
+                    if nack_count < fallback_after_nacks:
                         nack_counts[next_sequence] = nack_count + 1
                         republish_chunks = _select_playback_chunks_for_topic_window(
                             queue,
