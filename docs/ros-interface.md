@@ -674,6 +674,11 @@ Request fields:
 
 - `meta`
 - `next_sequence`
+- `has_acknowledgement`
+- `acknowledged_sequence`
+- `has_missing_sequence`
+- `missing_sequence`
+- `free_buffer_chunks`
 
 Response fields:
 
@@ -682,6 +687,9 @@ Response fields:
 - `chunk`
 - `end_of_stream`
 - `buffered_chunks`
+- `should_publish_window`
+- `publish_from_sequence`
+- `publish_window_chunks`
 
 Rules:
 
@@ -701,6 +709,24 @@ Rules:
   serve that one fallback chunk in the service response and republish the same
   sequence on the playback topic. Use pull-only diagnostics when
   service-response PCM is the behavior under test.
+- Firmware may use the optional ACK/window fields to keep this service as a
+  small control plane instead of a per-chunk PCM response. When
+  `has_acknowledgement=true`, `acknowledged_sequence` is the highest contiguous
+  playback sequence firmware has accepted for the active `command_id`, and the
+  bridge must not republish earlier sequences. When
+  `has_missing_sequence=true`, `missing_sequence` identifies the first sequence
+  firmware wants republished on
+  `/stackchan/<device_id>/device/audio/playback/chunks`. `free_buffer_chunks`
+  advertises the remaining firmware jitter-buffer capacity so the bridge can
+  cap the topic window. The bridge echoes the selected topic window through
+  `should_publish_window`, `publish_from_sequence`, and
+  `publish_window_chunks`; these fields are control metadata and never carry
+  PCM.
+- The ACK/window mode is the preferred next transport direction for K151 TTS
+  latency work. Blindly increasing the initial topic window is not sufficient:
+  physical smokes with 64-byte chunks and a 64-chunk initial window reached
+  `AUDIO_UNDERRUN` after firmware detected a sequence gap while its bounded
+  future-chunk buffer was already full.
 - `has_chunk=false` with an accepted `result` means no matching chunk is
   currently buffered; firmware may retry on a bounded cadence.
 - `end_of_stream=true` is advisory and only applies after the bridge has closed

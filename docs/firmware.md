@@ -505,7 +505,12 @@ Baseline audio path:
   fallback delay and ask the helper for that missing sequence immediately.
   For longer TTS payloads, the bridge sends only a bounded initial topic window
   and advances later topic chunks from firmware pull requests so incoming future
-  chunks stay inside the firmware jitter buffer.
+  chunks stay inside the firmware jitter buffer. Firmware includes optional
+  ACK/window fields in `NextAudioChunk` requests: the highest contiguous
+  accepted sequence, the current missing sequence when waiting on a gap, and
+  the remaining future-chunk slots. The bridge uses those fields to republish a
+  bounded topic window without carrying PCM in the service response whenever
+  possible.
   Because serial micro-ROS topics can still deliver playback chunks late or
   slightly out of order,
   firmware keeps a small fixed jitter buffer for future sequences and drains

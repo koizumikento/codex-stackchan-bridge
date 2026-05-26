@@ -225,6 +225,8 @@ def _select_playback_chunk_for_pull(
 def _select_playback_chunks_for_topic_window(
     queue: list[object], next_sequence: int, count: int
 ) -> list[object]:
+    if count <= 0:
+        return []
     chunks: list[object] = []
     for message in queue:
         if _playback_chunk_sequence(message) < next_sequence:
@@ -233,6 +235,26 @@ def _select_playback_chunks_for_topic_window(
         if len(chunks) >= count:
             break
     return chunks
+
+
+def _next_audio_chunk_transport_control(request: object) -> tuple[int, int]:
+    next_sequence = int(getattr(request, "next_sequence", 0))
+    if bool(getattr(request, "has_acknowledgement", False)):
+        acknowledged_sequence = int(getattr(request, "acknowledged_sequence", 0))
+        next_sequence = max(next_sequence, acknowledged_sequence + 1)
+    if bool(getattr(request, "has_missing_sequence", False)):
+        missing_sequence = int(getattr(request, "missing_sequence", 0))
+        next_sequence = max(next_sequence, missing_sequence)
+    window_count = _audio_playback_pull_lookahead_chunks()
+    if hasattr(request, "free_buffer_chunks"):
+        free_buffer_chunks = max(int(getattr(request, "free_buffer_chunks", 0)), 0)
+        window_count = min(window_count, free_buffer_chunks)
+    return next_sequence, window_count
+
+
+def _set_optional_field(target: object, name: str, value: object) -> None:
+    if hasattr(target, name):
+        setattr(target, name, value)
 
 
 def _time_to_string(stamp: object) -> str:
@@ -1658,7 +1680,9 @@ def main(args: list[str] | None = None) -> None:
         ) -> object:
             meta = _meta_from_ros(request.meta, device_id)
             key = (device_id, meta.command_id)
-            next_sequence = int(getattr(request, "next_sequence", 0))
+            next_sequence, pull_window_count = _next_audio_chunk_transport_control(
+                request
+            )
             chunk = None
             republish_chunks = []
             buffered_chunks = 0
@@ -1708,7 +1732,7 @@ def main(args: list[str] | None = None) -> None:
                         republish_chunks = _select_playback_chunks_for_topic_window(
                             queue,
                             next_sequence,
-                            _audio_playback_pull_lookahead_chunks(),
+                            pull_window_count,
                         )
                         chunk = None
             if not active and not closed:
@@ -1723,11 +1747,17 @@ def main(args: list[str] | None = None) -> None:
                 response.has_chunk = False
                 response.end_of_stream = False
                 response.buffered_chunks = buffered_chunks
+                _set_optional_field(response, "should_publish_window", False)
+                _set_optional_field(response, "publish_from_sequence", next_sequence)
+                _set_optional_field(response, "publish_window_chunks", 0)
                 return response
             _copy_result(response.result, Result.accepted("audio playback chunk pull ok"))
             response.has_chunk = chunk is not None
             response.end_of_stream = closed and chunk is None and buffered_chunks == 0
             response.buffered_chunks = buffered_chunks
+            _set_optional_field(response, "should_publish_window", bool(republish_chunks))
+            _set_optional_field(response, "publish_from_sequence", next_sequence)
+            _set_optional_field(response, "publish_window_chunks", len(republish_chunks))
             if chunk is not None:
                 self._copy_audio_chunk_response(response.chunk, chunk)
                 if next_sequence == 0:

@@ -26,6 +26,7 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_stackchan_status,
     _audio_playback_pull_lookahead_chunks,
     _audio_playback_topic_initial_window_chunks,
+    _next_audio_chunk_transport_control,
     _records_after_event_id,
     _sequence_for_event_id,
     _select_playback_chunk_for_pull,
@@ -81,6 +82,14 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual([chunk.sequence for chunk in window], [4, 5, 6])
         self.assertEqual([chunk.sequence for chunk in queue[:3]], [2, 3, 4])
 
+    def test_select_playback_chunks_for_topic_window_allows_zero_capacity(self) -> None:
+        queue = [SimpleNamespace(sequence=index) for index in range(2, 5)]
+
+        window = _select_playback_chunks_for_topic_window(queue, 2, 0)
+
+        self.assertEqual(window, [])
+        self.assertEqual([chunk.sequence for chunk in queue], [2, 3, 4])
+
     def test_audio_playback_topic_window_env_is_bounded(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -115,6 +124,49 @@ class RosNodeHelperTests(unittest.TestCase):
             {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "-4"},
         ):
             self.assertEqual(_audio_playback_pull_lookahead_chunks(), 1)
+
+    def test_next_audio_chunk_transport_control_uses_ack_and_missing_sequence(self) -> None:
+        request = SimpleNamespace(
+            next_sequence=2,
+            has_acknowledgement=True,
+            acknowledged_sequence=4,
+            has_missing_sequence=True,
+            missing_sequence=6,
+            free_buffer_chunks=3,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "8"},
+        ):
+            next_sequence, window_count = _next_audio_chunk_transport_control(request)
+
+        self.assertEqual(next_sequence, 6)
+        self.assertEqual(window_count, 3)
+
+    def test_next_audio_chunk_transport_control_defaults_to_legacy_request(self) -> None:
+        request = SimpleNamespace(next_sequence=7)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "5"},
+        ):
+            next_sequence, window_count = _next_audio_chunk_transport_control(request)
+
+        self.assertEqual(next_sequence, 7)
+        self.assertEqual(window_count, 5)
+
+    def test_next_audio_chunk_transport_control_respects_zero_free_buffer(self) -> None:
+        request = SimpleNamespace(next_sequence=7, free_buffer_chunks=0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "5"},
+        ):
+            next_sequence, window_count = _next_audio_chunk_transport_control(request)
+
+        self.assertEqual(next_sequence, 7)
+        self.assertEqual(window_count, 0)
 
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
@@ -465,6 +517,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "_publish_device_audio_chunk_with_retries",
             "_republish_device_audio_chunk_for_pull",
             "_select_playback_chunks_for_topic_window",
+            "_next_audio_chunk_transport_control",
             "AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64",
             "AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160",
             "AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64",

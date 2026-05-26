@@ -621,6 +621,12 @@ void refresh_play_audio_pending_gap_timer(uint32_t now_ms) {
   }
 }
 
+uint32_t play_audio_free_pending_chunk_slots() {
+  return play_audio_pending_chunk_count >= kAudioPlaybackPendingChunkSlots
+             ? 0
+             : kAudioPlaybackPendingChunkSlots - play_audio_pending_chunk_count;
+}
+
 void log_play_audio_chunk_diagnostic(
     const char* stage,
     const char* command_id,
@@ -5903,6 +5909,14 @@ void request_next_play_audio_chunk() {
   audio_playback_chunk_request.meta.priority =
       static_cast<uint8_t>(stackchan::Priority::Normal);
   audio_playback_chunk_request.next_sequence = play_audio_next_pull_sequence;
+  audio_playback_chunk_request.has_acknowledgement =
+      play_audio_next_pull_sequence > 0;
+  audio_playback_chunk_request.acknowledged_sequence =
+      play_audio_next_pull_sequence > 0 ? play_audio_next_pull_sequence - 1 : 0;
+  audio_playback_chunk_request.has_missing_sequence = waiting_for_gap;
+  audio_playback_chunk_request.missing_sequence = play_audio_next_pull_sequence;
+  audio_playback_chunk_request.free_buffer_chunks =
+      play_audio_free_pending_chunk_slots();
   const rcl_ret_t send_result = rcl_send_request(
       &audio_playback_chunk_client,
       &audio_playback_chunk_request,
