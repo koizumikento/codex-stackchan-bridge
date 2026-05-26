@@ -57,6 +57,7 @@ AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
+AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 
 
 def _audio_playback_chunk_bytes() -> int:
@@ -93,6 +94,15 @@ def _audio_playback_pull_only() -> bool:
         "true",
         "yes",
         "on",
+    }
+
+
+def _audio_playback_loaded_tts() -> bool:
+    return os.environ.get(AUDIO_PLAYBACK_LOADED_TTS_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
     }
 
 
@@ -574,6 +584,7 @@ def main(args: list[str] | None = None) -> None:
             GetStatus,
             GetTranscript,
             ListEvents,
+            LoadAudioChunk,
             NextAudioChunk,
             NextEvent,
             SetFace,
@@ -655,6 +666,7 @@ def main(args: list[str] | None = None) -> None:
             self._public_event_publishers = {}
             self._public_status_publishers = {}
             self._device_audio_capture_clients = {}
+            self._device_audio_load_clients = {}
             self._device_audio_play_clients = {}
             self._device_audio_chunk_publishers = {}
             self._device_camera_capture_clients = {}
@@ -844,6 +856,11 @@ def main(args: list[str] | None = None) -> None:
                 callback_group=self._device_client_callback_group,
                 feedback_sub_qos_profile=action_status_best_effort_depth_1,
                 status_sub_qos_profile=action_status_best_effort_depth_1,
+            )
+            self._device_audio_load_clients[device_id] = self.create_client(
+                LoadAudioChunk,
+                f"/stackchan/{device_id}/device/audio/playback/load",
+                callback_group=self._device_client_callback_group,
             )
             self._device_audio_capture_clients[device_id] = ActionClient(
                 self,
@@ -1750,6 +1767,80 @@ def main(args: list[str] | None = None) -> None:
                 next_chunk_sequence=1 if first_chunk else 0,
             )
 
+        def _loaded_tts_playback_request(
+            self,
+            ros_meta: object,
+            request: object,
+        ) -> object:
+            return SimpleNamespace(
+                meta=ros_meta,
+                format=AUDIO_FORMAT,
+                sample_rate=AUDIO_SAMPLE_RATE,
+                channels=AUDIO_CHANNELS,
+                first_chunk_present=False,
+                first_chunk_sequence=0,
+                first_chunk_pcm=b"",
+                face_hint=getattr(request, "face_hint", ""),
+                motion_hint=getattr(request, "motion_hint", ""),
+                next_chunk_offset=0,
+                next_chunk_sequence=0,
+            )
+
+        def _load_device_audio_playback(
+            self,
+            device_id: str,
+            meta: CommandMeta,
+            ros_meta: object,
+            audio: TtsAudio,
+        ) -> Result | None:
+            client = self._device_audio_load_clients.get(device_id)
+            if client is None or not client.wait_for_service(timeout_sec=0.1):
+                self.get_logger().info(
+                    "audio playback load service unavailable; falling back to topic relay "
+                    f"device_id={device_id!r} command_id={meta.command_id!r}"
+                )
+                return None
+            chunk_bytes = _audio_playback_chunk_bytes()
+            total_chunks = (len(audio.pcm) + chunk_bytes - 1) // chunk_bytes
+            for sequence, start in enumerate(range(0, len(audio.pcm), chunk_bytes)):
+                device_request = LoadAudioChunk.Request()
+                _copy_command_meta(
+                    device_request.meta,
+                    meta,
+                    getattr(ros_meta, "created_at", device_request.meta.created_at),
+                )
+                device_request.sequence = sequence
+                device_request.total_chunks = total_chunks
+                device_request.total_bytes = len(audio.pcm)
+                device_request.format = AUDIO_CHUNK_FORMAT_ID
+                device_request.sample_rate = audio.sample_rate
+                device_request.channels = audio.channels
+                device_request.end_of_stream = sequence + 1 >= total_chunks
+                device_request.pcm = audio.pcm[start : start + chunk_bytes]
+                future = client.call_async(device_request)
+                wait_result = self._wait_for_future(
+                    future,
+                    f"audio playback load service for '{device_id}'",
+                    timeout_sec=self._device_media_action_timeout_sec,
+                )
+                if wait_result is not None:
+                    return wait_result
+                try:
+                    response = future.result()
+                except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                    return _make_transport_result(
+                        f"firmware audio playback load service for '{device_id}' failed: {exc}"
+                    )
+                result = _result_from_ros(response.result)
+                if not result.ok:
+                    return result
+            self.get_logger().info(
+                "audio playback loaded before play action "
+                f"device_id={device_id!r} command_id={meta.command_id!r} "
+                f"chunks={total_chunks} bytes={len(audio.pcm)} chunk_bytes={chunk_bytes}"
+            )
+            return Result.accepted("audio playback loaded")
+
         def _wait_for_device_audio_playback_subscription(
             self,
             device_id: str,
@@ -2292,14 +2383,42 @@ def main(args: list[str] | None = None) -> None:
                 goal_handle.abort()
                 return result
             playback_request = self._tts_playback_request(request.meta, request, audio)
-            self._buffer_synthesized_playback_chunks(
-                device_id,
-                meta,
-                audio,
-                start_sequence=int(getattr(playback_request, "next_chunk_sequence", 0)),
-                pcm_offset=int(getattr(playback_request, "next_chunk_offset", 0)),
-                pull_only=_audio_playback_pull_only(),
-            )
+            loaded_result = None
+            if _audio_playback_loaded_tts() and not _audio_playback_pull_only():
+                loaded_result = self._load_device_audio_playback(
+                    device_id,
+                    meta,
+                    request.meta,
+                    audio,
+                )
+            if loaded_result is None:
+                self._buffer_synthesized_playback_chunks(
+                    device_id,
+                    meta,
+                    audio,
+                    start_sequence=int(getattr(playback_request, "next_chunk_sequence", 0)),
+                    pcm_offset=int(getattr(playback_request, "next_chunk_offset", 0)),
+                    pull_only=_audio_playback_pull_only(),
+                )
+            elif not loaded_result.ok:
+                _copy_result(result.result, loaded_result)
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "error_code": loaded_result.error_code,
+                        },
+                    )
+                )
+                goal_handle.abort()
+                return result
+            else:
+                playback_request = self._loaded_tts_playback_request(request.meta, request)
             playback_result = self._call_device_audio_play(
                 device_id,
                 playback_request,

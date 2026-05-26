@@ -628,10 +628,13 @@ For longer speech, KOIZUMI-146 tracks an experimental loaded-playback
 transaction because hardware smokes show that real-time topic/service retries
 do not deliver TTS-sized PCM in order. In that design, `stackchanctl say` still
 uses the bridge backend, but the bridge first writes bounded local PCM into a
-firmware-owned, device-scoped playback buffer with ACK-only responses, then
-starts the normal firmware playback action for the same `command_id`. This load
-path must not expose PCM, speech text, or raw audio bytes in normal CLI output
-or MCP responses.
+firmware-owned, device-scoped playback buffer through
+`/stackchan/<device_id>/device/audio/playback/load` with ACK-only responses,
+then starts the normal firmware playback action for the same `command_id`. The
+bridge uses this path for TTS by default when the firmware load service is
+available; set `STACKCHAN_TTS_LOADED_PLAYBACK=0` to force the older topic-first
+relay for diagnostics. This load path must not expose PCM, speech text, or raw
+audio bytes in normal CLI output or MCP responses.
 For KOIZUMI-111 diagnostics, developers can set
 `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
 `64` to move the first playback segment into the action goal. Developers can

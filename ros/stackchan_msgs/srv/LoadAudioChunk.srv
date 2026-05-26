@@ -1,0 +1,15 @@
+stackchan_msgs/CommandMeta meta
+uint32 sequence
+uint32 total_chunks
+uint32 total_bytes
+uint8 format
+uint32 sample_rate
+uint8 channels
+bool end_of_stream
+uint8[<=1280] pcm
+---
+stackchan_msgs/Result result
+uint32 accepted_sequence
+uint32 buffered_chunks
+uint32 buffered_bytes
+bool complete

@@ -721,9 +721,8 @@ The proposed experimental transaction is:
 
 1. The bridge allocates a local `command_id` and synthesizes or decodes bounded
    PCM locally.
-2. The bridge writes audio to firmware before playback using a firmware-owned,
-   device-scoped load resource under
-   `/stackchan/<device_id>/device/audio/playback/load/...`.
+2. The bridge writes audio to firmware before playback using the firmware-owned,
+   device-scoped `/stackchan/<device_id>/device/audio/playback/load` service.
 3. Each write carries `CommandMeta`, format, sample rate, channel count,
    total length or chunk count, monotonic `sequence`, and a bounded payload.
    Firmware returns only a structured `Result`, accepted sequence, and buffered
@@ -743,6 +742,50 @@ stay device-scoped, bounded, redacted in normal logs, and covered by mock,
 bridge, firmware, and hardware-smoke validation before it replaces the current
 topic-first relay. The current topic-first relay remains the validated path for
 the 20 ms short prompt.
+
+### `/stackchan/<device_id>/device/audio/playback/load`
+
+Purpose: experimental firmware-owned service that loads bounded PCM into a
+device RAM playback buffer before `/stackchan/<device_id>/device/audio/play`
+starts. It is intended for KOIZUMI-146 speech bring-up only.
+
+Request fields:
+
+- `meta`
+- `sequence`
+- `total_chunks`
+- `total_bytes`
+- `format`
+- `sample_rate`
+- `channels`
+- `end_of_stream`
+- `pcm`
+
+Response fields:
+
+- `result`
+- `accepted_sequence`
+- `buffered_chunks`
+- `buffered_bytes`
+- `complete`
+
+Rules:
+
+- `meta.device_id` and `meta.command_id` identify the load transaction and the
+  subsequent playback action.
+- `sequence` must be monotonic and contiguous from 0. Firmware rejects gaps
+  rather than buffering out-of-order load writes.
+- `total_bytes` must fit the firmware-owned bounded RAM buffer. The K151
+  prototype currently reserves 16 KiB, enough for current short Japanese TTS
+  smokes but not a general audio-file transfer.
+- `format=PCM_S16LE`, `sample_rate=16000`, and `channels=1` are required.
+- `pcm` is bounded by the same `uint8[<=1280]` IDL limit as `AudioChunk`.
+- `end_of_stream=true` marks the final chunk. The bridge may start
+  `/stackchan/<device_id>/device/audio/play` only after `complete=true`.
+- Responses carry counters and structured `Result` only; they must not echo PCM.
+- Firmware plays a complete loaded buffer only when the playback action uses the
+  same `command_id` and no first-goal chunk. Normal topic/pull playback remains
+  available for diagnostics and short prompts.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 

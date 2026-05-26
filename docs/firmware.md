@@ -529,9 +529,12 @@ Baseline audio path:
 - KOIZUMI-146 tracks an experimental loaded-playback path for speech-sized
   PCM because K151 hardware smokes show the topic/pull relay is reliable only
   for very short prompts. In that path, firmware should accept a bounded,
-  device-scoped audio load transaction before playback, store payload only in a
-  fixed RAM buffer keyed by `command_id`, return ACK-only metadata for each
-  write, and then play the loaded buffer through the existing playback action.
+  device-scoped audio load transaction on
+  `/stackchan/<device_id>/device/audio/playback/load` before playback, store
+  payload only in a fixed RAM buffer keyed by `command_id`, return ACK-only
+  metadata for each write, and then play the loaded buffer through the existing
+  playback action with the same `command_id`. The K151 prototype buffer is
+  16 KiB, and responses carry only structured result and buffered counters.
   Firmware must reject overflow, format mismatch, stale command ids,
   concurrent loads, and playback without a complete loaded buffer with
   structured `Result` errors. The load transaction must not expose PCM bytes or
