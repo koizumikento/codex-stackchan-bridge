@@ -54,8 +54,10 @@ AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS = 8
 AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160
+AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
+AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES"
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 
@@ -64,10 +66,24 @@ def _audio_playback_chunk_bytes() -> int:
     raw_value = os.environ.get(AUDIO_PLAYBACK_CHUNK_BYTES_ENV)
     if raw_value is None:
         return AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT
+    return _bounded_even_audio_chunk_bytes(raw_value, AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT)
+
+
+def _audio_playback_load_chunk_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV)
+    if raw_value is None:
+        return min(_audio_playback_chunk_bytes(), AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT)
+    return _bounded_even_audio_chunk_bytes(
+        raw_value,
+        AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT,
+    )
+
+
+def _bounded_even_audio_chunk_bytes(raw_value: str, default: int) -> int:
     try:
         value = int(raw_value)
     except ValueError:
-        return AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT
+        return default
     value = min(max(value, 2), AUDIO_CHUNK_BYTES)
     if value % 2:
         value -= 1
@@ -1800,7 +1816,7 @@ def main(args: list[str] | None = None) -> None:
                     f"device_id={device_id!r} command_id={meta.command_id!r}"
                 )
                 return None
-            chunk_bytes = _audio_playback_chunk_bytes()
+            chunk_bytes = _audio_playback_load_chunk_bytes()
             total_chunks = (len(audio.pcm) + chunk_bytes - 1) // chunk_bytes
             for sequence, start in enumerate(range(0, len(audio.pcm), chunk_bytes)):
                 chunk = audio.pcm[start : start + chunk_bytes]
