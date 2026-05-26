@@ -52,6 +52,8 @@ AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_INTERVAL_SEC = 0.03
 AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS = 2
 AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS = 8
 AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8
+AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC = 0.0
+AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT = 2
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
@@ -65,6 +67,12 @@ AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS"
 )
 AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS"
+AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC"
+)
+AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT"
+)
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 
@@ -187,11 +195,37 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _audio_playback_ack_republish_min_interval_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV,
+                AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC,
+            ),
+            0.0,
+        ),
+        2.0,
+    )
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
     except ValueError:
         return default
+
+
+def _audio_playback_ack_first_chunk_retry_count() -> int:
+    return min(
+        max(
+            _env_int(
+                AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV,
+                AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT,
+            ),
+            1,
+        ),
+        AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_COUNT,
+    )
 
 
 def _audio_chunk_pcm_size(message: object) -> int:
@@ -250,6 +284,29 @@ def _next_audio_chunk_transport_control(request: object) -> tuple[int, int]:
         free_buffer_chunks = max(int(getattr(request, "free_buffer_chunks", 0)), 0)
         window_count = min(window_count, free_buffer_chunks)
     return next_sequence, window_count
+
+
+def _should_republish_audio_window_for_ack(
+    stats: dict,
+    next_sequence: int,
+    window_count: int,
+    now: float,
+    min_interval_sec: float,
+) -> bool:
+    state = stats.setdefault("ack_republish_state", {})
+    for sequence in list(state):
+        if int(sequence) < next_sequence:
+            state.pop(sequence, None)
+    last = state.get(next_sequence)
+    if last is not None:
+        last_monotonic, last_window_count = last
+        if (
+            now - float(last_monotonic) < min_interval_sec
+            and window_count <= int(last_window_count)
+        ):
+            return False
+    state[next_sequence] = (now, window_count)
+    return True
 
 
 def _set_optional_field(target: object, name: str, value: object) -> None:
@@ -1821,6 +1878,7 @@ def main(args: list[str] | None = None) -> None:
                 return
             republish_chunks = []
             buffered_chunks = 0
+            now = time.monotonic()
             with self._playback_chunk_lock:
                 active = key in self._active_playback_sessions
                 pull_only = key in self._pull_only_playback_sessions
@@ -1833,8 +1891,20 @@ def main(args: list[str] | None = None) -> None:
                     window_count,
                 )
                 buffered_chunks = len(queue)
-            if not republish_chunks:
-                return
+                if not republish_chunks:
+                    return
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                if not _should_republish_audio_window_for_ack(
+                    stats,
+                    next_sequence,
+                    window_count,
+                    now,
+                    _audio_playback_ack_republish_min_interval_sec(),
+                ):
+                    return
             self.get_logger().info(
                 "audio playback ack republished topic window "
                 f"device_id={device_id!r} command_id={command_id!r} "
@@ -2111,11 +2181,13 @@ def main(args: list[str] | None = None) -> None:
         def _publish_device_audio_window_for_ack(
             self, device_id: str, messages: list[object]
         ) -> None:
+            first_chunk_retry_count = _audio_playback_ack_first_chunk_retry_count()
             for index, message in enumerate(messages):
-                if index == 0:
-                    self._republish_device_audio_chunk_for_pull(device_id, message)
-                else:
+                repeat_count = first_chunk_retry_count if index == 0 else 1
+                for retry_index in range(repeat_count):
                     self._publish_device_audio_chunk(device_id, message)
+                    if retry_index < repeat_count - 1:
+                        time.sleep(AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_INTERVAL_SEC)
                 if index < len(messages) - 1:
                     time.sleep(AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_INTERVAL_SEC)
 

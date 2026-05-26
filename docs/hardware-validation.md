@@ -1803,6 +1803,24 @@ KOIZUMI-112 diagnostic firmware update:
   (`published=372` for 26 buffered chunks), so the next tuning target is to
   reduce redundant ACK-triggered republishes and keep the helper service mostly
   for end-of-stream confirmation.
+- Reducing ACK duplicate cadence too aggressively caused regressions:
+  `STACKCHAN_AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC=0.5` and `0.1`
+  both ended in `AUDIO_UNDERRUN`, and publishing each ACK-requested topic chunk
+  only once caused the bridge `say` action to time out before firmware playback
+  progressed beyond startup. The current validated compromise keeps duplicate
+  ACK throttling disabled by default and republishes the first chunk of each
+  ACK-triggered window twice. With
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64`,
+  `STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS=2`,
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS=2`,
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS=16`,
+  `STACKCHAN_TTS_SPEED_SCALE=6.0`,
+  `STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD=1024`, and
+  `STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=0.0`, `stackchanctl say あ`
+  completed with `tts_finished`. Smoke checks took roughly 106 s, and bridge
+  relay stats improved to `published=248` for 26 buffered chunks. Residual
+  `pull_response_timeout` diagnostics and post-completion duplicate/orphan
+  chunks remain follow-up transport cleanup, not proof of audible quality.
 
 ## Cleanup
 

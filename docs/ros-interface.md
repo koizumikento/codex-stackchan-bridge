@@ -692,7 +692,12 @@ Rules:
   bridge can cap the topic lookahead window.
 - The bridge may republish `missing_sequence` plus bounded lookahead chunks on
   `/stackchan/<device_id>/device/audio/playback/chunks` when the matching
-  playback relay session is active.
+  playback relay session is active. It may throttle duplicate ACKs for the
+  same `missing_sequence` and window size so firmware retry cadence does not
+  multiply topic traffic. The first chunk in each ACK-triggered topic window is
+  republished twice by default to reduce best-effort topic loss while avoiding
+  the heavier pull-fallback retry count; this diagnostic tuning is bounded by
+  `STACKCHAN_AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT=1..3`.
 - QoS is best effort, volatile, keep last 8. Firmware republishes bounded
   metadata periodically while a gap remains, so this topic should not block
   safety, motion, or audio callback budgets.
@@ -777,12 +782,14 @@ Rules:
 
 ### Experimental loaded playback transaction
 
-K151 hardware smokes showed that the topic-plus-pull playback relay can
-complete very short prompts, but it cannot yet carry TTS-sized PCM reliably:
-minimal TTS `あ` still produced 21 x 160 byte transport chunks and failed near
+K151 hardware smokes originally showed that the topic-plus-pull playback relay
+could complete very short prompts, but could not carry TTS-sized PCM reliably:
+minimal TTS `あ` produced 21 x 160 byte transport chunks and failed near
 sequence 3, while `こんにちは` produced 56 chunks and failed before completion.
-The next speech transport must therefore avoid depending on in-order DDS topic
-delivery while the speaker is waiting for real-time audio.
+The ACK/window transport later completed minimal local TTS with smaller 64-byte
+chunks, but still has high latency and residual duplicate/orphan chunk cleanup.
+The next speech transport must therefore continue avoiding synchronous
+audio-bearing service responses on the real-time speaker path.
 
 The proposed experimental transaction is:
 

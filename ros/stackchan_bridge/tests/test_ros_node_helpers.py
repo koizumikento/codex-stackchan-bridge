@@ -9,6 +9,8 @@ from unittest import mock
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS,
+    AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV,
+    AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
     _coerce_telemetry_device_id,
@@ -25,12 +27,14 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_head_pose,
     _snapshot_from_stackchan_status,
     _audio_playback_pull_lookahead_chunks,
+    _audio_playback_ack_first_chunk_retry_count,
     _audio_playback_topic_initial_window_chunks,
     _next_audio_chunk_transport_control,
     _records_after_event_id,
     _sequence_for_event_id,
     _select_playback_chunk_for_pull,
     _select_playback_chunks_for_topic_window,
+    _should_republish_audio_window_for_ack,
     _meta_from_ros,
     _normalize_device_ids,
     _reject_external_safety_priority,
@@ -125,6 +129,34 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertEqual(_audio_playback_pull_lookahead_chunks(), 1)
 
+    def test_audio_playback_ack_republish_interval_env_is_bounded(self) -> None:
+        from stackchan_bridge.ros_node import _audio_playback_ack_republish_min_interval_sec
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV: "0.25"},
+        ):
+            self.assertEqual(_audio_playback_ack_republish_min_interval_sec(), 0.25)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_ack_republish_min_interval_sec(), 2.0)
+
+    def test_audio_playback_ack_first_chunk_retry_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV: "1"},
+        ):
+            self.assertEqual(_audio_playback_ack_first_chunk_retry_count(), 1)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_ack_first_chunk_retry_count(), 3)
+
     def test_next_audio_chunk_transport_control_uses_ack_and_missing_sequence(self) -> None:
         request = SimpleNamespace(
             next_sequence=2,
@@ -185,6 +217,26 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertEqual(next_sequence, 10)
         self.assertEqual(window_count, 2)
+
+    def test_ack_republish_throttle_suppresses_same_window(self) -> None:
+        stats = {}
+
+        first = _should_republish_audio_window_for_ack(stats, 4, 2, 10.0, 0.5)
+        repeated = _should_republish_audio_window_for_ack(stats, 4, 2, 10.1, 0.5)
+        later = _should_republish_audio_window_for_ack(stats, 4, 2, 10.6, 0.5)
+
+        self.assertTrue(first)
+        self.assertFalse(repeated)
+        self.assertTrue(later)
+
+    def test_ack_republish_throttle_allows_larger_window(self) -> None:
+        stats = {}
+
+        first = _should_republish_audio_window_for_ack(stats, 4, 1, 10.0, 0.5)
+        larger_window = _should_republish_audio_window_for_ack(stats, 4, 2, 10.1, 0.5)
+
+        self.assertTrue(first)
+        self.assertTrue(larger_window)
 
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
@@ -533,6 +585,10 @@ class RosNodeHelperTests(unittest.TestCase):
             "AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8",
             "STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS",
             "STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS",
+            "AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC = 0.0",
+            "STACKCHAN_AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC",
+            "AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT = 2",
+            "STACKCHAN_AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT",
             "_publish_device_audio_chunk_with_retries",
             "_republish_device_audio_chunk_for_pull",
             "_select_playback_chunks_for_topic_window",
@@ -549,6 +605,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "_audio_playback_pull_service_fallback_after_nacks",
             "_audio_playback_topic_initial_window_chunks",
             "_audio_playback_pull_lookahead_chunks",
+            "_audio_playback_ack_republish_min_interval_sec",
+            "_audio_playback_ack_first_chunk_retry_count",
             "_audio_playback_pull_only",
             "_audio_playback_loaded_tts",
             "_wait_for_device_audio_playback_subscription",
@@ -569,6 +627,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "_pending_playback_chunks",
             "_handle_next_audio_chunk",
             "_handle_audio_playback_ack",
+            "_should_republish_audio_window_for_ack",
             "/audio/playback/next_chunk",
             "/device/audio/playback/acks",
             "audio playback pull served first chunk",
