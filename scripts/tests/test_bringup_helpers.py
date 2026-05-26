@@ -51,6 +51,14 @@ class MicroRosAgentContainerTests(unittest.TestCase):
                 smoke_args(skip_build=True, clean_ros_build=True),
             )
 
+    def test_loaded_audio_probe_chunk_sizes_require_even_values(self) -> None:
+        self.assertEqual(
+            microros_agent_container.parse_chunk_sizes("32, 64,160"),
+            [32, 64, 160],
+        )
+        with self.assertRaises(ValueError):
+            microros_agent_container.parse_chunk_sizes("63")
+
 
 if __name__ == "__main__":
     unittest.main()

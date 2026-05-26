@@ -123,6 +123,22 @@ hardware bring-up issue complete.
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. Also record whether the operator
   heard the speaker output; `tts_finished` alone is not an audible-playback
   pass.
+
+  Before running a full TTS smoke, isolate the firmware loaded-playback service
+  without a provider request or bridge TTS path:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-loaded-audio-probe --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 30 --chunk-bytes 32,64,160 --total-bytes 160
+  ```
+
+  The probe waits for `/stackchan/default/device/status` to report
+  `connected: true`, then calls
+  `/stackchan/default/device/audio/playback/load` directly with silent PCM. It
+  prints `STACKCHAN_LOAD_PROBE_CHUNK_RESPONSE` or
+  `STACKCHAN_LOAD_PROBE_CHUNK_TIMEOUT` lines with chunk size, sequence, byte
+  count, result state, and buffered counters only. It must not print PCM,
+  speech text, provider request bodies, transcripts, images, NFC tag IDs, IR
+  codes, or protocol dumps.
 - If the Agent creates the graph but all topic echoes time out, isolate the
   transport/status path with the temporary minimal firmware profile:
 

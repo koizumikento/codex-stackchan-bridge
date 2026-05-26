@@ -58,6 +58,8 @@ def main() -> int:
         return run_tcp_pty_event_echo(args)
     if args.command == "tcp-pty-sensor-sweep":
         return run_tcp_pty_sensor_sweep(args)
+    if args.command == "tcp-pty-loaded-audio-probe":
+        return run_tcp_pty_loaded_audio_probe(args)
     if args.command == "tcp-pty-bridge-smoke":
         return run_tcp_pty_bridge_smoke(args)
     if args.command == "serial":
@@ -196,6 +198,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
     add_ros_smoke_build_arguments(tcp_pty_sweep)
+
+    tcp_pty_audio_probe = subparsers.add_parser(
+        "tcp-pty-loaded-audio-probe",
+        help=(
+            "Run Agent and directly probe the firmware LoadAudioChunk service "
+            "against a host serial TCP bridge."
+        ),
+    )
+    tcp_pty_audio_probe.add_argument("--tcp-host", default=DEFAULT_TCP_HOST)
+    tcp_pty_audio_probe.add_argument("--tcp-port", type=int, default=DEFAULT_TCP_PORT)
+    tcp_pty_audio_probe.add_argument("--pty", default=DEFAULT_PTY)
+    tcp_pty_audio_probe.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    tcp_pty_audio_probe.add_argument("--verbose", type=int, default=4)
+    tcp_pty_audio_probe.add_argument("--timeout", type=int, default=30)
+    tcp_pty_audio_probe.add_argument(
+        "--chunk-bytes",
+        default="32,64,160",
+        help="Comma-separated even chunk byte sizes to probe.",
+    )
+    tcp_pty_audio_probe.add_argument(
+        "--total-bytes",
+        type=int,
+        default=160,
+        help="Total silent PCM bytes to load for each chunk size.",
+    )
+    tcp_pty_audio_probe.add_argument(
+        "--chunk-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for each LoadAudioChunk response.",
+    )
+    tcp_pty_audio_probe.add_argument(
+        "--play-action",
+        action="store_true",
+        help="After a successful load, send PlayAudio with the same command_id.",
+    )
+    tcp_pty_audio_probe.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Use the existing install/ workspace instead of rebuilding ROS packages.",
+    )
+    add_ros_smoke_build_arguments(tcp_pty_audio_probe)
 
     tcp_pty_bridge = subparsers.add_parser(
         "tcp-pty-bridge-smoke",
@@ -345,6 +389,23 @@ def add_ros_smoke_build_arguments(parser: argparse.ArgumentParser) -> None:
             "last smoke build stamp. Use only for diagnostics."
         ),
     )
+
+
+def parse_chunk_sizes(raw_value: str) -> list[int]:
+    chunk_sizes: list[int] = []
+    for part in raw_value.split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        value = int(stripped)
+        if value <= 0:
+            raise ValueError("chunk sizes must be positive")
+        if value % 2:
+            raise ValueError("chunk sizes must be even PCM byte counts")
+        chunk_sizes.append(value)
+    if not chunk_sizes:
+        raise ValueError("at least one chunk size is required")
+    return chunk_sizes
 
 
 def ros_smoke_setup_script(args: argparse.Namespace) -> str:
@@ -1291,6 +1352,287 @@ echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
 phase_end "$result"
 exit $result
+"""
+    return docker_run(
+        args.image,
+        command,
+        mount_workspace=True,
+        workdir=WORKSPACE,
+    )
+
+
+def run_tcp_pty_loaded_audio_probe(args: argparse.Namespace) -> int:
+    try:
+        chunk_sizes = parse_chunk_sizes(args.chunk_bytes)
+    except ValueError as exc:
+        raise SystemExit(f"--chunk-bytes: {exc}") from exc
+    chunk_sizes_value = ",".join(str(value) for value in chunk_sizes)
+    total_bytes = max(2, int(args.total_bytes))
+    if total_bytes % 2:
+        total_bytes += 1
+    chunk_timeout = max(0.5, float(args.chunk_timeout))
+    status_attempt_limit = max(1, int((float(args.timeout) + 4.0) // 5.0))
+    play_action = "1" if args.play_action else "0"
+    setup_script = ros_smoke_setup_script(args)
+    command = f"""
+set +e
+{setup_script}
+export STACKCHAN_LOAD_PROBE_CHUNK_SIZES={shlex.quote(chunk_sizes_value)}
+export STACKCHAN_LOAD_PROBE_TOTAL_BYTES={total_bytes}
+export STACKCHAN_LOAD_PROBE_CHUNK_TIMEOUT={chunk_timeout:.3f}
+export STACKCHAN_LOAD_PROBE_PLAY_ACTION={play_action}
+socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2>/tmp/stackchan-socat.log &
+socat_pid=$!
+agent_pid=
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_LOAD_PROBE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))"
+  print_phase_summary
+}}
+trap cleanup EXIT
+phase_start "serial PTY setup" PTY_SETUP
+for i in $(seq 1 50); do
+  [ -e {args.pty} ] && break
+  sleep 0.1
+done
+phase_end 0
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
+ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
+agent_pid=$!
+sleep 5
+phase_end 0
+phase_start "device status wait" DEVICE_STATUS_WAIT
+status_output=""
+status_connected_result=1
+status_attempt=0
+for status_attempt in $(seq 1 {status_attempt_limit}); do
+  status_output=$(timeout 4 ros2 topic echo --once /stackchan/default/device/status 2>&1)
+  printf '%s\\n' "$status_output" | grep -q 'connected: true'
+  status_connected_result=$?
+  [ "$status_connected_result" -eq 0 ] && break
+  sleep 1
+done
+printf '%s\\n' "$status_output"
+echo "STACKCHAN_LOAD_PROBE_STATUS_ATTEMPTS=$status_attempt"
+echo "STACKCHAN_LOAD_PROBE_STATUS_CONNECTED=$([ "$status_connected_result" -eq 0 ] && echo 1 || echo 0)"
+phase_end "$status_connected_result"
+if [ "$status_connected_result" -ne 0 ]; then
+  echo "--- micro-ROS Agent tail ---"
+  tail -n 120 /tmp/stackchan-agent.log || true
+  echo "--- socat tail ---"
+  tail -n 80 /tmp/stackchan-socat.log || true
+  exit 1
+fi
+phase_start "loaded audio probe" LOADED_AUDIO_PROBE
+python3 - <<'PY'
+import os
+import time
+import uuid
+
+import rclpy
+from rclpy.action import ActionClient
+
+from stackchan_msgs.action import PlayAudio
+from stackchan_msgs.msg import CommandMeta
+from stackchan_msgs.srv import LoadAudioChunk
+
+
+def fill_meta(node, meta, command_id):
+    meta.device_id = "default"
+    meta.command_id = command_id
+    meta.source = "loaded_audio_probe"
+    meta.created_at = node.get_clock().now().to_msg()
+    meta.priority = CommandMeta.PRIORITY_NORMAL
+
+
+def spin_until_done(node, future, timeout_sec):
+    started = time.monotonic()
+    while not future.done() and time.monotonic() - started < timeout_sec:
+        rclpy.spin_once(node, timeout_sec=0.05)
+    return future.done(), time.monotonic() - started
+
+
+chunk_sizes = [
+    int(part)
+    for part in os.environ["STACKCHAN_LOAD_PROBE_CHUNK_SIZES"].split(",")
+    if part
+]
+total_bytes_base = int(os.environ["STACKCHAN_LOAD_PROBE_TOTAL_BYTES"])
+chunk_timeout = float(os.environ["STACKCHAN_LOAD_PROBE_CHUNK_TIMEOUT"])
+play_action = os.environ.get("STACKCHAN_LOAD_PROBE_PLAY_ACTION") == "1"
+
+rclpy.init()
+node = rclpy.create_node("loaded_audio_probe")
+client = node.create_client(
+    LoadAudioChunk,
+    "/stackchan/default/device/audio/playback/load",
+)
+print("STACKCHAN_LOAD_PROBE_SERVICE_WAIT_START", flush=True)
+service_ready = client.wait_for_service(timeout_sec=10.0)
+print("STACKCHAN_LOAD_PROBE_SERVICE_READY=%s" % (1 if service_ready else 0), flush=True)
+if not service_ready:
+    raise SystemExit(1)
+
+action_client = None
+if play_action:
+    action_client = ActionClient(
+        node,
+        PlayAudio,
+        "/stackchan/default/device/audio/play",
+    )
+    action_ready = action_client.wait_for_server(timeout_sec=10.0)
+    print(
+        "STACKCHAN_LOAD_PROBE_ACTION_READY=%s" % (1 if action_ready else 0),
+        flush=True,
+    )
+    if not action_ready:
+        raise SystemExit(1)
+
+overall_status = 0
+for chunk_size in chunk_sizes:
+    total_bytes = max(total_bytes_base, chunk_size)
+    if total_bytes % 2:
+        total_bytes += 1
+    total_chunks = (total_bytes + chunk_size - 1) // chunk_size
+    payload = bytes(total_bytes)
+    command_id = str(uuid.uuid4())
+    print(
+        "STACKCHAN_LOAD_PROBE_START chunk_bytes=%d total_bytes=%d "
+        "total_chunks=%d command_id=%s"
+        % (chunk_size, total_bytes, total_chunks, command_id),
+        flush=True,
+    )
+    chunk_failed = False
+    for sequence, start in enumerate(range(0, total_bytes, chunk_size)):
+        request = LoadAudioChunk.Request()
+        fill_meta(node, request.meta, command_id)
+        request.sequence = sequence
+        request.total_chunks = total_chunks
+        request.total_bytes = total_bytes
+        request.format = 1
+        request.sample_rate = 16000
+        request.channels = 1
+        request.end_of_stream = sequence + 1 >= total_chunks
+        request.pcm = payload[start : start + chunk_size]
+        future = client.call_async(request)
+        done, elapsed = spin_until_done(node, future, chunk_timeout)
+        if not done:
+            print(
+                "STACKCHAN_LOAD_PROBE_CHUNK_TIMEOUT chunk_bytes=%d "
+                "sequence=%d total_chunks=%d bytes=%d elapsed_ms=%d"
+                % (
+                    chunk_size,
+                    sequence,
+                    total_chunks,
+                    len(request.pcm),
+                    int(elapsed * 1000),
+                ),
+                flush=True,
+            )
+            overall_status = 1
+            chunk_failed = True
+            break
+        response = future.result()
+        result = response.result
+        print(
+            "STACKCHAN_LOAD_PROBE_CHUNK_RESPONSE chunk_bytes=%d "
+            "sequence=%d total_chunks=%d bytes=%d ok=%s state=%d "
+            "error_code=%s accepted_sequence=%d buffered_chunks=%d "
+            "buffered_bytes=%d complete=%s elapsed_ms=%d"
+            % (
+                chunk_size,
+                sequence,
+                total_chunks,
+                len(request.pcm),
+                "1" if result.ok else "0",
+                result.state,
+                result.error_code,
+                response.accepted_sequence,
+                response.buffered_chunks,
+                response.buffered_bytes,
+                "1" if response.complete else "0",
+                int(elapsed * 1000),
+            ),
+            flush=True,
+        )
+        if not result.ok:
+            overall_status = 1
+            chunk_failed = True
+            break
+    if chunk_failed:
+        break
+    if play_action and action_client is not None:
+        goal = PlayAudio.Goal()
+        fill_meta(node, goal.meta, command_id)
+        goal.format = "pcm_s16le"
+        goal.sample_rate = 16000
+        goal.channels = 1
+        goal.first_chunk_present = False
+        goal.first_chunk_sequence = 0
+        goal.first_chunk_pcm = b""
+        goal.face_hint = ""
+        goal.motion_hint = ""
+        send_future = action_client.send_goal_async(goal)
+        done, elapsed = spin_until_done(node, send_future, 10.0)
+        if not done:
+            print(
+                "STACKCHAN_LOAD_PROBE_ACTION_GOAL_TIMEOUT "
+                "chunk_bytes=%d elapsed_ms=%d"
+                % (chunk_size, int(elapsed * 1000)),
+                flush=True,
+            )
+            overall_status = 1
+            break
+        goal_handle = send_future.result()
+        print(
+            "STACKCHAN_LOAD_PROBE_ACTION_GOAL chunk_bytes=%d accepted=%s"
+            % (chunk_size, "1" if goal_handle.accepted else "0"),
+            flush=True,
+        )
+        if not goal_handle.accepted:
+            overall_status = 1
+            break
+        result_future = goal_handle.get_result_async()
+        done, elapsed = spin_until_done(node, result_future, 15.0)
+        if not done:
+            print(
+                "STACKCHAN_LOAD_PROBE_ACTION_RESULT_TIMEOUT "
+                "chunk_bytes=%d elapsed_ms=%d"
+                % (chunk_size, int(elapsed * 1000)),
+                flush=True,
+            )
+            overall_status = 1
+            break
+        action_result = result_future.result().result.result
+        print(
+            "STACKCHAN_LOAD_PROBE_ACTION_RESULT chunk_bytes=%d ok=%s "
+            "state=%d error_code=%s message=%s"
+            % (
+                chunk_size,
+                "1" if action_result.ok else "0",
+                action_result.state,
+                action_result.error_code,
+                action_result.message,
+            ),
+            flush=True,
+        )
+        if not action_result.ok:
+            overall_status = 1
+            break
+
+node.destroy_node()
+rclpy.shutdown()
+raise SystemExit(overall_status)
+PY
+probe_status=$?
+phase_end "$probe_status"
+echo "--- micro-ROS Agent tail ---"
+tail -n 120 /tmp/stackchan-agent.log || true
+echo "--- socat tail ---"
+tail -n 80 /tmp/stackchan-socat.log || true
+exit "$probe_status"
 """
     return docker_run(
         args.image,
