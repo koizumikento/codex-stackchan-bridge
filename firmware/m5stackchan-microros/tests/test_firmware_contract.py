@@ -669,6 +669,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("PlayAudioPendingChunk", main)
         self.assertIn("play_audio_loaded_buffer", main)
         self.assertIn("step_loaded_play_audio_playback", main)
+        self.assertIn("const bool use_loaded_playback", main)
+        self.assertIn("reset_play_audio_loaded_buffer();", main)
         self.assertIn("log_play_audio_load_diagnostic", main)
         self.assertIn("audio_playback_load", main)
         self.assertIn('"loaded_playback_started"', main)
@@ -768,7 +770,7 @@ class FirmwareContractTests(unittest.TestCase):
         main = (ROOT / "src" / "main.cpp").read_text()
         helper = (REPO_ROOT / "scripts" / "firmware_platformio.py").read_text()
         firmware_doc = (REPO_ROOT / "docs" / "firmware.md").read_text()
-        hardware_doc = (REPO_ROOT / "docs" / "hardware-validation.md").read_text()
+        hardware_doc = (REPO_ROOT / "docs" / "hardware-validation.md").read_text(encoding="utf-8")
 
         self.assertIn("#define STACKCHAN_SENSOR_INPUT_DIAGNOSTICS 0", main)
         self.assertIn(

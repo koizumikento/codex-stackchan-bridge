@@ -1699,6 +1699,25 @@ KOIZUMI-112 diagnostic firmware update:
 - Next implementation should move beyond DDS topic/service retries for long
   PCM. Use KOIZUMI-144 for the transport redesign, and keep KOIZUMI-145 focused
   on stale media action cleanup between timed-out smokes.
+- KOIZUMI-149 direct `LoadAudioChunk` probing showed that 32 and 64 byte
+  requests reach the firmware callback on COM3 serial TCP bridge, while 96 and
+  160 byte requests can time out at sequence 0. Keep loaded playback service
+  requests at the 64 byte default unless specifically diagnosing the transport.
+- A loaded TTS `say あ` smoke completed end-to-end with 3412 bytes split into
+  54 service chunks and emitted `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `tts_finished`, `loaded_playback_started`, `speaker_frame_queued`,
+  `loaded_playback_drained`, and `result_response_sent`. The smoke checks took
+  about 116 seconds, so this path is correct but too slow for practical speech.
+- `STACKCHAN_TTS_LOADED_PLAYBACK=0` must be passed through the container helper
+  when comparing the older topic-first path. An initial comparison completed in
+  about 56 seconds, but its events showed stale loaded buffer state from a prior
+  timed-out load. Firmware now clears stale loaded buffers when a new non-loaded
+  playback goal starts.
+- After that guard, a clean topic-first `say あ` no longer mixed in loaded
+  playback state, but failed with `AUDIO_UNDERRUN` around sequence 3 after
+  repeated `pull_response_timeout` and out-of-order topic chunks. Treat the
+  loaded path as the current correctness baseline and the topic-first path as a
+  latency investigation path until sequence recovery is fixed.
 
 ## Cleanup
 

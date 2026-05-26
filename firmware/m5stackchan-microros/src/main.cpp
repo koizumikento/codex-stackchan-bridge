@@ -6107,9 +6107,17 @@ void start_play_audio_goal(
   play_audio_last_pull_request_ms = 0;
   play_audio_started_ms = millis();
   play_audio_last_chunk_ms = play_audio_started_ms;
-  if (!request.goal.first_chunk_present &&
+  const bool use_loaded_playback =
+      !request.goal.first_chunk_present &&
       play_audio_loaded_complete &&
-      strcmp(play_audio_loaded_command_id, command_id) == 0) {
+      strcmp(play_audio_loaded_command_id, command_id) == 0;
+  if (!use_loaded_playback &&
+      (play_audio_loaded_complete ||
+       play_audio_loaded_expected_sequence != 0 ||
+       play_audio_loaded_total_bytes != 0)) {
+    reset_play_audio_loaded_buffer();
+  }
+  if (use_loaded_playback) {
     play_audio_loaded_playing = true;
     play_audio_loaded_play_offset = 0;
     log_play_audio_chunk_diagnostic(
