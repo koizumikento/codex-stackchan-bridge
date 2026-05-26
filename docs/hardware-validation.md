@@ -1751,6 +1751,14 @@ KOIZUMI-112 diagnostic firmware update:
   the action itself taking roughly 113 s. This is the current reliable
   ROS-mediated speech path, but it is still limited by about 1.8-2.0 s per
   64-byte pull service round trip.
+- Follow-up firmware reduces audio chunk diagnostic event traffic by sampling
+  routine per-chunk `audio_playback_chunk` events while preserving errors,
+  first/terminal chunks, speaker-frame events, and every 16th sequence. This
+  keeps the serial link focused on audio transport during latency smokes.
+  With the same pull-only `say あ` profile, the sampled firmware completed in
+  roughly 68 s versus the previous 72 s baseline. The small delta suggests
+  event traffic is only a secondary factor; the dominant cost remains the
+  per-chunk `NextAudioChunk` service round trip.
 
 ## Cleanup
 

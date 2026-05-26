@@ -250,6 +250,7 @@ constexpr unsigned long kAudioPlaybackPullIntervalMs = 2;
 constexpr unsigned long kAudioPlaybackPullFallbackIdleMs = 450;
 constexpr unsigned long kAudioPlaybackPullTimeoutMs = 2500;
 constexpr unsigned long kAudioPlaybackPendingGapTimeoutMs = 5000;
+constexpr uint32_t kAudioPlaybackChunkDiagnosticSampleInterval = 16;
 constexpr size_t kAudioPlaybackPendingChunkSlots = 24;
 constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
 constexpr size_t kAudioPlaybackLoadBufferBytes = 16 * 1024;
@@ -626,32 +627,47 @@ void log_play_audio_chunk_diagnostic(
     uint32_t sequence,
     uint32_t bytes,
     const char* result_code) {
-  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
-  snprintf(
-      payload,
-      sizeof(payload),
-      "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"result\":\"%s\","
-      "\"seen\":%lu,\"ok\":%lu,\"rej\":%lu,\"active\":%s,"
-      "\"pending\":%s,\"next\":%lu,\"frames\":%lu,\"jitter\":%u}",
-      stage == nullptr ? "" : stage,
-      static_cast<unsigned long>(sequence),
-      static_cast<unsigned long>(bytes),
-      result_code == nullptr ? "" : result_code,
-      static_cast<unsigned long>(play_audio_chunks_seen),
-      static_cast<unsigned long>(play_audio_chunks_accepted),
-      static_cast<unsigned long>(play_audio_chunks_rejected),
-      play_audio_goal_active ? "true" : "false",
-      play_audio_chunk_request_pending ? "true" : "false",
-      static_cast<unsigned long>(play_audio_next_pull_sequence),
-      static_cast<unsigned long>(play_audio_speaker_frames_queued),
-      play_audio_pending_chunk_count);
-  event_publisher.publish_name(
-      "audio_playback_chunk",
-      millis(),
-      command_id,
-      payload);
+  const char* safe_stage = stage == nullptr ? "" : stage;
+  const char* safe_result = result_code == nullptr ? "" : result_code;
+  const bool publish_event =
+      strcmp(safe_result, "OK") != 0 ||
+      strcmp(safe_stage, "chunk_accepted") == 0 ||
+      strcmp(safe_stage, "pull_end_of_stream") == 0 ||
+      strcmp(safe_stage, "speaker_frame_queued") == 0 ||
+      strcmp(safe_stage, "speaker_partial_frame_queued") == 0 ||
+      strcmp(safe_stage, "loaded_playback_started") == 0 ||
+      strcmp(safe_stage, "loaded_playback_drained") == 0 ||
+      sequence <= 1 ||
+      (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
+       sequence % kAudioPlaybackChunkDiagnosticSampleInterval == 0);
+  if (publish_event) {
+    char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"result\":\"%s\","
+        "\"seen\":%lu,\"ok\":%lu,\"rej\":%lu,\"active\":%s,"
+        "\"pending\":%s,\"next\":%lu,\"frames\":%lu,\"jitter\":%u}",
+        safe_stage,
+        static_cast<unsigned long>(sequence),
+        static_cast<unsigned long>(bytes),
+        safe_result,
+        static_cast<unsigned long>(play_audio_chunks_seen),
+        static_cast<unsigned long>(play_audio_chunks_accepted),
+        static_cast<unsigned long>(play_audio_chunks_rejected),
+        play_audio_goal_active ? "true" : "false",
+        play_audio_chunk_request_pending ? "true" : "false",
+        static_cast<unsigned long>(play_audio_next_pull_sequence),
+        static_cast<unsigned long>(play_audio_speaker_frames_queued),
+        play_audio_pending_chunk_count);
+    event_publisher.publish_name(
+        "audio_playback_chunk",
+        millis(),
+        command_id,
+        payload);
+  }
   stackchan_diag_print("stackchan audio_playback_diag stage=");
-  stackchan_diag_print(stage == nullptr ? "" : stage);
+  stackchan_diag_print(safe_stage);
   stackchan_diag_print(" command_id=");
   stackchan_diag_print(command_id == nullptr ? "" : command_id);
   stackchan_diag_print(" sequence=");
@@ -659,7 +675,7 @@ void log_play_audio_chunk_diagnostic(
   stackchan_diag_print(" bytes=");
   stackchan_diag_print(bytes);
   stackchan_diag_print(" result=");
-  stackchan_diag_print(result_code == nullptr ? "" : result_code);
+  stackchan_diag_print(safe_result);
   stackchan_diag_print(" frames=");
   stackchan_diag_print(play_audio_speaker_frames_queued);
   stackchan_diag_print(" jitter=");
