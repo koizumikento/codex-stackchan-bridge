@@ -728,6 +728,55 @@ void log_play_audio_action_diagnostic(
   stackchan_diag_println(play_audio_result_request_pending ? "true" : "false");
 }
 
+void log_play_audio_load_diagnostic(
+    const char* stage,
+    const char* command_id,
+    uint32_t sequence,
+    uint32_t bytes,
+    uint32_t total_chunks,
+    uint32_t buffered_bytes,
+    uint32_t buffered_chunks,
+    bool complete,
+    const stackchan::Result& result) {
+  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"chunks\":%lu,"
+      "\"buf\":%lu,\"buf_chunks\":%lu,\"complete\":%s,\"result\":\"%s\"}",
+      stage == nullptr ? "" : stage,
+      static_cast<unsigned long>(sequence),
+      static_cast<unsigned long>(bytes),
+      static_cast<unsigned long>(total_chunks),
+      static_cast<unsigned long>(buffered_bytes),
+      static_cast<unsigned long>(buffered_chunks),
+      complete ? "true" : "false",
+      result.error_code);
+  event_publisher.publish_name(
+      "audio_playback_load",
+      millis(),
+      command_id,
+      payload);
+  stackchan_diag_print("stackchan audio_playback_load stage=");
+  stackchan_diag_print(stage == nullptr ? "" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_print(command_id == nullptr ? "" : command_id);
+  stackchan_diag_print(" sequence=");
+  stackchan_diag_print(sequence);
+  stackchan_diag_print(" bytes=");
+  stackchan_diag_print(bytes);
+  stackchan_diag_print(" chunks=");
+  stackchan_diag_print(total_chunks);
+  stackchan_diag_print(" buffered_bytes=");
+  stackchan_diag_print(buffered_bytes);
+  stackchan_diag_print(" buffered_chunks=");
+  stackchan_diag_print(buffered_chunks);
+  stackchan_diag_print(" complete=");
+  stackchan_diag_print(complete ? "true" : "false");
+  stackchan_diag_print(" result=");
+  stackchan_diag_println(result.error_code);
+}
+
 bool is_known_face(const char* name) {
   return strcmp(name, "neutral") == 0 ||
          strcmp(name, "happy") == 0 ||
@@ -6496,6 +6545,20 @@ void handle_audio_playback_load_service(const void* request, void* response) {
   load_response->buffered_chunks = play_audio_loaded_expected_sequence;
   load_response->buffered_bytes = play_audio_loaded_total_bytes;
   load_response->complete = play_audio_loaded_complete;
+  const char* command_id =
+      load_request != nullptr && load_request->meta.command_id.data != nullptr
+          ? load_request->meta.command_id.data
+          : "";
+  log_play_audio_load_diagnostic(
+      "response",
+      command_id,
+      load_request != nullptr ? load_request->sequence : 0,
+      load_request != nullptr ? load_request->pcm.size : 0,
+      load_request != nullptr ? load_request->total_chunks : 0,
+      load_response->buffered_bytes,
+      load_response->buffered_chunks,
+      load_response->complete,
+      result);
 }
 
 void handle_face_set_service(const void* request, void* response) {

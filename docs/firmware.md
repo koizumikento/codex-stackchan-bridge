@@ -612,6 +612,12 @@ count, structured result code, accepted/rejected counters, active-session flag,
 pending-request flag, and next expected sequence. It must not include PCM bytes,
 speech text, transcripts, images, NFC tag IDs, IR codes, or protocol dumps.
 
+Loaded playback diagnostics may publish payload-free firmware events named
+`audio_playback_load`. The payload is limited to stage, sequence, byte count,
+declared chunk count, buffered byte/chunk counters, completion flag, and
+structured result code. It must not include PCM bytes, speech text, transcripts,
+provider request bodies, images, NFC tag IDs, IR codes, or protocol dumps.
+
 ### Camera
 
 Camera support should be treated as an independent capability.

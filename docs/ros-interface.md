@@ -522,6 +522,7 @@ Baseline firmware/device event names:
 - `nfc_removed`
 - `nfc_read_failed`
 - `mic_overrun`
+- `audio_playback_load`
 - `audio_playback_underrun`
 - `audio_capture_started`
 - `audio_capture_finished`

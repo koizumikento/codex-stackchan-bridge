@@ -1803,6 +1803,7 @@ def main(args: list[str] | None = None) -> None:
             chunk_bytes = _audio_playback_chunk_bytes()
             total_chunks = (len(audio.pcm) + chunk_bytes - 1) // chunk_bytes
             for sequence, start in enumerate(range(0, len(audio.pcm), chunk_bytes)):
+                chunk = audio.pcm[start : start + chunk_bytes]
                 device_request = LoadAudioChunk.Request()
                 _copy_command_meta(
                     device_request.meta,
@@ -1816,7 +1817,15 @@ def main(args: list[str] | None = None) -> None:
                 device_request.sample_rate = audio.sample_rate
                 device_request.channels = audio.channels
                 device_request.end_of_stream = sequence + 1 >= total_chunks
-                device_request.pcm = audio.pcm[start : start + chunk_bytes]
+                device_request.pcm = chunk
+                started = time.monotonic()
+                self.get_logger().info(
+                    "audio playback load chunk request "
+                    f"device_id={device_id!r} command_id={meta.command_id!r} "
+                    f"sequence={sequence} total_chunks={total_chunks} "
+                    f"bytes={len(chunk)} total_bytes={len(audio.pcm)} "
+                    f"end_of_stream={device_request.end_of_stream}"
+                )
                 future = client.call_async(device_request)
                 wait_result = self._wait_for_future(
                     future,
@@ -1824,6 +1833,14 @@ def main(args: list[str] | None = None) -> None:
                     timeout_sec=self._device_media_action_timeout_sec,
                 )
                 if wait_result is not None:
+                    self.get_logger().warning(
+                        "audio playback load chunk timeout "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"sequence={sequence} total_chunks={total_chunks} "
+                        f"bytes={len(chunk)} elapsed_ms="
+                        f"{int((time.monotonic() - started) * 1000)} "
+                        f"error_code={wait_result.error_code!r}"
+                    )
                     return wait_result
                 try:
                     response = future.result()
@@ -1832,6 +1849,16 @@ def main(args: list[str] | None = None) -> None:
                         f"firmware audio playback load service for '{device_id}' failed: {exc}"
                     )
                 result = _result_from_ros(response.result)
+                self.get_logger().info(
+                    "audio playback load chunk response "
+                    f"device_id={device_id!r} command_id={meta.command_id!r} "
+                    f"sequence={sequence} accepted_sequence={response.accepted_sequence} "
+                    f"buffered_chunks={response.buffered_chunks} "
+                    f"buffered_bytes={response.buffered_bytes} "
+                    f"complete={response.complete} ok={result.ok} "
+                    f"error_code={result.error_code!r} elapsed_ms="
+                    f"{int((time.monotonic() - started) * 1000)}"
+                )
                 if not result.ok:
                     return result
             self.get_logger().info(
