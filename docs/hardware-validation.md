@@ -1740,6 +1740,17 @@ KOIZUMI-112 diagnostic firmware update:
   for later sequences even though the bridge logged served fallback chunks.
   Keep 64-byte service chunks as the current reliable serial ceiling for
   topic-first diagnostics.
+- A pull-only diagnostic path avoids the topic window and duplicate topic
+  traffic: set `STACKCHAN_TTS_LOADED_PLAYBACK=0`,
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`,
+  `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=64`,
+  `STACKCHAN_TTS_SPEED_SCALE=6.0`,
+  `STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD=1024`, and
+  `STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=0.0`. With this profile, `say あ`
+  completed with smoke checks around 72 s and `say こんにちは` completed with
+  the action itself taking roughly 113 s. This is the current reliable
+  ROS-mediated speech path, but it is still limited by about 1.8-2.0 s per
+  64-byte pull service round trip.
 
 ## Cleanup
 
