@@ -662,6 +662,41 @@ firmware subscription to be matched because the topic is volatile and serial
 micro-ROS discovery can lag action-goal acceptance. Firmware must ignore
 duplicate chunks whose sequence is already accepted for the active `command_id`.
 
+### `/stackchan/<device_id>/device/audio/playback/acks`
+
+Purpose: carry firmware-origin playback ACK/window observations so the bridge
+can advance the topic relay without waiting for an audio-bearing helper service
+response.
+
+Message: `stackchan_msgs/AudioPlaybackAck`.
+
+Fields:
+
+- `device_id`
+- `command_id`
+- `has_acknowledgement`
+- `acknowledged_sequence`
+- `has_missing_sequence`
+- `missing_sequence`
+- `free_buffer_chunks`
+
+Rules:
+
+- This topic is firmware-owned metadata, not a command surface. It never carries
+  PCM bytes or speech text.
+- `acknowledged_sequence` is the highest contiguous playback sequence accepted
+  for the active `command_id` when `has_acknowledgement=true`.
+- `missing_sequence` is the first playback sequence firmware wants republished
+  when `has_missing_sequence=true`.
+- `free_buffer_chunks` advertises remaining firmware future-chunk slots so the
+  bridge can cap the topic lookahead window.
+- The bridge may republish `missing_sequence` plus bounded lookahead chunks on
+  `/stackchan/<device_id>/device/audio/playback/chunks` when the matching
+  playback relay session is active.
+- QoS is best effort, volatile, keep last 8. Firmware republishes bounded
+  metadata periodically while a gap remains, so this topic should not block
+  safety, motion, or audio callback budgets.
+
 ### `/stackchan/<device_id>/audio/playback/next_chunk`
 
 Purpose: bridge-owned playback helper service used by firmware to request the
@@ -722,6 +757,11 @@ Rules:
   `should_publish_window`, `publish_from_sequence`, and
   `publish_window_chunks`; these fields are control metadata and never carry
   PCM.
+- Firmware may publish the same ACK/window metadata on
+  `/stackchan/<device_id>/device/audio/playback/acks` before or while a
+  `NextAudioChunk` request is pending. The bridge should treat that topic as
+  the low-latency topic-window trigger and keep this helper as fallback and
+  end-of-stream confirmation.
 - The ACK/window mode is the preferred next transport direction for K151 TTS
   latency work. Blindly increasing the initial topic window is not sufficient:
   physical smokes with 64-byte chunks and a 64-chunk initial window reached
@@ -1544,6 +1584,7 @@ Baseline QoS:
 - `/stackchan/<device_id>/device/motion/pose`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/cmd/audio/chunks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/playback/chunks`: reliable, volatile, keep last 8.
+- `/stackchan/<device_id>/device/audio/playback/acks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - Service and action request/response paths use reliable QoS.
 - Safety/fault signals use reliable QoS and must not be blocked by camera or audio work.

@@ -1791,6 +1791,18 @@ KOIZUMI-112 diagnostic firmware update:
   `STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=0.0` completed `stackchanctl say あ`
   with `tts_finished`. The smoke checks took roughly 133 s because the path is
   still service-round-trip bound, but it remains the known-good speech baseline.
+- After adding firmware-origin
+  `/stackchan/default/device/audio/playback/acks`, the topic-first ACK/window
+  smoke completed `stackchanctl say あ` with `tts_finished` using 64-byte
+  chunks, speed 6, initial window 2, lookahead 2, and delayed service fallback.
+  Firmware accepted and drained the stream, queued speaker frames, and emitted
+  the terminal playback result. Smoke checks took roughly 122 s, which is an
+  improvement over the previous pull-only 133 s baseline but still not an
+  acceptable latency profile. The run still showed occasional
+  `pull_response_timeout` and many bridge republished topic chunks
+  (`published=372` for 26 buffered chunks), so the next tuning target is to
+  reduce redundant ACK-triggered republishes and keep the helper service mostly
+  for end-of-stream confirmation.
 
 ## Cleanup
 

@@ -168,6 +168,24 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(next_sequence, 7)
         self.assertEqual(window_count, 0)
 
+    def test_next_audio_chunk_transport_control_accepts_ack_topic_shape(self) -> None:
+        ack = SimpleNamespace(
+            has_acknowledgement=True,
+            acknowledged_sequence=8,
+            has_missing_sequence=True,
+            missing_sequence=10,
+            free_buffer_chunks=2,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "8"},
+        ):
+            next_sequence, window_count = _next_audio_chunk_transport_control(ack)
+
+        self.assertEqual(next_sequence, 10)
+        self.assertEqual(window_count, 2)
+
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
             def __init__(self) -> None:
@@ -474,6 +492,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "ListEvents",
             "NextEvent",
             "NextAudioChunk",
+            "AudioPlaybackAck",
             "ClearEventCursor",
             "GetTranscript",
             "GetPowerStatus",
@@ -546,9 +565,12 @@ class RosNodeHelperTests(unittest.TestCase):
             "_device_audio_play_clients",
             "_device_audio_chunk_publishers",
             "_cmd_audio_chunk_subscriptions",
+            "_device_audio_playback_ack_subscriptions",
             "_pending_playback_chunks",
             "_handle_next_audio_chunk",
+            "_handle_audio_playback_ack",
             "/audio/playback/next_chunk",
+            "/device/audio/playback/acks",
             "audio playback pull served first chunk",
             "_active_playback_sessions",
             "_closed_playback_sessions",
@@ -558,9 +580,11 @@ class RosNodeHelperTests(unittest.TestCase):
             'close_reason = "drained" if input_drained else "idle"',
             "pull_only = key in self._pull_only_playback_sessions",
             "audio playback pull republished chunk on topic",
+            "audio playback ack republished topic window",
             "lookahead=",
             "audio playback pull served fallback chunk",
             "_republish_device_audio_chunk_for_pull_async",
+            "_publish_device_audio_window_for_ack_async",
             "_playback_relay_stats",
             "pull_nack_counts",
             "last_received_monotonic",

@@ -646,6 +646,7 @@ def main(args: list[str] | None = None) -> None:
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from stackchan_msgs.action import CaptureAudio, CaptureCamera, MoveHeadPose, PlayAudio, RunMotion, Say
         from stackchan_msgs.msg import AudioChunk as RosAudioChunk
+        from stackchan_msgs.msg import AudioPlaybackAck
         from stackchan_msgs.msg import CapabilityStatus
         from stackchan_msgs.msg import (
             HeadPose,
@@ -757,6 +758,7 @@ def main(args: list[str] | None = None) -> None:
             self._device_event_subscriptions = []
             self._device_status_subscriptions = []
             self._cmd_audio_chunk_subscriptions = []
+            self._device_audio_playback_ack_subscriptions = []
             self._speech_audio_subscriptions = []
             self._pending_playback_chunks = {}
             self._active_playback_sessions = set()
@@ -1095,6 +1097,17 @@ def main(args: list[str] | None = None) -> None:
                     RosAudioChunk,
                     f"/stackchan/{device_id}/cmd/audio/chunks",
                     lambda message, device_id=device_id: self._handle_cmd_audio_chunk(
+                        device_id,
+                        message,
+                    ),
+                    best_effort_depth_8,
+                )
+            )
+            self._device_audio_playback_ack_subscriptions.append(
+                self.create_subscription(
+                    AudioPlaybackAck,
+                    f"/stackchan/{device_id}/device/audio/playback/acks",
+                    lambda message, device_id=device_id: self._handle_audio_playback_ack(
                         device_id,
                         message,
                     ),
@@ -1788,6 +1801,48 @@ def main(args: list[str] | None = None) -> None:
                     self._publish_device_audio_chunk(device_id, lookahead_chunk)
             return response
 
+        def _handle_audio_playback_ack(
+            self,
+            device_id: str,
+            message: object,
+        ) -> None:
+            if getattr(message, "device_id", "") not in ("", device_id):
+                self.get_logger().warning(
+                    "dropping audio playback ack for unexpected "
+                    f"device_id={getattr(message, 'device_id', '')!r}"
+                )
+                return
+            command_id = getattr(message, "command_id", "")
+            if not command_id:
+                return
+            key = (device_id, command_id)
+            next_sequence, window_count = _next_audio_chunk_transport_control(message)
+            if window_count <= 0:
+                return
+            republish_chunks = []
+            buffered_chunks = 0
+            with self._playback_chunk_lock:
+                active = key in self._active_playback_sessions
+                pull_only = key in self._pull_only_playback_sessions
+                if not active or pull_only:
+                    return
+                queue = self._pending_playback_chunks.setdefault(key, [])
+                republish_chunks = _select_playback_chunks_for_topic_window(
+                    queue,
+                    next_sequence,
+                    window_count,
+                )
+                buffered_chunks = len(queue)
+            if not republish_chunks:
+                return
+            self.get_logger().info(
+                "audio playback ack republished topic window "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"sequence={_playback_chunk_sequence(republish_chunks[0])} "
+                f"buffered={buffered_chunks} lookahead={len(republish_chunks)}"
+            )
+            self._publish_device_audio_window_for_ack_async(device_id, republish_chunks)
+
         def _copy_audio_chunk_response(self, target: object, source: object) -> None:
             target.device_id = getattr(source, "device_id", "")
             target.command_id = getattr(source, "command_id", "")
@@ -2050,6 +2105,26 @@ def main(args: list[str] | None = None) -> None:
             threading.Thread(
                 target=self._republish_device_audio_chunk_for_pull,
                 args=(device_id, message),
+                daemon=True,
+            ).start()
+
+        def _publish_device_audio_window_for_ack(
+            self, device_id: str, messages: list[object]
+        ) -> None:
+            for index, message in enumerate(messages):
+                if index == 0:
+                    self._republish_device_audio_chunk_for_pull(device_id, message)
+                else:
+                    self._publish_device_audio_chunk(device_id, message)
+                if index < len(messages) - 1:
+                    time.sleep(AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_INTERVAL_SEC)
+
+        def _publish_device_audio_window_for_ack_async(
+            self, device_id: str, messages: list[object]
+        ) -> None:
+            threading.Thread(
+                target=self._publish_device_audio_window_for_ack,
+                args=(device_id, list(messages)),
                 daemon=True,
             ).start()
 

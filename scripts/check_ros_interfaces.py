@@ -8,6 +8,7 @@ MSGS = ROOT / "ros" / "stackchan_msgs"
 
 EXPECTED_INTERFACES = [
     "msg/AudioChunk.msg",
+    "msg/AudioPlaybackAck.msg",
     "msg/CapabilityStatus.msg",
     "msg/CommandMeta.msg",
     "msg/CompressedImagePayload.msg",
@@ -239,6 +240,18 @@ def main() -> int:
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")
+
+    playback_ack = (MSGS / "msg" / "AudioPlaybackAck.msg").read_text()
+    for field in [
+        "string<=32 device_id",
+        "string<=36 command_id",
+        "bool has_acknowledgement",
+        "uint32 acknowledged_sequence",
+        "bool has_missing_sequence",
+        "uint32 missing_sequence",
+        "uint32 free_buffer_chunks",
+    ]:
+        require(field in playback_ack, f"AudioPlaybackAck missing {field}")
 
     for message_name, fields in {
         "TouchState.msg": [

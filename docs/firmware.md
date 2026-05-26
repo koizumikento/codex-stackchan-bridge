@@ -510,7 +510,11 @@ Baseline audio path:
   accepted sequence, the current missing sequence when waiting on a gap, and
   the remaining future-chunk slots. The bridge uses those fields to republish a
   bounded topic window without carrying PCM in the service response whenever
-  possible.
+  possible. Firmware also publishes the same bounded metadata on
+  `/stackchan/<device_id>/device/audio/playback/acks` while a playback gap is
+  active, so the bridge can republish the missing topic window without waiting
+  for a `NextAudioChunk` service response. This ACK topic is best-effort
+  metadata only; it does not contain PCM, speech text, or raw provider data.
   Because serial micro-ROS topics can still deliver playback chunks late or
   slightly out of order,
   firmware keeps a small fixed jitter buffer for future sequences and drains
