@@ -61,6 +61,10 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES
 AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS"
 )
+AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS"
+)
+AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS"
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 
@@ -125,6 +129,30 @@ def _audio_playback_pull_service_fallback_after_nacks() -> int:
     except ValueError:
         return AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS
     return min(max(value, 0), 16)
+
+
+def _bounded_positive_audio_window(raw_value: str | None, default: int) -> int:
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return min(max(value, 1), AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS)
+
+
+def _audio_playback_topic_initial_window_chunks() -> int:
+    return _bounded_positive_audio_window(
+        os.environ.get(AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV),
+        AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS,
+    )
+
+
+def _audio_playback_pull_lookahead_chunks() -> int:
+    return _bounded_positive_audio_window(
+        os.environ.get(AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV),
+        AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS,
+    )
 
 
 def _audio_playback_loaded_tts() -> bool:
@@ -1610,7 +1638,7 @@ def main(args: list[str] | None = None) -> None:
                 f"device_id={device_id!r} command_id={command_id!r} "
                 f"buffered={len(buffered)} received={stats['received']}"
             )
-            publish_window = buffered[:AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS]
+            publish_window = buffered[: _audio_playback_topic_initial_window_chunks()]
             for index, message in enumerate(publish_window):
                 if prebuffered_topic:
                     self._publish_device_audio_chunk_with_retries(device_id, message)
@@ -1680,7 +1708,7 @@ def main(args: list[str] | None = None) -> None:
                         republish_chunks = _select_playback_chunks_for_topic_window(
                             queue,
                             next_sequence,
-                            AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS,
+                            _audio_playback_pull_lookahead_chunks(),
                         )
                         chunk = None
             if not active and not closed:

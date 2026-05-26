@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS,
+    AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
+    AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
     _coerce_telemetry_device_id,
     _copy_command_meta,
     _copy_power_status,
@@ -19,6 +24,8 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_power_status,
     _snapshot_from_head_pose,
     _snapshot_from_stackchan_status,
+    _audio_playback_pull_lookahead_chunks,
+    _audio_playback_topic_initial_window_chunks,
     _records_after_event_id,
     _sequence_for_event_id,
     _select_playback_chunk_for_pull,
@@ -73,6 +80,41 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertEqual([chunk.sequence for chunk in window], [4, 5, 6])
         self.assertEqual([chunk.sequence for chunk in queue[:3]], [2, 3, 4])
+
+    def test_audio_playback_topic_window_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV: "999999"},
+        ):
+            self.assertEqual(
+                _audio_playback_topic_initial_window_chunks(),
+                AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS,
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV: "0"},
+        ):
+            self.assertEqual(_audio_playback_topic_initial_window_chunks(), 1)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV: "invalid"},
+        ):
+            self.assertEqual(_audio_playback_topic_initial_window_chunks(), 8)
+
+    def test_audio_playback_pull_lookahead_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "12"},
+        ):
+            self.assertEqual(_audio_playback_pull_lookahead_chunks(), 12)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV: "-4"},
+        ):
+            self.assertEqual(_audio_playback_pull_lookahead_chunks(), 1)
 
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
@@ -418,6 +460,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS",
             "AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS = 8",
             "AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8",
+            "STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS",
+            "STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS",
             "_publish_device_audio_chunk_with_retries",
             "_republish_device_audio_chunk_for_pull",
             "_select_playback_chunks_for_topic_window",
@@ -431,6 +475,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_TTS_LOADED_PLAYBACK",
             "_audio_playback_load_chunk_bytes",
             "_audio_playback_pull_service_fallback_after_nacks",
+            "_audio_playback_topic_initial_window_chunks",
+            "_audio_playback_pull_lookahead_chunks",
             "_audio_playback_pull_only",
             "_audio_playback_loaded_tts",
             "_wait_for_device_audio_playback_subscription",

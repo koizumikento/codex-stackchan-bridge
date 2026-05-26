@@ -1759,6 +1759,21 @@ KOIZUMI-112 diagnostic firmware update:
   roughly 68 s versus the previous 72 s baseline. The small delta suggests
   event traffic is only a secondary factor; the dominant cost remains the
   per-chunk `NextAudioChunk` service round trip.
+- The next topic-first latency probe uses
+  `STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS` and
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS` to expand the bridge's topic
+  publish window without changing the ROS interface. The goal is to let
+  firmware consume the 64-byte topic stream from its jitter buffer and use
+  `NextAudioChunk` mainly for end-of-stream confirmation.
+- The first expanded-window probe with 64-byte chunks,
+  `STACKCHAN_AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS=64`,
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS=32`, and
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS=16` failed with
+  `AUDIO_UNDERRUN`. Firmware accepted the first chunk but later reported a
+  gap near sequence 3 while the bridge had already published more than 100
+  topic chunks and had 24 pending jitter entries. Treat the window environment
+  variables as diagnostic controls only. Reducing service round trips needs an
+  explicit ACK/window or bundle contract instead of blind topic flooding.
 
 ## Cleanup
 
