@@ -1832,6 +1832,16 @@ KOIZUMI-112 diagnostic firmware update:
   bridge relay stats `published=123` for 26 buffered chunks, and smoke checks
   around 28 s. This validates the cleanup as a diagnostics/noise fix; audible
   quality and longer prompts still need separate checks.
+- Longer local TTS transport now completes through the same ACK/window path,
+  but latency still scales with chunk count. With the same 64-byte chunk,
+  initial window 2, lookahead 2, delayed fallback, speed 6, and silence-trim
+  profile, `stackchanctl say こんにちは` completed with `tts_finished`,
+  `pull_end_of_stream`, terminal playback result, `published=229` for 57
+  buffered chunks, and smoke checks around 28 s. `stackchanctl say
+  テスト終わったよ` also completed, with `published=327` for 80 buffered chunks
+  and smoke checks around 133 s. These are ROS transport completion results;
+  operator-listening audible quality, volume, and intelligibility still need a
+  separate confirmation before claiming natural speech behavior.
 
 ## Cleanup
 
