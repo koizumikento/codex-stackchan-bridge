@@ -620,6 +620,11 @@ named `audio_playback_chunk`. The payload is limited to stage, sequence, byte
 count, structured result code, accepted/rejected counters, active-session flag,
 pending-request flag, and next expected sequence. It must not include PCM bytes,
 speech text, transcripts, images, NFC tag IDs, IR codes, or protocol dumps.
+After a playback action reaches a terminal result, firmware may suppress late
+topic chunks or pull responses for the same recent `command_id` instead of
+publishing `chunk_without_active_goal` or `pull_response_without_active_goal`
+events. This keeps normal event output focused on the active transport path
+while still allowing true mismatched command IDs to be reported.
 
 Loaded playback diagnostics may publish payload-free firmware events named
 `audio_playback_load`. The payload is limited to stage, sequence, byte count,

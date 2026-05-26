@@ -252,6 +252,7 @@ constexpr unsigned long kAudioPlaybackPullFallbackIdleMs = 450;
 constexpr unsigned long kAudioPlaybackPullTimeoutMs = 2500;
 constexpr unsigned long kAudioPlaybackAckPublishIntervalMs = 50;
 constexpr unsigned long kAudioPlaybackPendingGapTimeoutMs = 5000;
+constexpr unsigned long kAudioPlaybackTerminalStaleSuppressMs = 5000;
 constexpr uint32_t kAudioPlaybackChunkDiagnosticSampleInterval = 16;
 constexpr size_t kAudioPlaybackPendingChunkSlots = 24;
 constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
@@ -517,6 +518,8 @@ uint8_t play_audio_buffer_index = 0;
 size_t play_audio_buffer_fill_samples = 0;
 int16_t play_audio_buffers[4][stackchan::kAudioMaxChunkBytes / 2]{};
 char play_audio_diagnostic_command_id[37] = "";
+char play_audio_terminal_stale_command_id[37] = "";
+uint32_t play_audio_terminal_stale_until_ms = 0;
 uint32_t play_audio_chunks_seen = 0;
 uint32_t play_audio_chunks_accepted = 0;
 uint32_t play_audio_chunks_rejected = 0;
@@ -570,6 +573,31 @@ void reset_play_audio_diagnostics(const char* command_id) {
   play_audio_speaker_frames_queued = 0;
   play_audio_speaker_frames_failed = 0;
   play_audio_speaker_queue_full_logged = false;
+}
+
+void clear_play_audio_terminal_stale_suppression() {
+  play_audio_terminal_stale_command_id[0] = '\0';
+  play_audio_terminal_stale_until_ms = 0;
+}
+
+void remember_play_audio_terminal_stale_suppression() {
+  copy_bounded(
+      play_audio_terminal_stale_command_id,
+      sizeof(play_audio_terminal_stale_command_id),
+      play_audio_diagnostic_command_id);
+  play_audio_terminal_stale_until_ms =
+      millis() + kAudioPlaybackTerminalStaleSuppressMs;
+}
+
+bool recent_terminal_play_audio_command(const char* command_id) {
+  if (command_id == nullptr || command_id[0] == '\0' ||
+      play_audio_terminal_stale_command_id[0] == '\0') {
+    return false;
+  }
+  if (strcmp(command_id, play_audio_terminal_stale_command_id) != 0) {
+    return false;
+  }
+  return static_cast<int32_t>(play_audio_terminal_stale_until_ms - millis()) > 0;
 }
 
 void reset_play_audio_pending_chunks() {
@@ -5910,6 +5938,7 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
       result.ok,
       false,
       0);
+  remember_play_audio_terminal_stale_suppression();
   play_audio_goal_active = false;
   play_audio_active_goal_handle = nullptr;
   play_audio_received_chunk = false;
@@ -6208,6 +6237,7 @@ void start_play_audio_goal(
       request.goal.meta.command_id.data != nullptr
           ? request.goal.meta.command_id.data
           : "";
+  clear_play_audio_terminal_stale_suppression();
   reset_play_audio_diagnostics(command_id);
   const stackchan::Result start_result =
       audio_playback_guard.start_session(command_id);
@@ -6494,6 +6524,9 @@ void handle_audio_chunk_subscription(const void* message) {
   const char* chunk_command_id =
       chunk->command_id.data != nullptr ? chunk->command_id.data : "";
   if (!play_audio_goal_active) {
+    if (recent_terminal_play_audio_command(chunk_command_id)) {
+      return;
+    }
     log_play_audio_chunk_diagnostic(
         "chunk_without_active_goal",
         chunk_command_id,
@@ -6524,6 +6557,9 @@ void handle_audio_playback_chunk_response(const void* response) {
     return;
   }
   if (!play_audio_goal_active) {
+    if (recent_terminal_play_audio_command(play_audio_diagnostic_command_id)) {
+      return;
+    }
     log_play_audio_chunk_diagnostic(
         "pull_response_without_active_goal",
         play_audio_diagnostic_command_id,

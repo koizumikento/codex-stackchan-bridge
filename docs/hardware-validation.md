@@ -1821,6 +1821,17 @@ KOIZUMI-112 diagnostic firmware update:
   relay stats improved to `published=248` for 26 buffered chunks. Residual
   `pull_response_timeout` diagnostics and post-completion duplicate/orphan
   chunks remain follow-up transport cleanup, not proof of audible quality.
+- A firmware-side stale terminal diagnostic suppression fixed the post-result
+  orphan event noise without stopping late recovery traffic. The failed bridge
+  active-session guard proved too aggressive: it reduced bridge publishes to
+  `77` but caused `AUDIO_UNDERRUN` with 20 pending chunks. After reverting that
+  guard and suppressing late chunks or pull responses for the same recent
+  terminal `command_id` in firmware, the same `say あ` smoke completed with
+  `tts_finished`, no post-completion `chunk_without_active_goal` /
+  `pull_response_without_active_goal` events in the observed event window,
+  bridge relay stats `published=123` for 26 buffered chunks, and smoke checks
+  around 28 s. This validates the cleanup as a diagnostics/noise fix; audible
+  quality and longer prompts still need separate checks.
 
 ## Cleanup
 
