@@ -21,6 +21,7 @@ DEFAULT_EVENT_TYPE = "stackchan_msgs/msg/StackChanEvent"
 ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
+    "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY",
     "STACKCHAN_TTS_ENDPOINT",
     "STACKCHAN_TTS_POST_PHONEME_LENGTH",
     "STACKCHAN_TTS_PRE_PHONEME_LENGTH",
@@ -140,10 +141,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Audio capture duration used by the hardware media smoke.",
     )
     tcp_pty_sweep.add_argument(
+        "--media-audio-playback-duration-ms",
+        type=float,
+        default=20.0,
+        help="Playback sine duration used by the hardware media smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-audio-playback-frequency",
+        type=float,
+        default=440.0,
+        help="Playback sine frequency used by the hardware media smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-audio-playback-amplitude",
+        type=int,
+        default=1200,
+        help="Playback sine amplitude used by the hardware media smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-audio-playback-wait",
+        action="store_true",
+        help=(
+            "Pass --wait to stackchanctl audio play so the smoke reports the "
+            "firmware-owned terminal playback result instead of CLI handoff."
+        ),
+    )
+    tcp_pty_sweep.add_argument(
         "--media-camera-quality",
         type=int,
         default=50,
         help="JPEG quality used by the hardware camera smoke.",
+    )
+    tcp_pty_sweep.add_argument(
+        "--media-playback-only",
+        action="store_true",
+        help=(
+            "Run only the audio playback portion of the hardware media smoke. "
+            "Use for focused speaker/playback diagnostics so a timed-out "
+            "playback action is not followed by capture or camera commands."
+        ),
     )
     tcp_pty_sweep.add_argument(
         "--skip-media-smoke",
@@ -516,6 +552,11 @@ exit $echo_result
 
 def run_tcp_pty_sensor_sweep(args: argparse.Namespace) -> int:
     setup_script = ros_smoke_setup_script(args)
+    playback_duration_ms = max(1.0, float(args.media_audio_playback_duration_ms))
+    playback_frequency = max(1.0, float(args.media_audio_playback_frequency))
+    playback_amplitude = min(30000, max(1, int(args.media_audio_playback_amplitude)))
+    media_playback_only = "1" if args.media_playback_only else "0"
+    audio_play_wait_arg = "--wait" if args.media_audio_playback_wait else ""
     command = f"""
 set +e
 {setup_script}
@@ -654,9 +695,13 @@ import sys
 import wave
 
 sample_rate = 16000
+duration_ms = {playback_duration_ms}
+frequency = {playback_frequency}
+amplitude = {playback_amplitude}
+sample_count = max(1, int(sample_rate * duration_ms / 1000.0))
 samples = bytearray()
-for index in range(sample_rate // 50):
-    value = int(1200 * math.sin(2 * math.pi * 440 * index / sample_rate))
+for index in range(sample_count):
+    value = int(amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
     samples.extend(int(value).to_bytes(2, "little", signed=True))
 with wave.open(sys.argv[1], "wb") as wav:
     wav.setnchannels(1)
@@ -666,7 +711,11 @@ with wave.open(sys.argv[1], "wb") as wav:
 PY
 
   echo "--- stackchanctl audio play smoke ---"
-  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play "$prompt_wav" --json 2>&1)
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_MS={playback_duration_ms}"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_FREQUENCY={playback_frequency}"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_AMPLITUDE={playback_amplitude}"
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_WAIT=$([ -n "{audio_play_wait_arg}" ] && echo 1 || echo 0)"
+  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play {audio_play_wait_arg} "$prompt_wav" --json 2>&1)
   audio_play_result=$?
   rm -f "$prompt_wav"
   printf '%s\n' "$audio_play_output"
@@ -677,6 +726,15 @@ PY
   printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
   audio_play_ok_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
+  if [ "{media_playback_only}" = "1" ]; then
+    rm -f "$mic_wav" "$frame_jpg"
+    echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=1"
+    if [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; then
+      result=1
+    fi
+    return
+  fi
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=0"
 
   echo "--- stackchanctl audio capture smoke ---"
   audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {max(0.001, float(args.media_audio_capture_seconds))} --output "$mic_wav" --json 2>&1)

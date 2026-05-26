@@ -724,6 +724,7 @@ class RclpyBridgeClient:
                 timeout,
                 start_sequence=1 if first_chunk else 0,
             ),
+            return_on_accept=True,
         )
 
     def capture_audio(
@@ -931,6 +932,7 @@ class RclpyBridgeClient:
         timeout: float,
         on_accepted=None,
         on_result=None,
+        return_on_accept: bool = False,
     ) -> BridgeCommandResponse:
         action = self._action_client_type(self._node, action_type, action_name)
         if not action.wait_for_server(timeout_sec=timeout):
@@ -951,6 +953,8 @@ class RclpyBridgeClient:
             )
         if on_accepted is not None:
             on_accepted()
+        if return_on_accept and not wait and on_result is None:
+            return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
         # The facade action result is the bridge's immediate shared Result,
         # not proof that the physical behavior has completed.
         result_future = goal_handle.get_result_async()

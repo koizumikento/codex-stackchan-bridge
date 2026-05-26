@@ -22,6 +22,7 @@ from stackchan_bridge.ros_node import (
     _records_after_event_id,
     _sequence_for_event_id,
     _select_playback_chunk_for_pull,
+    _select_playback_chunks_for_topic_window,
     _meta_from_ros,
     _normalize_device_ids,
     _reject_external_safety_priority,
@@ -64,6 +65,14 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(chunk.pcm, b"six")
         self.assertEqual(buffered, 1)
         self.assertEqual([item.sequence for item in queue], [6])
+
+    def test_select_playback_chunks_for_topic_window_limits_future_chunks(self) -> None:
+        queue = [SimpleNamespace(sequence=index) for index in range(2, 12)]
+
+        window = _select_playback_chunks_for_topic_window(queue, 4, 3)
+
+        self.assertEqual([chunk.sequence for chunk in window], [4, 5, 6])
+        self.assertEqual([chunk.sequence for chunk in queue[:3]], [2, 3, 4])
 
     def test_status_copy_includes_capability_messages(self) -> None:
         class CapabilityMessage:
@@ -396,13 +405,26 @@ class RosNodeHelperTests(unittest.TestCase):
             "ReentrantCallbackGroup",
             "ActionClient",
             "reliable_depth_4 = QoSProfile(depth=4)",
+            "reliable_depth_8 = QoSProfile(depth=8)",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03",
             "AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5",
             "AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35",
-            "AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.02",
+            "AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.15",
+            "AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_COUNT = 1",
+            "AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_COUNT = 3",
+            "AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS = 2",
+            "AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS = 8",
+            "AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8",
+            "_publish_device_audio_chunk_with_retries",
+            "_republish_device_audio_chunk_for_pull",
+            "_select_playback_chunks_for_topic_window",
             "AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64",
+            "AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160",
             "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
+            "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
+            "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY",
+            "_audio_playback_pull_only",
             "_wait_for_device_audio_playback_subscription",
             "audio playback relay subscription match",
             "action_status_best_effort_depth_1",
@@ -423,10 +445,19 @@ class RosNodeHelperTests(unittest.TestCase):
             "_active_playback_sessions",
             "_closed_playback_sessions",
             "_pull_only_playback_sessions",
+            "_prebuffered_topic_playback_sessions",
+            "input_drained = prebuffered_topic",
+            'close_reason = "drained" if input_drained else "idle"',
+            "pull_only = key in self._pull_only_playback_sessions",
+            "audio playback pull republished chunk on topic",
+            "lookahead=",
+            "audio playback pull served fallback chunk",
+            "_republish_device_audio_chunk_for_pull_async",
             "_playback_relay_stats",
+            "pull_nack_counts",
             "last_received_monotonic",
             "activated_monotonic",
-            "audio playback pull closed idle input",
+            "audio playback pull closed input",
             "_playback_chunk_lock",
             "_audio_chunk_pcm_size",
             "_device_camera_capture_clients",
@@ -449,7 +480,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "_publish_device_audio_chunk",
             "audio playback relay buffered first chunk",
             "audio playback relay activated",
-            "pull_only=True",
+            "audio playback relay topic start",
+            "pull_only=_audio_playback_pull_only()",
             "audio playback relay published first chunk",
             "audio playback relay finished",
             "_call_device_camera_capture",

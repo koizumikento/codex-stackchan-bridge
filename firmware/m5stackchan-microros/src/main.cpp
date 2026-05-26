@@ -243,9 +243,18 @@ constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
 constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
+constexpr unsigned long kAudioPlaybackMaxSpeakerDrainMs = 1500;
 constexpr unsigned long kAudioPlaybackInterChunkTimeoutMs = 6000;
-constexpr unsigned long kAudioPlaybackPullIntervalMs = 20;
-constexpr unsigned long kAudioPlaybackPullTimeoutMs = 250;
+constexpr unsigned long kAudioPlaybackPullIntervalMs = 2;
+constexpr unsigned long kAudioPlaybackPullFallbackIdleMs = 450;
+constexpr unsigned long kAudioPlaybackPullTimeoutMs = 1000;
+constexpr unsigned long kAudioPlaybackPendingGapTimeoutMs = 3000;
+constexpr size_t kAudioPlaybackPendingChunkSlots = 24;
+constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
+constexpr uint8_t kAudioPlaybackSpeakerVolume = 192;
+constexpr uint32_t kAudioPlaybackSpeakerFrameBytes = stackchan::kAudioChunkBytes;
+constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
+    kAudioPlaybackSpeakerFrameBytes / 2;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
 constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
@@ -301,6 +310,18 @@ struct MotionSchedulerJob {
   unsigned long phase_started_ms;
   char name[16];
   char command_id[37];
+};
+
+struct PlayAudioPendingChunk {
+  bool occupied;
+  uint32_t sequence;
+  uint8_t format;
+  uint32_t sample_rate;
+  uint8_t channels;
+  uint16_t pcm_size;
+  uint32_t received_ms;
+  char command_id[37];
+  uint8_t pcm[kAudioPlaybackPendingChunkBytes];
 };
 
 MotionSchedulerJob motion_scheduler{
@@ -476,14 +497,24 @@ uint32_t play_audio_next_pull_sequence = 0;
 uint32_t play_audio_last_pull_request_ms = 0;
 uint32_t play_audio_started_ms = 0;
 uint32_t play_audio_last_chunk_ms = 0;
+uint32_t play_audio_last_speaker_frame_ms = 0;
+uint32_t play_audio_pending_gap_started_ms = 0;
 uint8_t play_audio_buffer_index = 0;
+size_t play_audio_buffer_fill_samples = 0;
 int16_t play_audio_buffers[4][stackchan::kAudioMaxChunkBytes / 2]{};
 char play_audio_diagnostic_command_id[37] = "";
 uint32_t play_audio_chunks_seen = 0;
 uint32_t play_audio_chunks_accepted = 0;
 uint32_t play_audio_chunks_rejected = 0;
+uint32_t play_audio_speaker_frames_queued = 0;
+uint32_t play_audio_speaker_frames_failed = 0;
+bool play_audio_speaker_session_active = false;
+bool play_audio_speaker_queue_full_logged = false;
+PlayAudioPendingChunk play_audio_pending_chunks[kAudioPlaybackPendingChunkSlots]{};
+uint8_t play_audio_pending_chunk_count = 0;
 
 void publish_status_heartbeat();
+void finish_play_audio_goal(const stackchan::Result& result, int8_t action_status);
 bool firmware_publish_callback(
     stackchan::DevicePublisherTopic topic,
     const void* message,
@@ -512,6 +543,56 @@ void reset_play_audio_diagnostics(const char* command_id) {
   play_audio_chunks_seen = 0;
   play_audio_chunks_accepted = 0;
   play_audio_chunks_rejected = 0;
+  play_audio_speaker_frames_queued = 0;
+  play_audio_speaker_frames_failed = 0;
+  play_audio_speaker_queue_full_logged = false;
+}
+
+void reset_play_audio_pending_chunks() {
+  for (auto& chunk : play_audio_pending_chunks) {
+    chunk.occupied = false;
+    chunk.sequence = 0;
+    chunk.format = 0;
+    chunk.sample_rate = 0;
+    chunk.channels = 0;
+    chunk.pcm_size = 0;
+    chunk.received_ms = 0;
+    chunk.command_id[0] = '\0';
+  }
+  play_audio_pending_chunk_count = 0;
+  play_audio_pending_gap_started_ms = 0;
+}
+
+int find_play_audio_pending_chunk(uint32_t sequence) {
+  for (size_t index = 0; index < kAudioPlaybackPendingChunkSlots; ++index) {
+    if (play_audio_pending_chunks[index].occupied &&
+        play_audio_pending_chunks[index].sequence == sequence) {
+      return static_cast<int>(index);
+    }
+  }
+  return -1;
+}
+
+uint32_t oldest_play_audio_pending_age_ms(uint32_t now_ms) {
+  uint32_t oldest_age = 0;
+  for (const auto& chunk : play_audio_pending_chunks) {
+    if (!chunk.occupied) {
+      continue;
+    }
+    const uint32_t age = now_ms - chunk.received_ms;
+    if (age > oldest_age) {
+      oldest_age = age;
+    }
+  }
+  return oldest_age;
+}
+
+void refresh_play_audio_pending_gap_timer(uint32_t now_ms) {
+  if (play_audio_pending_chunk_count == 0) {
+    play_audio_pending_gap_started_ms = 0;
+  } else {
+    play_audio_pending_gap_started_ms = now_ms;
+  }
 }
 
 void log_play_audio_chunk_diagnostic(
@@ -526,7 +607,7 @@ void log_play_audio_chunk_diagnostic(
       sizeof(payload),
       "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"result\":\"%s\","
       "\"seen\":%lu,\"ok\":%lu,\"rej\":%lu,\"active\":%s,"
-      "\"pending\":%s,\"next\":%lu}",
+      "\"pending\":%s,\"next\":%lu,\"frames\":%lu,\"jitter\":%u}",
       stage == nullptr ? "" : stage,
       static_cast<unsigned long>(sequence),
       static_cast<unsigned long>(bytes),
@@ -536,7 +617,9 @@ void log_play_audio_chunk_diagnostic(
       static_cast<unsigned long>(play_audio_chunks_rejected),
       play_audio_goal_active ? "true" : "false",
       play_audio_chunk_request_pending ? "true" : "false",
-      static_cast<unsigned long>(play_audio_next_pull_sequence));
+      static_cast<unsigned long>(play_audio_next_pull_sequence),
+      static_cast<unsigned long>(play_audio_speaker_frames_queued),
+      play_audio_pending_chunk_count);
   event_publisher.publish_name(
       "audio_playback_chunk",
       millis(),
@@ -551,7 +634,11 @@ void log_play_audio_chunk_diagnostic(
   stackchan_diag_print(" bytes=");
   stackchan_diag_print(bytes);
   stackchan_diag_print(" result=");
-  stackchan_diag_println(result_code == nullptr ? "" : result_code);
+  stackchan_diag_print(result_code == nullptr ? "" : result_code);
+  stackchan_diag_print(" frames=");
+  stackchan_diag_print(play_audio_speaker_frames_queued);
+  stackchan_diag_print(" jitter=");
+  stackchan_diag_println(play_audio_pending_chunk_count);
 }
 
 void log_play_audio_session_diagnostic(
@@ -567,6 +654,8 @@ void log_play_audio_session_diagnostic(
   stackchan_diag_print(play_audio_chunks_accepted);
   stackchan_diag_print(" rejected=");
   stackchan_diag_print(play_audio_chunks_rejected);
+  stackchan_diag_print(" speaker_frames=");
+  stackchan_diag_print(play_audio_speaker_frames_queued);
   stackchan_diag_print(" result=");
   stackchan_diag_println(result.error_code);
 }
@@ -2743,6 +2832,10 @@ bool initialize_microros_entities() {
   core_audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   core_audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
   core_audio_chunk_qos.depth = 8;
+  rmw_qos_profile_t core_audio_playback_chunk_qos = rmw_qos_profile_default;
+  core_audio_playback_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+  core_audio_playback_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  core_audio_playback_chunk_qos.depth = 8;
 #if STACKCHAN_MICROROS_CORE_AUDIO_TOPIC_BRINGUP
   if (!rcl_ok(rclc_publisher_init(
                   &audio_chunk_ros_publisher,
@@ -2760,7 +2853,7 @@ bool initialize_microros_entities() {
                   &microros_node,
                   ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
                   audio_playback_chunk_topic_name,
-                  &core_audio_chunk_qos),
+                  &core_audio_playback_chunk_qos),
               "audio_chunk_subscription_init")) {
     return false;
   }
@@ -3136,6 +3229,10 @@ bool initialize_microros_entities() {
   audio_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   audio_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
   audio_chunk_qos.depth = 8;
+  rmw_qos_profile_t audio_playback_chunk_qos = rmw_qos_profile_default;
+  audio_playback_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+  audio_playback_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  audio_playback_chunk_qos.depth = 8;
   if (!rcl_ok(rclc_publisher_init(
                   &audio_chunk_ros_publisher,
                   &microros_node,
@@ -3150,7 +3247,7 @@ bool initialize_microros_entities() {
                   &microros_node,
                   ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, AudioChunk),
                   audio_playback_chunk_topic_name,
-                  &audio_chunk_qos),
+                  &audio_playback_chunk_qos),
               "audio_chunk_subscription_init")) {
     return false;
   }
@@ -4642,6 +4739,15 @@ bool capture_audio_goal_valid(
     }
     return false;
   }
+  if (audio_playback_guard.active()) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "FIRMWARE_BUSY",
+          "audio playback already active",
+          true);
+    }
+    return false;
+  }
   if (result != nullptr) {
     *result = stackchan::Result::accepted("audio capture goal accepted");
   }
@@ -4954,6 +5060,364 @@ void poll_capture_audio_action_server() {
   step_capture_audio_session();
 }
 
+void reset_play_audio_speaker_buffers() {
+  play_audio_buffer_index = 0;
+  play_audio_buffer_fill_samples = 0;
+  play_audio_last_speaker_frame_ms = 0;
+  play_audio_speaker_frames_queued = 0;
+  play_audio_speaker_frames_failed = 0;
+}
+
+stackchan::Result prepare_play_audio_speaker() {
+  while (M5.Mic.isRecording()) {
+    delay(1);
+  }
+  M5.Mic.end();
+  if (!M5.Speaker.begin()) {
+    return stackchan::Result::rejected(
+        "UNSUPPORTED_FEATURE",
+        "speaker begin failed",
+        false);
+  }
+  M5.Speaker.setVolume(kAudioPlaybackSpeakerVolume);
+  play_audio_speaker_session_active = true;
+  return stackchan::Result::accepted("speaker ready for playback");
+}
+
+void release_play_audio_speaker(bool stop_playback) {
+  if (!play_audio_speaker_session_active) {
+    return;
+  }
+  if (stop_playback) {
+    M5.Speaker.stop(0);
+  }
+  M5.Speaker.end();
+  if (stackchan_audio_capture_initialized) {
+    M5.Mic.begin();
+  }
+  play_audio_speaker_session_active = false;
+}
+
+bool play_audio_speaker_queue_has_room() {
+  return M5.Speaker.isPlaying(0) < 2;
+}
+
+bool queue_play_audio_speaker_frame(
+    const char* command_id,
+    uint32_t sequence,
+    bool partial_frame) {
+  if (play_audio_buffer_fill_samples == 0) {
+    return true;
+  }
+  if (!play_audio_speaker_queue_has_room()) {
+    if (!play_audio_speaker_queue_full_logged) {
+      log_play_audio_chunk_diagnostic(
+          "speaker_queue_full",
+          command_id,
+          sequence,
+          static_cast<uint32_t>(play_audio_buffer_fill_samples * 2),
+          "OK");
+      play_audio_speaker_queue_full_logged = true;
+    }
+    return true;
+  }
+  int16_t* samples = play_audio_buffers[play_audio_buffer_index];
+  const size_t sample_count = play_audio_buffer_fill_samples;
+  if (!M5.Speaker.playRaw(
+          samples,
+          sample_count,
+          stackchan::kAudioSampleRate,
+          false,
+          1,
+          0,
+          false)) {
+    ++play_audio_speaker_frames_failed;
+    log_play_audio_chunk_diagnostic(
+        "speaker_frame_failed",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(sample_count * 2),
+        "AUDIO_UNDERRUN");
+    return false;
+  }
+  ++play_audio_speaker_frames_queued;
+  play_audio_last_speaker_frame_ms = millis();
+  play_audio_speaker_queue_full_logged = false;
+  if (play_audio_speaker_frames_queued == 1 || partial_frame) {
+    log_play_audio_chunk_diagnostic(
+        partial_frame ? "speaker_partial_frame_queued" : "speaker_frame_queued",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(sample_count * 2),
+        "OK");
+  }
+  play_audio_buffer_index =
+      (play_audio_buffer_index + 1) %
+      (sizeof(play_audio_buffers) / sizeof(play_audio_buffers[0]));
+  play_audio_buffer_fill_samples = 0;
+  return true;
+}
+
+bool append_play_audio_pcm_to_speaker_frames(
+    const char* command_id,
+    uint32_t sequence,
+    const uint8_t* pcm_data,
+    size_t pcm_size) {
+  size_t sample_offset = 0;
+  const size_t sample_count = pcm_size / 2;
+  while (sample_offset < sample_count) {
+    const size_t frame_space =
+        kAudioPlaybackSpeakerFrameSamples - play_audio_buffer_fill_samples;
+    const size_t samples_to_copy =
+        (sample_count - sample_offset) < frame_space
+            ? (sample_count - sample_offset)
+            : frame_space;
+    int16_t* frame = play_audio_buffers[play_audio_buffer_index];
+    for (size_t index = 0; index < samples_to_copy; ++index) {
+      const size_t pcm_index = (sample_offset + index) * 2;
+      frame[play_audio_buffer_fill_samples + index] = static_cast<int16_t>(
+          static_cast<uint16_t>(pcm_data[pcm_index]) |
+          (static_cast<uint16_t>(pcm_data[pcm_index + 1]) << 8));
+    }
+    sample_offset += samples_to_copy;
+    play_audio_buffer_fill_samples += samples_to_copy;
+    if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples &&
+        !queue_play_audio_speaker_frame(command_id, sequence, false)) {
+      return false;
+    }
+    if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples &&
+        sample_offset < sample_count) {
+      log_play_audio_chunk_diagnostic(
+          "speaker_frame_backpressure",
+          command_id,
+          sequence,
+          static_cast<uint32_t>(play_audio_buffer_fill_samples * 2),
+          "AUDIO_UNDERRUN");
+      return false;
+    }
+  }
+  return true;
+}
+
+stackchan::Result validate_play_audio_chunk_shape(
+    const stackchan::AudioPlaybackChunk& chunk,
+    const uint8_t* pcm_data) {
+  if (!audio_playback_guard.active()) {
+    return stackchan::Result::rejected(
+        "UNKNOWN_COMMAND",
+        "audio playback chunk arrived without an accepted session",
+        true);
+  }
+  if (chunk.command_id == nullptr ||
+      strcmp(chunk.command_id, play_audio_diagnostic_command_id) != 0) {
+    return stackchan::Result::rejected(
+        "UNKNOWN_COMMAND",
+        "audio playback chunk command_id does not match active session",
+        true);
+  }
+  if (chunk.direction != stackchan::AudioDirection::Playback) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "audio playback chunk has wrong direction",
+        true);
+  }
+  if (chunk.format != stackchan::AudioFormat::PcmS16Le ||
+      chunk.sample_rate != stackchan::kAudioSampleRate ||
+      chunk.channels != stackchan::kAudioChannels) {
+    return stackchan::Result::rejected(
+        "UNSUPPORTED_FEATURE",
+        "audio playback chunk format is unsupported",
+        false);
+  }
+  if (pcm_data == nullptr ||
+      chunk.pcm_size == 0 ||
+      chunk.pcm_size % 2 != 0 ||
+      chunk.pcm_size > stackchan::kAudioMaxChunkBytes) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "audio playback chunk byte length is invalid",
+        true);
+  }
+  return stackchan::Result::accepted("audio playback chunk shape accepted");
+}
+
+bool buffer_play_audio_pending_chunk(
+    const char* command_id,
+    uint32_t sequence,
+    uint8_t format,
+    uint32_t sample_rate,
+    uint8_t channels,
+    const uint8_t* pcm_data,
+    size_t pcm_size) {
+  if (find_play_audio_pending_chunk(sequence) >= 0) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_duplicate_ignored",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "OK");
+    return true;
+  }
+  if (pcm_size > kAudioPlaybackPendingChunkBytes) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_chunk_too_large",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "AUDIO_UNDERRUN");
+    return false;
+  }
+  if (sequence >= play_audio_next_pull_sequence + kAudioPlaybackPendingChunkSlots) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_window_exceeded",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "AUDIO_UNDERRUN");
+    return false;
+  }
+  PlayAudioPendingChunk* slot = nullptr;
+  for (auto& chunk : play_audio_pending_chunks) {
+    if (!chunk.occupied) {
+      slot = &chunk;
+      break;
+    }
+  }
+  if (slot == nullptr) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_full",
+        command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "AUDIO_UNDERRUN");
+    return false;
+  }
+  slot->occupied = true;
+  slot->sequence = sequence;
+  slot->format = format;
+  slot->sample_rate = sample_rate;
+  slot->channels = channels;
+  slot->pcm_size = static_cast<uint16_t>(pcm_size);
+  slot->received_ms = millis();
+  copy_bounded(slot->command_id, sizeof(slot->command_id), command_id);
+  memcpy(slot->pcm, pcm_data, pcm_size);
+  ++play_audio_pending_chunk_count;
+  if (play_audio_pending_gap_started_ms == 0) {
+    play_audio_pending_gap_started_ms = slot->received_ms;
+  }
+  play_audio_last_chunk_ms = slot->received_ms;
+  log_play_audio_chunk_diagnostic(
+      "chunk_buffered_out_of_order",
+      command_id,
+      sequence,
+      static_cast<uint32_t>(pcm_size),
+      "OK");
+  return true;
+}
+
+bool process_play_audio_pcm_chunk_in_order(
+    const char* chunk_command_id,
+    uint32_t sequence,
+    uint8_t format,
+    uint32_t sample_rate,
+    uint8_t channels,
+    const uint8_t* pcm_data,
+    size_t pcm_size) {
+  stackchan::AudioPlaybackChunk playback_chunk{
+      chunk_command_id,
+      stackchan::AudioDirection::Playback,
+      static_cast<stackchan::AudioFormat>(format),
+      sample_rate,
+      channels,
+      sequence,
+      static_cast<uint16_t>(pcm_size),
+  };
+  const stackchan::Result validation_result =
+      audio_playback_guard.validate_chunk(playback_chunk);
+  if (!validation_result.ok) {
+    ++play_audio_chunks_rejected;
+    log_play_audio_chunk_diagnostic(
+        "chunk_rejected",
+        chunk_command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        validation_result.error_code);
+    if (strcmp(validation_result.error_code, "AUDIO_UNDERRUN") == 0) {
+      stackchan::publish_audio_underrun_event(
+          event_publisher,
+          millis(),
+          chunk_command_id);
+    }
+    finish_play_audio_goal(validation_result, GOAL_STATE_ABORTED);
+    return false;
+  }
+  if (!append_play_audio_pcm_to_speaker_frames(
+          chunk_command_id,
+          sequence,
+          pcm_data,
+          pcm_size)) {
+    ++play_audio_chunks_rejected;
+    log_play_audio_chunk_diagnostic(
+        "speaker_frame_append_failed",
+        chunk_command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "AUDIO_UNDERRUN");
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+    return false;
+  }
+  ++play_audio_chunks_accepted;
+  if (play_audio_chunks_accepted == 1) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_accepted",
+        chunk_command_id,
+        sequence,
+        static_cast<uint32_t>(pcm_size),
+        "OK");
+  }
+  play_audio_received_chunk = true;
+  play_audio_last_chunk_ms = millis();
+  if (sequence >= play_audio_next_pull_sequence) {
+    play_audio_next_pull_sequence = sequence + 1;
+    refresh_play_audio_pending_gap_timer(millis());
+  }
+  return true;
+}
+
+bool drain_play_audio_pending_chunks() {
+  while (play_audio_pending_chunk_count > 0) {
+    const int pending_index =
+        find_play_audio_pending_chunk(play_audio_next_pull_sequence);
+    if (pending_index < 0) {
+      return true;
+    }
+    PlayAudioPendingChunk& pending = play_audio_pending_chunks[pending_index];
+    const uint32_t drained_sequence = pending.sequence;
+    if (!process_play_audio_pcm_chunk_in_order(
+            pending.command_id,
+            pending.sequence,
+            pending.format,
+            pending.sample_rate,
+            pending.channels,
+            pending.pcm,
+            pending.pcm_size)) {
+      return false;
+    }
+    pending.occupied = false;
+    pending.pcm_size = 0;
+    pending.command_id[0] = '\0';
+    --play_audio_pending_chunk_count;
+    refresh_play_audio_pending_gap_timer(millis());
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_drained",
+        play_audio_diagnostic_command_id,
+        drained_sequence,
+        0,
+        "OK");
+  }
+  return true;
+}
+
 bool play_audio_goal_valid(
     const stackchan_msgs__action__PlayAudio_Goal& goal,
     stackchan::Result* result) {
@@ -5011,6 +5475,15 @@ bool play_audio_goal_valid(
     }
     return false;
   }
+  if (audio_capture_session_active) {
+    if (result != nullptr) {
+      *result = stackchan::Result::rejected(
+          "FIRMWARE_BUSY",
+          "audio capture already active",
+          true);
+    }
+    return false;
+  }
   if (result != nullptr) {
     *result = stackchan::Result::accepted("audio playback goal accepted");
   }
@@ -5046,6 +5519,9 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
   play_audio_received_chunk = false;
   play_audio_end_of_stream_seen = false;
   play_audio_chunk_request_pending = false;
+  play_audio_buffer_fill_samples = 0;
+  reset_play_audio_pending_chunks();
+  release_play_audio_speaker(!result.ok || M5.Speaker.isPlaying(0) != 0);
   audio_playback_guard.finish_session();
 }
 
@@ -5106,7 +5582,23 @@ void request_next_play_audio_chunk() {
       play_audio_chunk_request_pending) {
     return;
   }
+  if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples) {
+    if (!queue_play_audio_speaker_frame(
+            play_audio_diagnostic_command_id,
+            play_audio_next_pull_sequence,
+            false) ||
+        play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples) {
+      return;
+    }
+  }
   const uint32_t now_ms = millis();
+  const bool waiting_for_gap = play_audio_pending_chunk_count > 0;
+  if (!waiting_for_gap &&
+      play_audio_received_chunk &&
+      !play_audio_end_of_stream_seen &&
+      now_ms - play_audio_last_chunk_ms < kAudioPlaybackPullFallbackIdleMs) {
+    return;
+  }
   if (play_audio_last_pull_request_ms != 0 &&
       now_ms - play_audio_last_pull_request_ms < kAudioPlaybackPullIntervalMs) {
     return;
@@ -5170,25 +5662,74 @@ void maybe_finish_play_audio_session() {
   }
   const uint32_t now_ms = millis();
   clear_stale_play_audio_chunk_request();
+  if (play_audio_received_chunk &&
+      !play_audio_end_of_stream_seen &&
+      now_ms - play_audio_last_chunk_ms >= kAudioPlaybackInterChunkTimeoutMs) {
+    log_play_audio_session_diagnostic(
+        "inter_chunk_timeout",
+        stackchan::audio_underrun());
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+    send_play_audio_result_if_ready();
+    return;
+  }
   request_next_play_audio_chunk();
-  if (!play_audio_received_chunk &&
+  if (play_audio_pending_chunk_count > 0 &&
+      play_audio_pending_gap_started_ms != 0 &&
+      now_ms - play_audio_pending_gap_started_ms >=
+          kAudioPlaybackPendingGapTimeoutMs) {
+    log_play_audio_chunk_diagnostic(
+        "chunk_jitter_gap_timeout",
+        play_audio_diagnostic_command_id,
+        play_audio_next_pull_sequence,
+        0,
+        "AUDIO_UNDERRUN");
+    stackchan::publish_audio_underrun_event(
+        event_publisher,
+        now_ms,
+        play_audio_diagnostic_command_id);
+    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+  } else if (play_audio_pending_chunk_count > 0) {
+    send_play_audio_result_if_ready();
+    return;
+  } else if (!play_audio_received_chunk &&
       now_ms - play_audio_started_ms >= kAudioPlaybackNoChunkTimeoutMs) {
     log_play_audio_session_diagnostic(
         "no_chunk_timeout",
         stackchan::audio_underrun());
     finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
   } else if (play_audio_received_chunk &&
-             !play_audio_end_of_stream_seen &&
-             !play_audio_chunk_request_pending &&
-             now_ms - play_audio_last_chunk_ms >= kAudioPlaybackInterChunkTimeoutMs) {
-    log_play_audio_session_diagnostic(
-        "inter_chunk_timeout",
-        stackchan::audio_underrun());
+             play_audio_end_of_stream_seen &&
+             play_audio_buffer_fill_samples > 0 &&
+             !queue_play_audio_speaker_frame(
+                 play_audio_diagnostic_command_id,
+                 play_audio_next_pull_sequence,
+                 true)) {
     finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
   } else if (play_audio_received_chunk &&
              play_audio_end_of_stream_seen &&
-             now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs &&
-             !M5.Speaker.isPlaying(0)) {
+             play_audio_buffer_fill_samples > 0) {
+    send_play_audio_result_if_ready();
+    return;
+  } else if (play_audio_received_chunk &&
+             play_audio_end_of_stream_seen &&
+             now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs) {
+    const bool speaker_playing = M5.Speaker.isPlaying(0) != 0;
+    const bool speaker_drain_timed_out =
+        speaker_playing &&
+        play_audio_last_speaker_frame_ms != 0 &&
+        now_ms - play_audio_last_speaker_frame_ms >= kAudioPlaybackMaxSpeakerDrainMs;
+    if (speaker_drain_timed_out) {
+      log_play_audio_chunk_diagnostic(
+          "speaker_drain_fallback",
+          play_audio_diagnostic_command_id,
+          play_audio_next_pull_sequence,
+          0,
+          "OK");
+    }
+    if (speaker_playing && !speaker_drain_timed_out) {
+      send_play_audio_result_if_ready();
+      return;
+    }
     finish_play_audio_goal(audio_playback_completed_result(), GOAL_STATE_SUCCEEDED);
   }
   send_play_audio_result_if_ready();
@@ -5213,6 +5754,14 @@ void start_play_audio_goal(
   if (!start_result.ok) {
     log_play_audio_session_diagnostic("goal_start_failed", start_result);
     finish_play_audio_goal(start_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  reset_play_audio_speaker_buffers();
+  reset_play_audio_pending_chunks();
+  const stackchan::Result speaker_result = prepare_play_audio_speaker();
+  if (!speaker_result.ok) {
+    log_play_audio_session_diagnostic("speaker_start_failed", speaker_result);
+    finish_play_audio_goal(speaker_result, GOAL_STATE_ABORTED);
     return;
   }
   log_play_audio_session_diagnostic("goal_active", start_result);
@@ -5408,85 +5957,49 @@ void accept_play_audio_pcm_chunk(
         "OK");
     return;
   }
-  const stackchan::Result validation_result =
-      audio_playback_guard.validate_chunk(playback_chunk);
-  if (!validation_result.ok) {
+  const stackchan::Result shape_result =
+      validate_play_audio_chunk_shape(playback_chunk, pcm_data);
+  if (!shape_result.ok) {
     ++play_audio_chunks_rejected;
     log_play_audio_chunk_diagnostic(
         "chunk_rejected",
         chunk_command_id,
         sequence,
         static_cast<uint32_t>(pcm_size),
-        validation_result.error_code);
-    if (strcmp(validation_result.error_code, "AUDIO_UNDERRUN") == 0) {
+        shape_result.error_code);
+    finish_play_audio_goal(shape_result, GOAL_STATE_ABORTED);
+    return;
+  }
+  if (sequence > play_audio_next_pull_sequence) {
+    if (!buffer_play_audio_pending_chunk(
+            chunk_command_id,
+            sequence,
+            format,
+            sample_rate,
+            channels,
+            pcm_data,
+            pcm_size)) {
+      ++play_audio_chunks_rejected;
       stackchan::publish_audio_underrun_event(
           event_publisher,
           millis(),
           chunk_command_id);
+      finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
     }
-    finish_play_audio_goal(validation_result, GOAL_STATE_ABORTED);
     return;
   }
-  if (pcm_data == nullptr ||
-      pcm_size % 2 != 0 ||
-      pcm_size > stackchan::kAudioMaxChunkBytes) {
-    ++play_audio_chunks_rejected;
-    log_play_audio_chunk_diagnostic(
-        "chunk_rejected",
-        chunk_command_id,
-        sequence,
-        static_cast<uint32_t>(pcm_size),
-        "MALFORMED_AUDIO_CHUNK");
-    finish_play_audio_goal(
-        stackchan::Result::rejected(
-            "MALFORMED_AUDIO_CHUNK",
-            "audio playback chunk byte length is invalid",
-            true),
-        GOAL_STATE_ABORTED);
+  if (!process_play_audio_pcm_chunk_in_order(
+          chunk_command_id,
+          sequence,
+          format,
+          sample_rate,
+          channels,
+          pcm_data,
+          pcm_size)) {
     return;
   }
-  int16_t* samples = play_audio_buffers[play_audio_buffer_index];
-  play_audio_buffer_index =
-      (play_audio_buffer_index + 1) %
-      (sizeof(play_audio_buffers) / sizeof(play_audio_buffers[0]));
-  const size_t sample_count = pcm_size / 2;
-  for (size_t index = 0; index < sample_count; ++index) {
-    const size_t byte_index = index * 2;
-    samples[index] = static_cast<int16_t>(
-        static_cast<uint16_t>(pcm_data[byte_index]) |
-        (static_cast<uint16_t>(pcm_data[byte_index + 1]) << 8));
-  }
-  if (!M5.Speaker.playRaw(
-          samples,
-          sample_count,
-          stackchan::kAudioSampleRate,
-          false,
-          1,
-          0,
-          false)) {
-    ++play_audio_chunks_rejected;
-    log_play_audio_chunk_diagnostic(
-        "play_raw_failed",
-        chunk_command_id,
-        sequence,
-        static_cast<uint32_t>(pcm_size),
-        "AUDIO_UNDERRUN");
-    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+  if (!drain_play_audio_pending_chunks()) {
     return;
-  }
-  ++play_audio_chunks_accepted;
-  if (play_audio_chunks_accepted == 1) {
-    log_play_audio_chunk_diagnostic(
-        "chunk_accepted",
-        chunk_command_id,
-        sequence,
-        static_cast<uint32_t>(pcm_size),
-        "OK");
-  }
-  play_audio_received_chunk = true;
-  play_audio_last_chunk_ms = millis();
-  if (sequence >= play_audio_next_pull_sequence) {
-    play_audio_next_pull_sequence = sequence + 1;
   }
 }
 
@@ -6321,5 +6834,5 @@ void loop() {
   queue_bringup_event_if_ready(now);
   drain_device_events();
   publish_runtime_telemetry(static_cast<uint32_t>(now));
-  delay(10);
+  delay(play_audio_goal_active ? 1 : 10);
 }

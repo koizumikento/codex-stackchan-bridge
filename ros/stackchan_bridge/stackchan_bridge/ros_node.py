@@ -44,20 +44,29 @@ AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5
 AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_INTERVAL_SEC = 0.05
 AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC = 0.35
-AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC = 0.15
+AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_COUNT = 1
+AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_INTERVAL_SEC = 0.005
+AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_COUNT = 3
+AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_INTERVAL_SEC = 0.03
+AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS = 2
+AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS = 8
+AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS = 8
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64
+AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
+AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 
 
 def _audio_playback_chunk_bytes() -> int:
     raw_value = os.environ.get(AUDIO_PLAYBACK_CHUNK_BYTES_ENV)
     if raw_value is None:
-        return AUDIO_CHUNK_BYTES
+        return AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT
     try:
         value = int(raw_value)
     except ValueError:
-        return AUDIO_CHUNK_BYTES
+        return AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT
     value = min(max(value, 2), AUDIO_CHUNK_BYTES)
     if value % 2:
         value -= 1
@@ -76,6 +85,15 @@ def _audio_playback_first_goal_bytes() -> int:
     if value % 2:
         value -= 1
     return max(value, 0)
+
+
+def _audio_playback_pull_only() -> bool:
+    return os.environ.get(AUDIO_PLAYBACK_PULL_ONLY_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _optional_positive_float(value: object) -> float | None:
@@ -134,6 +152,19 @@ def _select_playback_chunk_for_pull(
         # timeout. Keep the chunk until a later sequence proves it was accepted.
         chunk = queue[0]
     return chunk, len(queue)
+
+
+def _select_playback_chunks_for_topic_window(
+    queue: list[object], next_sequence: int, count: int
+) -> list[object]:
+    chunks: list[object] = []
+    for message in queue:
+        if _playback_chunk_sequence(message) < next_sequence:
+            continue
+        chunks.append(message)
+        if len(chunks) >= count:
+            break
+    return chunks
 
 
 def _time_to_string(stamp: object) -> str:
@@ -557,6 +588,7 @@ def main(args: list[str] | None = None) -> None:
 
     reliable_depth_2 = QoSProfile(depth=2)
     reliable_depth_4 = QoSProfile(depth=4)
+    reliable_depth_8 = QoSProfile(depth=8)
     best_effort_depth_5 = QoSProfile(depth=5)
     best_effort_depth_5.reliability = ReliabilityPolicy.BEST_EFFORT
     best_effort_depth_8 = QoSProfile(depth=8)
@@ -638,6 +670,7 @@ def main(args: list[str] | None = None) -> None:
             self._active_playback_sessions = set()
             self._closed_playback_sessions = set()
             self._pull_only_playback_sessions = set()
+            self._prebuffered_topic_playback_sessions = set()
             self._playback_relay_stats = {}
             self._playback_chunk_lock = threading.Lock()
             self._telemetry_publishers = {}
@@ -831,7 +864,7 @@ def main(args: list[str] | None = None) -> None:
             self._device_audio_chunk_publishers[device_id] = self.create_publisher(
                 RosAudioChunk,
                 f"/stackchan/{device_id}/device/audio/playback/chunks",
-                best_effort_depth_8,
+                reliable_depth_8,
             )
             self.create_service(
                 NextAudioChunk,
@@ -1496,14 +1529,18 @@ def main(args: list[str] | None = None) -> None:
             key = (device_id, command_id)
             with self._playback_chunk_lock:
                 self._closed_playback_sessions.discard(key)
-                self._active_playback_sessions.add(key)
                 pull_only = key in self._pull_only_playback_sessions
-                buffered = list(self._pending_playback_chunks.get(key, []))
+                prebuffered_topic = key in self._prebuffered_topic_playback_sessions
                 stats = self._playback_relay_stats.setdefault(
                     key,
                     {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
                 )
-                stats["activated_monotonic"] = time.monotonic()
+                if pull_only:
+                    self._active_playback_sessions.add(key)
+                    stats["activated_monotonic"] = time.monotonic()
+                    buffered = list(self._pending_playback_chunks.get(key, []))
+                else:
+                    buffered = []
             self.get_logger().info(
                 "audio playback relay activated "
                 f"device_id={device_id!r} command_id={command_id!r} "
@@ -1513,15 +1550,31 @@ def main(args: list[str] | None = None) -> None:
             if pull_only:
                 return
             self._wait_for_device_audio_playback_subscription(device_id, command_id)
-            for index, message in enumerate(buffered):
-                self._publish_device_audio_chunk(device_id, message)
-                if index == 0 and int(getattr(message, "sequence", 0)) == 0:
+            with self._playback_chunk_lock:
+                self._active_playback_sessions.add(key)
+                buffered = list(self._pending_playback_chunks.get(key, []))
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["activated_monotonic"] = time.monotonic()
+            self.get_logger().info(
+                "audio playback relay topic start "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"buffered={len(buffered)} received={stats['received']}"
+            )
+            publish_window = buffered[:AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS]
+            for index, message in enumerate(publish_window):
+                if prebuffered_topic:
+                    self._publish_device_audio_chunk_with_retries(device_id, message)
+                else:
+                    self._publish_device_audio_chunk(device_id, message)
+                if index == 0:
                     for _retry_index in range(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT - 1):
                         time.sleep(AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC)
                         self._publish_device_audio_chunk(device_id, message)
-                if index < len(buffered) - 1:
+                if index < len(publish_window) - 1:
                     time.sleep(AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC)
-
         def _handle_next_audio_chunk(
             self,
             device_id: str,
@@ -1532,6 +1585,7 @@ def main(args: list[str] | None = None) -> None:
             key = (device_id, meta.command_id)
             next_sequence = int(getattr(request, "next_sequence", 0))
             chunk = None
+            republish_chunks = []
             buffered_chunks = 0
             with self._playback_chunk_lock:
                 queue = self._pending_playback_chunks.setdefault(key, [])
@@ -1541,6 +1595,8 @@ def main(args: list[str] | None = None) -> None:
                 )
                 active = key in self._active_playback_sessions
                 closed = key in self._closed_playback_sessions
+                pull_only = key in self._pull_only_playback_sessions
+                prebuffered_topic = key in self._prebuffered_topic_playback_sessions
                 stats = self._playback_relay_stats.setdefault(
                     key,
                     {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
@@ -1550,22 +1606,35 @@ def main(args: list[str] | None = None) -> None:
                     or stats.get("activated_monotonic")
                     or 0.0
                 )
-                if (
-                    active
-                    and chunk is None
-                    and buffered_chunks == 0
-                    and idle_reference > 0.0
-                    and time.monotonic() - idle_reference >= AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC
-                ):
-                    self._active_playback_sessions.discard(key)
-                    self._closed_playback_sessions.add(key)
-                    active = False
-                    closed = True
-                    self.get_logger().info(
-                        "audio playback pull closed idle input "
-                        f"device_id={device_id!r} command_id={meta.command_id!r} "
-                        f"next_sequence={next_sequence}"
+                if active and chunk is None and buffered_chunks == 0:
+                    input_drained = prebuffered_topic
+                    input_idle = (
+                        not prebuffered_topic
+                        and idle_reference > 0.0
+                        and time.monotonic() - idle_reference >= AUDIO_PLAYBACK_INPUT_IDLE_EOS_SEC
                     )
+                    if input_drained or input_idle:
+                        self._active_playback_sessions.discard(key)
+                        self._closed_playback_sessions.add(key)
+                        active = False
+                        closed = True
+                        close_reason = "drained" if input_drained else "idle"
+                        self.get_logger().info(
+                            "audio playback pull closed input "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"reason={close_reason} next_sequence={next_sequence}"
+                        )
+                if active and not pull_only and chunk is not None:
+                    nack_counts = stats.setdefault("pull_nack_counts", {})
+                    nack_count = int(nack_counts.get(next_sequence, 0))
+                    if nack_count < AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS:
+                        nack_counts[next_sequence] = nack_count + 1
+                        republish_chunks = _select_playback_chunks_for_topic_window(
+                            queue,
+                            next_sequence,
+                            AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS,
+                        )
+                        chunk = None
             if not active and not closed:
                 _copy_result(
                     response.result,
@@ -1591,6 +1660,26 @@ def main(args: list[str] | None = None) -> None:
                         f"device_id={device_id!r} command_id={meta.command_id!r} "
                         f"bytes={_audio_chunk_pcm_size(chunk)} buffered={buffered_chunks}"
                     )
+                elif active and not pull_only:
+                    self.get_logger().info(
+                        "audio playback pull served fallback chunk "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"sequence={_playback_chunk_sequence(chunk)} "
+                        f"bytes={_audio_chunk_pcm_size(chunk)} buffered={buffered_chunks}"
+                    )
+                    self._republish_device_audio_chunk_for_pull_async(device_id, chunk)
+            elif republish_chunks:
+                republish_chunk = republish_chunks[0]
+                self.get_logger().info(
+                    "audio playback pull republished chunk on topic "
+                    f"device_id={device_id!r} command_id={meta.command_id!r} "
+                    f"sequence={_playback_chunk_sequence(republish_chunk)} "
+                    f"bytes={_audio_chunk_pcm_size(republish_chunk)} "
+                    f"buffered={buffered_chunks} lookahead={len(republish_chunks)}"
+                )
+                self._republish_device_audio_chunk_for_pull(device_id, republish_chunk)
+                for lookahead_chunk in republish_chunks[1:]:
+                    self._publish_device_audio_chunk(device_id, lookahead_chunk)
             return response
 
         def _copy_audio_chunk_response(self, target: object, source: object) -> None:
@@ -1617,6 +1706,10 @@ def main(args: list[str] | None = None) -> None:
                 key = (device_id, meta.command_id)
                 with self._playback_chunk_lock:
                     self._pull_only_playback_sessions.add(key)
+            else:
+                key = (device_id, meta.command_id)
+                with self._playback_chunk_lock:
+                    self._prebuffered_topic_playback_sessions.add(key)
             chunk_bytes = _audio_playback_chunk_bytes()
             for sequence, start in enumerate(
                 range(pcm_offset, len(audio.pcm), chunk_bytes),
@@ -1681,6 +1774,7 @@ def main(args: list[str] | None = None) -> None:
             with self._playback_chunk_lock:
                 self._active_playback_sessions.discard(key)
                 self._pull_only_playback_sessions.discard(key)
+                self._prebuffered_topic_playback_sessions.discard(key)
                 pending = self._pending_playback_chunks.pop(key, [])
                 self._closed_playback_sessions.add(key)
                 stats = self._playback_relay_stats.pop(
@@ -1726,6 +1820,31 @@ def main(args: list[str] | None = None) -> None:
                     f"sequence={sequence} bytes={pcm_size}"
                 )
             publisher.publish(message)
+
+        def _publish_device_audio_chunk_with_retries(
+            self, device_id: str, message: object
+        ) -> None:
+            for retry_index in range(AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_COUNT):
+                self._publish_device_audio_chunk(device_id, message)
+                if retry_index < AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_COUNT - 1:
+                    time.sleep(AUDIO_PLAYBACK_TOPIC_CHUNK_RETRY_INTERVAL_SEC)
+
+        def _republish_device_audio_chunk_for_pull(
+            self, device_id: str, message: object
+        ) -> None:
+            for retry_index in range(AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_COUNT):
+                self._publish_device_audio_chunk(device_id, message)
+                if retry_index < AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_COUNT - 1:
+                    time.sleep(AUDIO_PLAYBACK_PULL_REPUBLISH_RETRY_INTERVAL_SEC)
+
+        def _republish_device_audio_chunk_for_pull_async(
+            self, device_id: str, message: object
+        ) -> None:
+            threading.Thread(
+                target=self._republish_device_audio_chunk_for_pull,
+                args=(device_id, message),
+                daemon=True,
+            ).start()
 
         def _handle_speech_audio_chunk(self, device_id: str, message: object) -> None:
             if not _coerce_telemetry_device_id(message, device_id):
@@ -2179,7 +2298,7 @@ def main(args: list[str] | None = None) -> None:
                 audio,
                 start_sequence=int(getattr(playback_request, "next_chunk_sequence", 0)),
                 pcm_offset=int(getattr(playback_request, "next_chunk_offset", 0)),
-                pull_only=True,
+                pull_only=_audio_playback_pull_only(),
             )
             playback_result = self._call_device_audio_play(
                 device_id,

@@ -897,6 +897,7 @@ class BridgeBackendTests(unittest.TestCase):
 
         self.assertTrue(response.ok)
         self.assertEqual(response.result_state, ResultState.ACCEPTED)
+        self.assertFalse(action.goal_handle.result_requested)
         self.assertEqual(action.action_name, "/stackchan/default/cmd/audio/play")
         self.assertEqual(action.last_goal.sample_rate, 16000)
         self.assertEqual(action.last_goal.channels, 1)
@@ -955,6 +956,7 @@ class BridgeBackendTests(unittest.TestCase):
                 )
 
         self.assertTrue(response.ok)
+        self.assertFalse(action.goal_handle.result_requested)
         self.assertTrue(action.last_goal.first_chunk_present)
         self.assertEqual(action.last_goal.first_chunk_sequence, 0)
         self.assertEqual(action.last_goal.first_chunk_pcm, pcm[:320])
@@ -1015,6 +1017,7 @@ class BridgeBackendTests(unittest.TestCase):
                 )
 
         self.assertTrue(response.ok)
+        self.assertFalse(action.goal_handle.result_requested)
         self.assertEqual(action.last_goal.first_chunk_pcm, pcm[:64])
         publisher = node.publishers["/stackchan/default/cmd/audio/chunks"]
         self.assertEqual(len(publisher.messages), 3)

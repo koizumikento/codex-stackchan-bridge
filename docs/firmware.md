@@ -225,9 +225,10 @@ publishes bounded capture chunks on
 `/stackchan/<device_id>/device/audio/chunks`.
 Playback and capture topics are intentionally separated so firmware does not
 publish and subscribe on the same audio chunk topic over the micro-ROS serial
-transport. Playback must tolerate normal best-effort chunk pacing but report
-`AUDIO_UNDERRUN` if no valid playback chunk arrives before the device-side
-no-chunk timeout. Microphone capture must return a structured
+transport. Playback chunks use reliable topic QoS plus the bridge-owned pull
+helper for missing sequences; firmware must still report `AUDIO_UNDERRUN` if
+no valid playback chunk arrives before the device-side no-chunk, inter-chunk,
+or gap timeout. Microphone capture must return a structured
 `AUDIO_CAPTURE_FAILED` terminal result if a recording chunk stalls, rather than
 leaving the bridge to time out without a firmware result. Capture uses the
 baseline 20 ms chunk size for hardware bring-up because the current micro-ROS
@@ -465,12 +466,14 @@ Baseline audio path:
 - Audio transport starts with PCM 16 kHz mono 16-bit.
 - Playback and capture use actions coordinated with bounded audio chunks.
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
-- Audio chunk topics use best-effort, volatile, keep-last-8 QoS. Playback chunks
-  use `/stackchan/<device_id>/device/audio/playback/chunks`; capture chunks use
-  `/stackchan/<device_id>/device/audio/chunks`. A small first playback segment
-  is allowed in the firmware-owned `PlayAudio` goal for local diagnostics, but
-  the CLI baseline keeps playback payload on the chunk topic until hardware
-  validation proves this does not starve action results. The bridge may briefly
+- Playback chunks use reliable, volatile, keep-last-8 QoS on
+  `/stackchan/<device_id>/device/audio/playback/chunks` because they are device
+  command input. Capture chunks use best-effort, volatile, keep-last-8 QoS on
+  `/stackchan/<device_id>/device/audio/chunks` because they are observation
+  telemetry. A small first playback segment is allowed in the firmware-owned
+  `PlayAudio` goal for local diagnostics, but the CLI baseline keeps playback
+  payload on the chunk topic until hardware validation proves this does not
+  starve action results. The bridge may briefly
   wait for the firmware playback subscription before forwarding chunks;
   firmware may pull chunks through
   `/stackchan/<device_id>/audio/playback/next_chunk` when topic delivery is
@@ -482,6 +485,57 @@ Baseline audio path:
   Same-direction concurrency is rejected with `FIRMWARE_BUSY`.
 - Audio queues and callbacks must be bounded so audio work cannot block safety,
   fault handling, or motion-neutral work.
+- The K151 firmware speaker adapter uses M5Unified `M5.Speaker.playRaw()`.
+  M5Unified keeps references to runtime PCM buffers while its speaker task
+  drains them, so firmware must not treat `playRaw()` as an immediate-copy API.
+  Incoming transport chunks may be smaller than the 20 ms audio baseline for
+  serial reliability, but firmware must aggregate them into 20 ms speaker
+  frames, rotate through fixed runtime buffers, and flush the final partial
+  frame only after end-of-stream. The bridge may deliver playback chunks through
+  the paced playback topic or the `NextAudioChunk` helper; firmware applies the
+  same validation and buffering rules to both paths. On the standard
+  topic-first path, a pull request may cause the bridge to republish the
+  requested sequence on the playback topic and return an empty accepted helper
+  response; firmware should continue waiting for the topic chunk unless
+  end-of-stream or timeout is observed. After bounded repeated NACKs for the
+  same missing sequence, the bridge may instead return that single chunk in the
+  helper response, and firmware validates it with the same chunk rules. When
+  future chunks are already buffered
+  and the next expected sequence is missing, firmware may skip the normal idle
+  fallback delay and ask the helper for that missing sequence immediately.
+  For longer TTS payloads, the bridge sends only a bounded initial topic window
+  and advances later topic chunks from firmware pull requests so incoming future
+  chunks stay inside the firmware jitter buffer.
+  Because serial micro-ROS topics can still deliver playback chunks late or
+  slightly out of order,
+  firmware keeps a small fixed jitter buffer for future sequences and drains
+  contiguous chunks only when the next expected sequence arrives. This buffer is
+  sized for the bridge's current small serial TTS transport chunks, not for the
+  20 ms speaker frame size; larger future chunks are rejected instead of
+  consuming unbounded RAM. The jitter buffer stores PCM only in RAM and never
+  emits PCM bytes to events or logs. If
+  the missing sequence does not arrive before a bounded gap timeout, playback
+  ends with `AUDIO_UNDERRUN`. Pull response timeouts do not count as audio
+  progress and must not refresh the last-chunk timestamp; otherwise stale
+  playback sessions can survive indefinitely after a bridge or Agent timeout.
+  If the M5Unified speaker queue is full, firmware should pause additional pull
+  requests instead of blocking inside `playRaw()`.
+  Completion normally waits for end-of-stream plus speaker drain;
+  if M5Unified `isPlaying()` remains true beyond a bounded post-frame drain
+  window, firmware may complete with a payload-free `speaker_drain_fallback`
+  diagnostic and release the speaker. During playback, firmware owns the I2S
+  audio device by ending microphone use, beginning the speaker, setting a
+  bounded speaker volume, and releasing the speaker after drain.
+- KOIZUMI-146 tracks an experimental loaded-playback path for speech-sized
+  PCM because K151 hardware smokes show the topic/pull relay is reliable only
+  for very short prompts. In that path, firmware should accept a bounded,
+  device-scoped audio load transaction before playback, store payload only in a
+  fixed RAM buffer keyed by `command_id`, return ACK-only metadata for each
+  write, and then play the loaded buffer through the existing playback action.
+  Firmware must reject overflow, format mismatch, stale command ids,
+  concurrent loads, and playback without a complete loaded buffer with
+  structured `Result` errors. The load transaction must not expose PCM bytes or
+  speech text in normal diagnostics.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.
@@ -944,6 +998,11 @@ Pinning rules:
   action servers must keep bounded goal/result/cancel, feedback, and status QoS
   depths, and use best-effort volatile feedback/status topics, so media actions
   do not starve `/stackchan/<device_id>/device/status`.
+  Audio playback should prefer paced topic chunks once the playback goal is
+  accepted; the `NextAudioChunk` service is a fallback for missing topic
+  sequences and end-of-stream confirmation. Do not poll the service
+  continuously while topic chunks are arriving, because service retries can
+  starve the serial Agent and delay audible playback.
   If a media action server cannot be initialized during bring-up, firmware must
   degrade that media capability to unavailable rather than suppressing the
   status heartbeat or core face/motion/LED services. Capability status should

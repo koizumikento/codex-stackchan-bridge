@@ -114,13 +114,15 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='512'
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='20.0'
   $env:STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES='64'
-  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='96'
+  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='640'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
   ```
 
   The smoke expects `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
   `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`, and
-  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`.
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. Also record whether the operator
+  heard the speaker output; `tts_finished` alone is not an audible-playback
+  pass.
 - If the Agent creates the graph but all topic echoes time out, isolate the
   transport/status path with the temporary minimal firmware profile:
 
@@ -1225,7 +1227,7 @@ KOIZUMI-112 diagnostic firmware update:
 - Firmware events now show the remaining failure is before speaker enqueue:
   `audio_playback_chunk` alternates between `pull_requested` and
   `pull_response_timeout`; counters remain `seen=0`, `ok=0`, `rej=0`,
-  `next=0`. No `chunk_accepted`, `chunk_rejected`, `play_raw_failed`, or
+  `next=0`. No `chunk_accepted`, `chunk_rejected`, speaker frame failure, or
   `pull_response_rejected` event appears.
 - Therefore the current `AUDIO_UNDERRUN` is not a speaker `playRaw` failure or
   chunk validation rejection. The firmware micro-ROS `NextAudioChunk` client
@@ -1459,8 +1461,11 @@ KOIZUMI-112 diagnostic firmware update:
   activation with `received=50` and finish with `pending=0`.
 - The 96 byte run emitted late `pull_response_without_active_goal` events after
   result completion, but the action result and `tts_finished` event were
-  complete. Treat 96 bytes as the current fastest validated TTS playback chunk
-  size for this hardware path; keep 64 bytes as the conservative fallback.
+  complete. At the time, 96 bytes was the fastest validated pull-only playback
+  chunk size and 64 bytes was the conservative fallback. Later
+  operator-listening checks did not hear speech, and KOIZUMI-143 supersedes this
+  as a transport/result validation only; do not treat `tts_finished` alone as
+  audible speaker validation.
 - With another fresh PlatformIO reset and
   `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=128`, status connected in two attempts
   and `firmware_ready` was observed, but `stackchanctl say` timed out. The
@@ -1500,6 +1505,184 @@ KOIZUMI-112 diagnostic firmware update:
   owns COM3. Stop the existing host bridge first and confirm no non-shell
   `serial_tcp_bridge.py` process remains. Keep plain inactive DTR/RTS as the
   default for already healthy sessions.
+
+### 2026-05-26 KOIZUMI-143 M5Unified speaker buffering diagnosis
+
+- Operator-listening `say` smoke with the local VOICEVOX path did not produce
+  audible speech, even when bridge events reached `tts_finished` in one run.
+  Treat `tts_finished` as TTS/relay metadata only; it is not proof that the
+  K151 speaker emitted sound.
+- StackChan-BSP 1.1.0 does not provide a speech-stream wrapper. Its audio
+  examples only use simple `M5.Speaker.tone()` calls. Firmware speech playback
+  therefore depends on M5Unified `M5.Speaker.playRaw()`.
+- M5Unified `playRaw()` keeps runtime PCM buffer references for the speaker
+  task and documents that generated data should use rotating buffers. Current
+  firmware was handing 64 or 96 byte transport fragments directly to
+  `playRaw()`. At 16 kHz mono s16le that is only 2-3 ms of audio per fragment,
+  while the firmware pull loop had been paced around 20 ms, so playback could
+  be far slower than real time or effectively discontinuous.
+- The firmware playback adapter now aggregates accepted transport chunks into
+  20 ms speaker frames before `playRaw()`, rotates fixed buffers, flushes the
+  final partial frame only after end-of-stream, and explicitly switches from
+  microphone to speaker ownership for playback.
+- Firmware also holds a fixed in-RAM jitter buffer for future playback
+  sequences, because K151 serial micro-ROS topic delivery can expose ordering
+  jitter before the missing expected chunk arrives. The buffer is now sized for
+  24 future 20 ms / 640 byte chunks, remains payload-private, and only avoids
+  premature aborts; persistent gaps still end as `AUDIO_UNDERRUN`.
+- Serial micro-ROS `NextAudioChunk` service responses are not suitable as the
+  default TTS stream path on K151: 96 byte chunks were too slow for audible
+  speech, while 640 byte responses produced repeated firmware
+  `pull_response_timeout` diagnostics. Bridge-owned TTS therefore defaults to
+  the paced playback topic relay after `/stackchan/<device_id>/device/audio/play`
+  accepts the goal, while keeping the same buffered chunks available through
+  `NextAudioChunk` as a fallback for missing topic sequences. Use
+  `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1` only to reproduce pull-helper
+  diagnostics.
+- 2026-05-26 follow-up smoke with 96 byte topic chunks and per-chunk duplicate
+  publishing disabled still failed with `chunk_jitter_window_exceeded`: the
+  bridge buffered 94 chunks and published them faster than firmware could
+  advance through a 24-slot future window. The firmware window was therefore
+  revisited while keeping M5Unified
+  speaker frames at the 20 ms / 640 byte baseline.
+- After changing the gap timer to track expected-sequence progress, the
+  96 byte smoke no longer failed with `AUDIO_UNDERRUN`, but it still timed out
+  at the CLI after about 90 seconds because the utterance required 94 small
+  chunks. That confirms the chunk size, not only speaker buffering, was the
+  dominant latency source.
+- The next iteration moves the standard bridge-owned TTS transport back to
+  640 byte chunks and sizes the firmware future-chunk buffer for 24 such
+  chunks. The action goal keeps the first segment at 64 bytes to keep goal
+  acceptance light; firmware aggregates that first fragment with subsequent PCM
+  before queuing M5Unified speaker frames.
+- A 640 byte run after that change still timed out because firmware continued
+  polling `NextAudioChunk` every few milliseconds; repeated pull timeouts and
+  reliable topic retries starved the serial link before topic chunks reached
+  the subscription. Firmware now treats pull as idle fallback instead of the
+  primary transfer loop while topic chunks are making progress.
+- A follow-up topic-first 640 byte run still showed no topic chunks reaching
+  firmware before the fallback pulls began. The bridge now paces prebuffered
+  topic chunks at 150 ms on serial hardware, and firmware waits 450 ms of
+  chunk-idle time before falling back to pull/EOS checks.
+- A connected `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=0` smoke confirmed
+  the device audio action can accept an empty first-goal payload and the bridge
+  can activate the relay. However, the firmware only observed a late
+  out-of-order `seq=14` chunk while expected `seq=0` never arrived, then
+  reported `chunk_jitter_gap_timeout`. That narrows the non-audible speech
+  blocker to bridge-to-firmware playback chunk delivery rather than the
+  StackChan-BSP/M5Unified speaker API.
+- A follow-up reliable-QoS experiment for
+  `/stackchan/<device_id>/device/audio/playback/chunks` built, uploaded, and
+  connected, but it made the serial path worse: firmware accepted only the
+  first 64 byte action-goal fragment, no topic chunks reached the playback
+  subscription, and host bridge traffic climbed above 2 MB before timeout. Do
+  not keep reliable playback QoS as the fix; the next design needs a different
+  media transfer shape rather than more DDS retries on the serial link.
+- The `tcp-pty-sensor-sweep` media smoke now exposes the short playback prompt
+  duration, frequency, and amplitude. The default remains a 20 ms, 440 Hz,
+  low-amplitude diagnostic sine; for operator-listening checks, set
+  `--media-audio-playback-duration-ms` and
+  `--media-audio-playback-amplitude` explicitly. Use
+  `--media-playback-only` for focused speaker diagnostics so a timed-out
+  playback action is not followed by capture or camera commands. Add
+  `--media-audio-playback-wait` when the smoke must prove the firmware-owned
+  terminal playback result instead of only the CLI handoff. Record whether the
+  operator heard the output.
+- A 1 ms, high-amplitude click with
+  `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64` completed and firmware emitted
+  `speaker_partial_frame_queued`. This proves a tiny PCM payload can reach the
+  M5Unified speaker queue, but it is not speech and may be too short to hear
+  reliably.
+- A 20 ms / 640 byte sine sent entirely as the first action-goal payload timed
+  out and caused a liveness disconnect/reconnect cycle. Do not use 640 byte
+  action-goal payloads as the audible-smoke path.
+- A 20 ms sine split into 64 byte transport chunks still timed out at the CLI,
+  but firmware accepted several chunks and queued a 448 byte partial speaker
+  frame after end-of-stream. The bridge still reported pending chunks, so the
+  remaining blocker is serial-friendly PCM transfer completion, not the basic
+  `M5.Speaker.playRaw()` queue call.
+- Follow-up implementation changes topic-first fallback behavior: firmware
+  pull requests for a buffered sequence now cause the bridge to republish that
+  chunk on `/stackchan/<device_id>/device/audio/playback/chunks` and return an
+  accepted empty service response, instead of sending PCM in the synchronous
+  `NextAudioChunk` response. Re-run the 20 ms / 64 byte short-audio smoke after
+  rebuild/upload to confirm this reduces timeout and duplicate-pull behavior.
+- `stackchanctl audio play` now returns after bridge action acceptance and CLI
+  chunk handoff when `--wait` is not set. A playback-only 20 ms / 64 byte smoke
+  then returned `ok=true`, but the firmware event list still showed stale
+  delayed playback activity from the previous command rather than a clean
+  terminal result for the new command. Treat this as a CLI handoff success only,
+  not audible playback proof. The next hardware fix must clear or prevent late
+  firmware media actions after a timed-out bridge action before using non-wait
+  CLI success as a media smoke pass.
+- Firmware now stops treating pull response timeouts as audio progress. A pull
+  timeout clears the pending request but no longer refreshes
+  `play_audio_last_chunk_ms`, so a playback session with no real PCM progress
+  can reach the bounded inter-chunk timeout and release the media path instead
+  of lingering into the next smoke.
+- After that firmware upload, the 20 ms / 64 byte playback-only smoke used the
+  current command id cleanly and the bridge no longer started the topic relay
+  by publishing sequence 2 before sequence 1. The firmware still ended with
+  `chunk_jitter_gap_timeout` and `audio_playback_underrun`, so `ok=true` from
+  non-wait `stackchanctl audio play` is still only a CLI handoff result.
+- The next bridge/firmware retry narrows the remaining gap case: the first
+  topic chunk after a first action-goal fragment is retried like sequence 0,
+  NACK-triggered topic republishes are sent a few times, and firmware skips the
+  normal fallback idle wait when it already has future chunks buffered and is
+  waiting for a missing sequence. Rebuild, upload, and re-run the same 20 ms /
+  64 byte playback-only smoke before attempting speech.
+- A pull-only comparison still timed out on a 20 ms / 64 byte playback smoke,
+  so the recommended path remains topic-first. The bridge now keeps the topic
+  NACK behavior first, but after bounded repeated requests for the same missing
+  sequence it can return that one chunk in the `NextAudioChunk` service response
+  as a last-mile fallback.
+- The fallback path did fire on the 20 ms / 64 byte smoke, but the device still
+  stalled near the final chunks. Playback chunks are now treated as reliable
+  device command input instead of best-effort observation telemetry, while
+  capture chunks remain best-effort. Firmware also aborts stale playback after
+  the inter-chunk timeout even if repeated pull requests are still pending, so
+  failed smokes return a firmware-owned result instead of hanging until the CLI
+  timeout.
+- A 20 ms playback-only smoke with `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES=64`
+  and `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES=160` completed successfully with
+  `speaker_frame_queued`, `pull_end_of_stream`, bridge pending `0`, and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=1`. Use 160 byte playback
+  transport chunks as the K151 bring-up default before attempting longer TTS.
+- The first `こんにちは` TTS smoke synthesized 56 playback chunks, then failed
+  with firmware `chunk_jitter_window_exceeded` because the bridge published the
+  full prebuffered utterance faster than the firmware 24-slot jitter window
+  could drain. The bridge now limits the initial topic publish and uses
+  pull-triggered lookahead windows for later chunks.
+- A follow-up windowed run reached sequence 10, then failed after repeated pull
+  response timeouts because the pull callback slept while publishing lookahead.
+  Pull-triggered lookahead publishing now avoids per-chunk sleeps so the helper
+  response can return before the firmware pull timeout.
+- A best-effort playback-topic experiment lost even a 20 ms prompt; restoring
+  reliable playback topic QoS plus 160 byte transport chunks restored the 20 ms
+  playback-only smoke. The passing run emitted `speaker_frame_queued`,
+  `pull_end_of_stream`, bridge pending `0`, and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=1`.
+- With the short prompt restored, `こんにちは` still failed: VOICEVOX produced
+  56 transport chunks, firmware advanced only into the first few sequences, and
+  missing-sequence pull fallback ended in `AUDIO_UNDERRUN`. A minimal TTS
+  utterance, `あ`, still produced 21 chunks and failed the same way near
+  sequence 3. This shows the remaining blocker is not the text length, but
+  ordered delivery of more than a handful of playback chunks over serial
+  micro-ROS.
+- The bridge now keeps prebuffered TTS sessions active until buffered chunks
+  drain, limits the initial topic window, and republish-fallback chunks on the
+  playback topic when the firmware repeatedly NACKs the same sequence. This
+  improved one `こんにちは` run from failing near sequence 3 to reaching
+  sequence 7 and queuing at least one speaker frame, but it still did not
+  complete speech.
+- Do not switch the K151 bring-up default to 320 byte transport chunks yet. A
+  320 byte `こんにちは` run stalled in `stackchanctl say`, and a 20 ms short
+  playback smoke with 320 byte transport chunks also hung in `audio play` until
+  the helper was killed. Keep 160 byte chunks for the validated short prompt
+  while designing a different serial-friendly speech transfer shape.
+- Next implementation should move beyond DDS topic/service retries for long
+  PCM. Use KOIZUMI-144 for the transport redesign, and keep KOIZUMI-145 focused
+  on stale media action cleanup between timed-out smokes.
 
 ## Cleanup
 

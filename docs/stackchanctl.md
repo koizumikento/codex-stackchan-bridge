@@ -551,6 +551,11 @@ For bridge-backed playback, `stackchanctl audio play <path>` accepts PCM S16LE
 16 kHz mono WAV input (`.wav`) or raw PCM input (`.pcm`). It does not read or
 publish the file while firmware status reports `audio_playback` unavailable, so
 metadata-only unsupported smokes do not require a real audio file.
+Without `--wait`, `audio play` returns `ACCEPTED` after the bridge action goal
+is accepted and the CLI-side chunks have been handed to the bridge ingress. Use
+`--wait` only when the caller needs the firmware-owned playback action terminal
+result; on serial hardware that wait can be much longer than the audio duration
+while the micro-ROS action graph catches up.
 
 Audio CLI and MCP results expose metadata only: `device_id`, `command_id`,
 `result_state`, input/output path, duration, byte count, format, sample rate,
@@ -560,10 +565,13 @@ speech text, transcript text, or raw audio bytes.
 Playback chunks use `/stackchan/<device_id>/device/audio/playback/chunks`;
 capture chunks use `/stackchan/<device_id>/device/audio/chunks`. Both paths are
 keyed by `device_id`, `command_id`, `direction`, and monotonic `sequence`.
-Both topics use best-effort, volatile, keep-last-8 QoS. Backpressure is not
-acknowledged per chunk. Malformed chunks, wrong direction, wrong command id,
-sequence gaps, overrun, underrun, and disconnects are structured command results
-or events.
+Playback chunks use reliable, volatile, keep-last-8 QoS plus the
+`/stackchan/<device_id>/audio/playback/next_chunk` recovery helper because
+best-effort playback lost even short prompts in hardware smoke; capture chunks
+remain best-effort, volatile, keep-last-8 observation telemetry.
+Backpressure is not acknowledged per chunk. Malformed
+chunks, wrong direction, wrong command id, sequence gaps, overrun, underrun,
+and disconnects are structured command results or events.
 
 The bridge backend accepts audio play/capture only after firmware status reports
 `audio_playback` or `audio_capture` as available. Devices without
@@ -577,22 +585,65 @@ bridge buffers those command-ingress chunks and relays them to
 `/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
 the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
 The bridge also serves the same buffered chunks through
-`/stackchan/<device_id>/audio/playback/next_chunk`; current firmware pulls from
-that helper after action acceptance and still validates sequence, format, and
-payload bounds before speaker playback.
+`/stackchan/<device_id>/audio/playback/next_chunk`; firmware can pull from that
+helper after action acceptance and still validates sequence, format, and payload
+bounds before speaker playback. Bridge-owned TTS uses a bounded topic relay
+plus service recovery because serial micro-ROS service responses with audio
+payloads can add enough round-trip latency to make speech stall. For
+prebuffered TTS topic playback, the bridge keeps the same bounded chunks in the
+pull-helper queue as a fallback for missing topic sequences; firmware ignores
+duplicate sequences that arrive from both transports. After firmware has
+advanced past the buffered chunks, the pull helper can report end-of-stream.
+For topic-first sessions, a firmware request for a buffered sequence is first
+treated as a bounded NACK: the bridge republishes the requested sequence plus a
+small lookahead window on
+`/stackchan/<device_id>/device/audio/playback/chunks` and returns an accepted
+empty response. After repeated NACKs for the same sequence, the bridge may serve
+that one fallback chunk in the service response and republish the same sequence
+on the playback topic. Pull-only diagnostics remain available when
+service-response PCM is the behavior under test. The pull
+helper must not idle-close a prebuffered topic session while the bridge is still
+publishing topic chunks, or firmware may finish after only the first short
+fragments. Because serial micro-ROS playback chunks are still bounded command
+payloads, the default relay avoids duplicating every
+prebuffered TTS topic chunk and avoids publishing an entire long utterance at
+once; pull requests advance a bounded topic lookahead window. The pull helper is
+the fallback for missing sequences, and duplicate sequences that do occur are
+harmless and ignored by firmware.
+Firmware also keeps a bounded in-RAM jitter buffer for future playback
+sequences so a late chunk on the serial micro-ROS topic path does not
+immediately abort speech. This buffer only absorbs short ordering jitter; a
+missing sequence still becomes structured `AUDIO_UNDERRUN` after the firmware
+gap timeout.
 Playback chunks are paced at the baseline 20 ms cadence from the CLI to the
 bridge; the bridge owns device-session arming and must not rely on a fixed
 sleep before forwarding to firmware. Invalid or unsupported input files return
 structured errors; PCM bytes are never printed in normal output.
+On K151, the firmware may request smaller buffered chunks more frequently
+through the pull helper to fit the serial micro-ROS path, then aggregate those
+transport chunks back into 20 ms M5Unified speaker frames before calling
+`M5.Speaker.playRaw()`. This keeps transport tuning separate from the speaker
+buffer lifetime required by the device library.
+For longer speech, KOIZUMI-146 tracks an experimental loaded-playback
+transaction because hardware smokes show that real-time topic/service retries
+do not deliver TTS-sized PCM in order. In that design, `stackchanctl say` still
+uses the bridge backend, but the bridge first writes bounded local PCM into a
+firmware-owned, device-scoped playback buffer with ACK-only responses, then
+starts the normal firmware playback action for the same `command_id`. This load
+path must not expose PCM, speech text, or raw audio bytes in normal CLI output
+or MCP responses.
 For KOIZUMI-111 diagnostics, developers can set
 `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
 `64` to move the first playback segment into the action goal. Developers can
 also set `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES` to an even byte count such as
-`64` to split remaining CLI-origin playback transport chunks below the normal
-20 ms / 640 byte cadence while diagnosing serial micro-ROS payload limits. The
-defaults are `0` first-goal bytes and `640` topic/pull chunk bytes; these
-diagnostic settings are local bring-up knobs, not a stable user-facing audio
-quality contract.
+`64`, `160`, or `640` while diagnosing serial micro-ROS payload limits. K151
+bridge-owned TTS currently defaults to a `64` byte first-goal payload and
+160 byte topic/pull transport chunks, then firmware aggregates accepted PCM
+back into 20 ms speaker frames. The TTS path can be forced back to pull-only diagnostics with
+`STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`, but that is not the recommended speech
+path on serial hardware because larger service responses may time out and tiny
+responses add audible latency. These diagnostic settings are local bring-up
+knobs, not a stable user-facing audio quality contract.
 
 When `audio_capture` is available, the bridge backend subscribes to
 `/stackchan/<device_id>/device/audio/chunks` before sending the public
@@ -862,6 +913,7 @@ Audio bring-up diagnostics may also use:
 
 - `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES`
 - `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES`
+- `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY`
 
 ## Mock backend
 
