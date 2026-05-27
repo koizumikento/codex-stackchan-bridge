@@ -135,6 +135,21 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         self.assertIn('[ "$firmware_ready_seen" = "1" ] || result=1', command)
         self.assertNotIn('[ "$firmware_ready_result" -eq 0 ] || result=1', command)
 
+    def test_bridge_smoke_uses_balanced_tts_defaults(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(bridge_smoke_args())
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("STACKCHAN_TTS_SPEED_SCALE:-1.6", command)
+        self.assertIn("STACKCHAN_TTS_PRE_PHONEME_LENGTH:-0.03", command)
+        self.assertIn("STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.03", command)
+        self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-256", command)
+        self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS:-30.0", command)
+
 
 if __name__ == "__main__":
     unittest.main()

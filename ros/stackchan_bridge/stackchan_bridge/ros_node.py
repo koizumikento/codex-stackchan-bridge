@@ -67,6 +67,11 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
 AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
+TTS_SPEED_SCALE_DEFAULT = 1.6
+TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
+TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03
+TTS_SILENCE_TRIM_THRESHOLD_DEFAULT = 256
+TTS_SILENCE_TRIM_MARGIN_MS_DEFAULT = 30.0
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES"
@@ -972,26 +977,35 @@ def main(args: list[str] | None = None) -> None:
             timeout_sec = float(self.get_parameter("tts_timeout_sec").value)
             self.declare_parameter(
                 "tts_speed_scale",
-                _env_float("STACKCHAN_TTS_SPEED_SCALE", 0.0),
+                _env_float("STACKCHAN_TTS_SPEED_SCALE", TTS_SPEED_SCALE_DEFAULT),
             )
             speed_scale = _optional_positive_float(self.get_parameter("tts_speed_scale").value)
             self.declare_parameter(
                 "tts_pre_phoneme_length",
-                _env_float("STACKCHAN_TTS_PRE_PHONEME_LENGTH", -1.0),
+                _env_float(
+                    "STACKCHAN_TTS_PRE_PHONEME_LENGTH",
+                    TTS_PRE_PHONEME_LENGTH_DEFAULT,
+                ),
             )
             pre_phoneme_length = _optional_nonnegative_float(
                 self.get_parameter("tts_pre_phoneme_length").value
             )
             self.declare_parameter(
                 "tts_post_phoneme_length",
-                _env_float("STACKCHAN_TTS_POST_PHONEME_LENGTH", -1.0),
+                _env_float(
+                    "STACKCHAN_TTS_POST_PHONEME_LENGTH",
+                    TTS_POST_PHONEME_LENGTH_DEFAULT,
+                ),
             )
             post_phoneme_length = _optional_nonnegative_float(
                 self.get_parameter("tts_post_phoneme_length").value
             )
             self.declare_parameter(
                 "tts_silence_trim_threshold",
-                _env_int("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD", 0),
+                _env_int(
+                    "STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD",
+                    TTS_SILENCE_TRIM_THRESHOLD_DEFAULT,
+                ),
             )
             silence_trim_threshold = max(
                 0,
@@ -999,7 +1013,10 @@ def main(args: list[str] | None = None) -> None:
             )
             self.declare_parameter(
                 "tts_silence_trim_margin_ms",
-                _env_float("STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS", 20.0),
+                _env_float(
+                    "STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS",
+                    TTS_SILENCE_TRIM_MARGIN_MS_DEFAULT,
+                ),
             )
             silence_trim_margin_samples = round(
                 max(0.0, float(self.get_parameter("tts_silence_trim_margin_ms").value))

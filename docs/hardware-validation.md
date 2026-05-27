@@ -108,11 +108,11 @@ hardware bring-up issue complete.
 
   ```powershell
   $env:STACKCHAN_TTS_ENDPOINT='http://host.docker.internal:50021'
-  $env:STACKCHAN_TTS_SPEED_SCALE='3.0'
-  $env:STACKCHAN_TTS_PRE_PHONEME_LENGTH='0.0'
-  $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.0'
-  $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='512'
-  $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='20.0'
+  $env:STACKCHAN_TTS_SPEED_SCALE='1.6'
+  $env:STACKCHAN_TTS_PRE_PHONEME_LENGTH='0.03'
+  $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.03'
+  $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='256'
+  $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='30.0'
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
   $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
@@ -378,6 +378,18 @@ hardware bring-up issue complete.
   accepted `seq=0`, then saw `seq=5` while still expecting the contiguous next
   chunk. Keep 0.02 s as the fastest validated default until repeated longer
   prompts prove a lower value is stable.
+- 2026-05-28 KOIZUMI-163 software-side TTS tuning compared local provider
+  output without recording speech text in public logs. The old transport-fast
+  profile used speed 3.0, zero phoneme padding, threshold 512, and 20 ms trim
+  margin; it produced a very short 149 ms / 4778 byte short prompt. The new
+  balanced default uses speed 1.6, 0.03 s pre/post phoneme padding, threshold
+  256, and 30 ms trim margin. It produced 295 ms / 9436 bytes for the short
+  prompt and 797 ms / 25504 bytes for the longer prompt, staying under the
+  32 KiB loaded playback buffer. The balanced longer-prompt smoke completed on
+  COM3 with 67 ADPCM chunks, `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, and
+  `loaded_playback_drained`. Operator-listening intelligibility is still the
+  final KOIZUMI-163 acceptance check.
 - Before firmware reports audio capabilities as available, confirm
   `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
   capture return structured `UNSUPPORTED_FEATURE` results while still reporting
