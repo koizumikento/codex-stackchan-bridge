@@ -51,6 +51,33 @@ Use the permissive, library-shaped parts of the ecosystem as dependencies. Treat
   provider IDs, as the normal CLI/MCP selector. The bridge may map a profile to
   a VOICEVOX `speaker_id` locally.
 
+### Local audio codec candidates
+
+- Role: optional local compression between the bridge and firmware for
+  speech-sized playback payloads.
+- IMA ADPCM: preferred first experiment because the decoder can be small,
+  integer-only, and carried in-repo after a test-vector and license review.
+  Do not copy codec code from FFmpeg, OpenCores GPL examples, or unclear
+  snippets. If an upstream implementation is imported, document the exact file,
+  copyright, license, and why a tiny in-repo implementation was not enough.
+- Espressif `esp_audio_codec`: useful as a reference because it supports
+  IMA-ADPCM, G.711, and Opus on ESP32-S3-class targets, but its registry entry
+  is marked `Custom` license and the package is much broader than the current
+  Arduino/PlatformIO firmware needs. Do not add it as a dependency without a
+  separate license and footprint review.
+- Opus and Speex: upstream codecs are permissively licensed, but they are not
+  the first firmware target because their runtime integration, heap, stack, and
+  bitstream framing cost is higher than a small ADPCM decoder. Treat them as
+  future alternatives only after the ADPCM path is measured.
+- G.711/G.726: acceptable comparison points for low-complexity speech
+  compression. G.711 only halves 16-bit PCM payload size, while G.726 needs a
+  deeper standard-codec implementation review.
+- References checked on 2026-05-27: Microsoft ADPCM overview
+  <https://learn.microsoft.com/en-us/windows/win32/xaudio2/adpcm-overview>,
+  Opus license <https://opus-codec.org/license/>, Speex license summary
+  <https://www.speex.org/fsos/>, and Espressif `esp_audio_codec`
+  <https://components.espressif.com/components/espressif/esp_audio_codec/>.
+
 ## Practical rules
 
 - Prefer `StackChan-BSP` for hardware access.

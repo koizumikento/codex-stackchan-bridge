@@ -1874,6 +1874,12 @@ KOIZUMI-112 diagnostic firmware update:
   static RAM use. The standard PlatformIO build passed with RAM at 276440 /
   327680 bytes (84.4%). This change is build/contract validation only until
   another operator-listening smoke can confirm the audible result.
+- KOIZUMI-162 comparison selects IMA ADPCM as the next compressed loaded
+  playback experiment. The target is to cut bridge-to-firmware payload bytes by
+  roughly 4:1 while decoding into the existing 32 KiB loaded PCM buffer before
+  `playRaw()`. G.711 is kept as a simpler 2:1 fallback, and Opus/Speex are
+  deferred until firmware footprint is proven. No audible claim is made until a
+  later operator-listening smoke.
 
 ## Cleanup
 

@@ -574,6 +574,16 @@ Baseline audio path:
   more static RAM. Increasing the loaded playback buffer above 32 KiB overflowed
   DRAM during K151 validation; reducing transfer size through compression or a
   different transport is preferred over growing firmware RAM buffers.
+- KOIZUMI-162 codec direction: prefer a tiny IMA ADPCM loaded-playback decoder
+  as the first compressed-audio experiment. It gives roughly 4:1 payload
+  reduction for 16-bit PCM with simple integer state, so it can reduce serial
+  load-service requests without adding a large codec runtime. Firmware should
+  decode each accepted compressed load chunk into the existing bounded loaded
+  PCM buffer, keep `total_bytes` as decoded PCM bytes, and reject compressed
+  payloads that would overflow the 32 KiB decoded buffer. Keep G.711 as a
+  possible lower-risk 2:1 fallback, and defer Opus/Speex-style speech codecs
+  until a separate dependency, heap, stack, and license review proves they fit
+  the K151 firmware budget.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.

@@ -868,6 +868,26 @@ Rules:
   same `command_id` and no first-goal chunk. Normal topic/pull playback remains
   available for diagnostics and short prompts.
 
+KOIZUMI-162 compressed loaded playback decision:
+
+| Candidate | Transport reduction | Firmware cost | License/dependency stance | Decision |
+| --- | ---: | --- | --- | --- |
+| PCM_S16LE | 1:1 | Already implemented | In-repo contract | Keep baseline and fallback |
+| IMA ADPCM 4-bit | about 4:1 | Tiny integer decoder, decode into existing loaded PCM buffer | Prefer small in-repo implementation after test-vector review | Adopt for next implementation issue |
+| G.711 A-law/u-law | about 2:1 at 16 kHz | Very small table/math decoder | Acceptable fallback if ADPCM quality is poor | Defer |
+| G.726 ADPCM | 4:1 at 32 kbit/s | More stateful telephony codec | Needs deeper implementation/license review | Defer |
+| Opus/Speex | Higher speech compression | Larger codec runtime and heap/stack risk | Permissive upstream licenses exist, but firmware fit is unproven | Defer |
+
+The first compressed-audio implementation should extend the numeric audio
+format contract rather than add a new service. `AudioChunk.format` should gain
+an `IMA_ADPCM_4BIT=2` constant, and `LoadAudioChunk.format=IMA_ADPCM_4BIT`
+should mean the bounded byte field carries encoded ADPCM payload while
+`total_bytes` remains the decoded PCM byte count that must fit firmware RAM.
+The field is still named `pcm` in the current IDL for compatibility; docs,
+tests, and implementation must treat it as format-dependent audio payload for
+non-PCM formats and must keep payload bytes redacted from logs, events, CLI
+JSON, and MCP responses.
+
 ### `/stackchan/<device_id>/device/audio/chunks`
 
 Purpose: carry bounded capture audio chunks from firmware to bridge for capture
