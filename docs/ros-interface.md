@@ -886,6 +886,11 @@ decoded PCM byte count that must fit firmware RAM. The field is still named
 `pcm` in the current IDL for compatibility; docs, tests, and implementation
 must treat it as format-dependent audio payload for non-PCM formats and must
 keep payload bytes redacted from logs, events, CLI JSON, and MCP responses.
+The ADPCM stream uses a tiny project-local framing: `sequence=0` starts with a
+4 byte header (`int16_le predictor`, `uint8 step_index`, `uint8 reserved=0`)
+followed by IMA nibbles packed low nibble first. Later chunks continue the same
+decoder state. Firmware decodes into the loaded PCM buffer and may ignore one
+final padding nibble only on the `end_of_stream=true` chunk.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 

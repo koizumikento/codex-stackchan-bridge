@@ -581,10 +581,13 @@ Baseline audio path:
   reserve `AudioChunk.format=IMA_ADPCM_4BIT=2` for that path, decode each
   accepted compressed load chunk into the existing bounded loaded PCM buffer,
   keep `total_bytes` as decoded PCM bytes, and reject compressed payloads that
-  would overflow the 32 KiB decoded buffer. Keep G.711 as a possible lower-risk
-  2:1 fallback, and defer Opus/Speex-style speech codecs until a separate
-  dependency, heap, stack, and license review proves they fit the K151 firmware
-  budget.
+  would overflow the 32 KiB decoded buffer. The first ADPCM load chunk carries
+  a 4 byte stream header (`int16_le predictor`, `uint8 step_index`,
+  `uint8 reserved=0`); subsequent chunks continue decoder state, and only the
+  final chunk may contain one padding nibble. Keep G.711 as a possible
+  lower-risk 2:1 fallback, and defer Opus/Speex-style speech codecs until a
+  separate dependency, heap, stack, and license review proves they fit the K151
+  firmware budget.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.

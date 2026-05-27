@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include "stackchan/adpcm.hpp"
 #include "stackchan/audio.hpp"
 
 namespace {
@@ -60,6 +61,64 @@ int main() {
   assert(result.ok);
   assert(!guard.active());
   assert(guard.expected_sequence() == 0);
+
+  {
+    stackchan::ImaAdpcmDecoderState state;
+    const uint8_t payload[] = {0x00, 0x00, 0x00, 0x00, 0x11};
+    uint8_t decoded[6] = {};
+    const stackchan::ImaAdpcmDecodeResult decoded_result =
+        stackchan::decode_ima_adpcm_4bit_payload(
+            payload,
+            sizeof(payload),
+            true,
+            true,
+            sizeof(decoded),
+            decoded,
+            sizeof(decoded),
+            state);
+    assert(decoded_result.result.ok);
+    assert(decoded_result.bytes_written == sizeof(decoded));
+    const uint8_t expected[] = {0x00, 0x00, 0x01, 0x00, 0x02, 0x00};
+    assert(memcmp(decoded, expected, sizeof(expected)) == 0);
+  }
+
+  {
+    stackchan::ImaAdpcmDecoderState state;
+    const uint8_t payload[] = {0x00, 0x00, 0x00, 0x00, 0x01};
+    uint8_t decoded[4] = {};
+    const stackchan::ImaAdpcmDecodeResult decoded_result =
+        stackchan::decode_ima_adpcm_4bit_payload(
+            payload,
+            sizeof(payload),
+            true,
+            true,
+            sizeof(decoded),
+            decoded,
+            sizeof(decoded),
+            state);
+    assert(decoded_result.result.ok);
+    assert(decoded_result.bytes_written == sizeof(decoded));
+    const uint8_t expected[] = {0x00, 0x00, 0x01, 0x00};
+    assert(memcmp(decoded, expected, sizeof(expected)) == 0);
+  }
+
+  {
+    stackchan::ImaAdpcmDecoderState state;
+    const uint8_t invalid_header[] = {0x00, 0x00, 0x59, 0x00};
+    uint8_t decoded[2] = {};
+    const stackchan::ImaAdpcmDecodeResult decoded_result =
+        stackchan::decode_ima_adpcm_4bit_payload(
+            invalid_header,
+            sizeof(invalid_header),
+            true,
+            true,
+            sizeof(decoded),
+            decoded,
+            sizeof(decoded),
+            state);
+    assert(!decoded_result.result.ok);
+    assert(strcmp(decoded_result.result.error_code, "MALFORMED_AUDIO_CHUNK") == 0);
+  }
 
   return 0;
 }

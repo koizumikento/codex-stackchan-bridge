@@ -1880,6 +1880,11 @@ KOIZUMI-112 diagnostic firmware update:
   `playRaw()`. G.711 is kept as a simpler 2:1 fallback, and Opus/Speex are
   deferred until firmware footprint is proven. No audible claim is made until a
   later operator-listening smoke.
+- KOIZUMI-165 adds the firmware-side IMA ADPCM loaded playback decoder and
+  validates it by build only. The PlatformIO helper command timed out while the
+  regenerated micro-ROS build was still running, but the remaining container
+  completed successfully: RAM 276448 / 327680 bytes (84.4%), Flash 903105 /
+  6553600 bytes (13.8%). This is not an upload or audible smoke result.
 
 ## Cleanup
 
