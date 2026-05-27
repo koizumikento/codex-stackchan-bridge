@@ -542,12 +542,21 @@ Baseline audio path:
   `/stackchan/<device_id>/device/audio/playback/load` before playback, store
   payload only in a fixed RAM buffer keyed by `command_id`, return ACK-only
   metadata for each write, and then play the loaded buffer through the existing
-  playback action with the same `command_id`. The K151 prototype buffer is
-  16 KiB, and responses carry only structured result and buffered counters.
+  playback action with the same `command_id`. The K151 bring-up buffer is
+  32 KiB, and responses carry only structured result and buffered counters.
+  For audible-quality TTS checks, loaded playback is preferred over the
+  topic/pull relay because M5Unified can drain the stable loaded PCM buffer
+  without depending on ROS executor timing between 20 ms speaker frames. Keep
+  load-service chunks small on serial transports; larger synchronous service
+  payloads have timed out on the Windows Docker host serial bridge during
+  hardware smoke.
   Firmware must reject overflow, format mismatch, stale command ids,
   concurrent loads, and playback without a complete loaded buffer with
-  structured `Result` errors. The load transaction must not expose PCM bytes or
-  speech text in normal diagnostics.
+  structured `Result` errors. If an incomplete load stops making progress,
+  firmware may allow a fresh `sequence=0` request to reset the stale loaded
+  buffer after the playback inter-chunk timeout so one failed load does not
+  require rebooting the device. The load transaction must not expose PCM bytes
+  or speech text in normal diagnostics.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.
@@ -631,6 +640,9 @@ Loaded playback diagnostics may publish payload-free firmware events named
 declared chunk count, buffered byte/chunk counters, completion flag, and
 structured result code. It must not include PCM bytes, speech text, transcripts,
 provider request bodies, images, NFC tag IDs, IR codes, or protocol dumps.
+Normal successful load chunks should be sampled rather than published for every
+chunk so service response latency does not compete with event output on the
+serial micro-ROS link.
 
 ### Camera
 

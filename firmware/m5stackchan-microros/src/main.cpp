@@ -256,7 +256,7 @@ constexpr unsigned long kAudioPlaybackTerminalStaleSuppressMs = 5000;
 constexpr uint32_t kAudioPlaybackChunkDiagnosticSampleInterval = 16;
 constexpr size_t kAudioPlaybackPendingChunkSlots = 24;
 constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
-constexpr size_t kAudioPlaybackLoadBufferBytes = 16 * 1024;
+constexpr size_t kAudioPlaybackLoadBufferBytes = 32 * 1024;
 constexpr uint8_t kAudioPlaybackSpeakerVolume = 192;
 constexpr uint32_t kAudioPlaybackSpeakerFrameBytes = stackchan::kAudioChunkBytes;
 constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
@@ -529,14 +529,16 @@ bool play_audio_speaker_session_active = false;
 bool play_audio_speaker_queue_full_logged = false;
 PlayAudioPendingChunk play_audio_pending_chunks[kAudioPlaybackPendingChunkSlots]{};
 uint8_t play_audio_pending_chunk_count = 0;
-uint8_t play_audio_loaded_buffer[kAudioPlaybackLoadBufferBytes]{};
+alignas(int16_t) uint8_t play_audio_loaded_buffer[kAudioPlaybackLoadBufferBytes]{};
 char play_audio_loaded_command_id[37] = "";
 uint32_t play_audio_loaded_total_bytes = 0;
 uint32_t play_audio_loaded_total_chunks = 0;
 uint32_t play_audio_loaded_expected_sequence = 0;
 uint32_t play_audio_loaded_play_offset = 0;
+uint32_t play_audio_loaded_last_write_ms = 0;
 bool play_audio_loaded_complete = false;
 bool play_audio_loaded_playing = false;
+uint32_t play_audio_loaded_direct_playback_ms = 0;
 
 void publish_status_heartbeat();
 void finish_play_audio_goal(const stackchan::Result& result, int8_t action_status);
@@ -621,8 +623,10 @@ void reset_play_audio_loaded_buffer() {
   play_audio_loaded_total_chunks = 0;
   play_audio_loaded_expected_sequence = 0;
   play_audio_loaded_play_offset = 0;
+  play_audio_loaded_last_write_ms = 0;
   play_audio_loaded_complete = false;
   play_audio_loaded_playing = false;
+  play_audio_loaded_direct_playback_ms = 0;
 }
 
 int find_play_audio_pending_chunk(uint32_t sequence) {
@@ -708,6 +712,7 @@ void log_play_audio_chunk_diagnostic(
       strcmp(safe_stage, "speaker_frame_queued") == 0 ||
       strcmp(safe_stage, "speaker_partial_frame_queued") == 0 ||
       strcmp(safe_stage, "loaded_playback_started") == 0 ||
+      strcmp(safe_stage, "loaded_playback_queued") == 0 ||
       strcmp(safe_stage, "loaded_playback_drained") == 0 ||
       sequence <= 1 ||
       (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
@@ -826,6 +831,15 @@ void log_play_audio_load_diagnostic(
     uint32_t buffered_chunks,
     bool complete,
     const stackchan::Result& result) {
+  const bool should_log =
+      complete ||
+      !result.ok ||
+      sequence <= 1 ||
+      (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
+       sequence % kAudioPlaybackChunkDiagnosticSampleInterval == 0);
+  if (!should_log) {
+    return;
+  }
   char payload[stackchan::kEventPayloadJsonMaxLength + 1];
   snprintf(
       payload,
@@ -5490,6 +5504,7 @@ void reset_play_audio_speaker_buffers() {
   play_audio_last_speaker_frame_ms = 0;
   play_audio_speaker_frames_queued = 0;
   play_audio_speaker_frames_failed = 0;
+  play_audio_loaded_direct_playback_ms = 0;
 }
 
 stackchan::Result prepare_play_audio_speaker() {
@@ -5579,6 +5594,51 @@ bool queue_play_audio_speaker_frame(
       (play_audio_buffer_index + 1) %
       (sizeof(play_audio_buffers) / sizeof(play_audio_buffers[0]));
   play_audio_buffer_fill_samples = 0;
+  return true;
+}
+
+bool queue_loaded_play_audio_buffer(const char* command_id) {
+  if (play_audio_loaded_total_bytes == 0 ||
+      play_audio_loaded_total_bytes % 2 != 0) {
+    log_play_audio_chunk_diagnostic(
+        "loaded_playback_queue_failed",
+        command_id,
+        play_audio_next_pull_sequence,
+        play_audio_loaded_total_bytes,
+        "MALFORMED_AUDIO_CHUNK");
+    return false;
+  }
+  const size_t sample_count = play_audio_loaded_total_bytes / 2;
+  auto* samples = reinterpret_cast<int16_t*>(play_audio_loaded_buffer);
+  if (!M5.Speaker.playRaw(
+          samples,
+          sample_count,
+          stackchan::kAudioSampleRate,
+          false,
+          1,
+          0,
+          false)) {
+    ++play_audio_speaker_frames_failed;
+    log_play_audio_chunk_diagnostic(
+        "loaded_playback_queue_failed",
+        command_id,
+        play_audio_next_pull_sequence,
+        play_audio_loaded_total_bytes,
+        "AUDIO_UNDERRUN");
+    return false;
+  }
+  play_audio_speaker_frames_queued =
+      (play_audio_loaded_total_bytes + kAudioPlaybackSpeakerFrameBytes - 1) /
+      kAudioPlaybackSpeakerFrameBytes;
+  play_audio_last_speaker_frame_ms = millis();
+  play_audio_loaded_direct_playback_ms =
+      static_cast<uint32_t>((sample_count * 1000ULL) / stackchan::kAudioSampleRate);
+  log_play_audio_chunk_diagnostic(
+      "loaded_playback_queued",
+      command_id,
+      play_audio_next_pull_sequence,
+      play_audio_loaded_total_bytes,
+      "OK");
   return true;
 }
 
@@ -5945,11 +6005,11 @@ void finish_play_audio_goal(const stackchan::Result& result, int8_t action_statu
   play_audio_end_of_stream_seen = false;
   play_audio_chunk_request_pending = false;
   play_audio_buffer_fill_samples = 0;
+  release_play_audio_speaker(!result.ok || M5.Speaker.isPlaying(0) != 0);
   if (play_audio_loaded_playing) {
     reset_play_audio_loaded_buffer();
   }
   reset_play_audio_pending_chunks();
-  release_play_audio_speaker(!result.ok || M5.Speaker.isPlaying(0) != 0);
   audio_playback_guard.finish_session();
 }
 
@@ -6203,10 +6263,12 @@ void maybe_finish_play_audio_session() {
              play_audio_end_of_stream_seen &&
              now_ms - play_audio_last_chunk_ms >= kAudioPlaybackDrainTimeoutMs) {
     const bool speaker_playing = M5.Speaker.isPlaying(0) != 0;
+    const uint32_t speaker_drain_budget_ms =
+        kAudioPlaybackMaxSpeakerDrainMs + play_audio_loaded_direct_playback_ms;
     const bool speaker_drain_timed_out =
         speaker_playing &&
         play_audio_last_speaker_frame_ms != 0 &&
-        now_ms - play_audio_last_speaker_frame_ms >= kAudioPlaybackMaxSpeakerDrainMs;
+        now_ms - play_audio_last_speaker_frame_ms >= speaker_drain_budget_ms;
     if (speaker_drain_timed_out) {
       log_play_audio_chunk_diagnostic(
           "speaker_drain_fallback",
@@ -6288,11 +6350,27 @@ void start_play_audio_goal(
   }
   if (use_loaded_playback) {
     play_audio_loaded_playing = true;
-    play_audio_loaded_play_offset = 0;
+    play_audio_loaded_play_offset = play_audio_loaded_total_bytes;
+    play_audio_received_chunk = true;
+    play_audio_end_of_stream_seen = true;
+    play_audio_last_chunk_ms = millis();
+    play_audio_chunks_seen = play_audio_loaded_total_chunks;
+    play_audio_chunks_accepted = play_audio_loaded_total_chunks;
+    play_audio_next_pull_sequence = play_audio_loaded_total_chunks;
     log_play_audio_chunk_diagnostic(
         "loaded_playback_started",
         command_id,
         0,
+        play_audio_loaded_total_bytes,
+        "OK");
+    if (!queue_loaded_play_audio_buffer(command_id)) {
+      finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+      return;
+    }
+    log_play_audio_chunk_diagnostic(
+        "loaded_playback_drained",
+        command_id,
+        play_audio_next_pull_sequence,
         play_audio_loaded_total_bytes,
         "OK");
   } else if (request.goal.first_chunk_present) {
@@ -6606,6 +6684,14 @@ void handle_audio_playback_chunk_response(const void* response) {
       chunk->pcm.size);
 }
 
+bool play_audio_loaded_session_stale() {
+  return !play_audio_loaded_complete &&
+         !play_audio_loaded_playing &&
+         play_audio_loaded_expected_sequence > 0 &&
+         play_audio_loaded_last_write_ms != 0 &&
+         millis() - play_audio_loaded_last_write_ms >= kAudioPlaybackInterChunkTimeoutMs;
+}
+
 stackchan::Result validate_loaded_audio_request(
     const stackchan_msgs__srv__LoadAudioChunk_Request* request) {
   if (request == nullptr) {
@@ -6651,7 +6737,9 @@ stackchan::Result validate_loaded_audio_request(
         "loaded audio total size exceeds firmware buffer",
         false);
   }
-  if ((play_audio_loaded_expected_sequence == 0 || play_audio_loaded_complete) &&
+  if ((play_audio_loaded_expected_sequence == 0 ||
+       play_audio_loaded_complete ||
+       play_audio_loaded_session_stale()) &&
       request->sequence == 0) {
     return stackchan::Result::accepted("loaded audio session started");
   }
@@ -6708,6 +6796,7 @@ void handle_audio_playback_load_service(const void* request, void* response) {
           load_request->pcm.size);
       play_audio_loaded_total_bytes += load_request->pcm.size;
       play_audio_loaded_expected_sequence = load_request->sequence + 1;
+      play_audio_loaded_last_write_ms = millis();
       play_audio_loaded_complete = load_request->end_of_stream;
       if (play_audio_loaded_complete &&
           (play_audio_loaded_total_bytes != load_request->total_bytes ||

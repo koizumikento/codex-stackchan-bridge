@@ -644,8 +644,9 @@ bridge-owned TTS currently defaults to a `64` byte first-goal payload and
 160 byte topic/pull transport chunks, then firmware aggregates accepted PCM
 back into 20 ms speaker frames. The loaded playback transaction has a separate
 `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES` knob and defaults to 64 byte
-service requests because K151 serial validation showed that 96 and 160 byte
-`LoadAudioChunk` requests can time out before firmware callback response.
+service requests because K151 serial validation showed that larger synchronous
+`LoadAudioChunk` requests, including 640 byte requests, can time out before
+firmware callback response.
 The TTS path can be forced back to pull-only diagnostics with
 `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`, but that is not the recommended speech
 path on serial hardware because larger service responses may time out and tiny

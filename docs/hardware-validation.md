@@ -113,8 +113,8 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.0'
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='512'
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='20.0'
-  $env:STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES='64'
-  $env:STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES='640'
+  $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES='64'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
   ```
 
@@ -122,7 +122,11 @@ hardware bring-up issue complete.
   `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`, and
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. Also record whether the operator
   heard the speaker output; `tts_finished` alone is not an audible-playback
-  pass.
+  pass. For audible-quality checks, prefer loaded playback
+  (`STACKCHAN_TTS_LOADED_PLAYBACK=1`) so firmware can pass a stable loaded PCM
+  buffer to M5Unified. Keep load chunks small on the COM3 host serial TCP
+  bridge; 640 byte synchronous load requests have timed out even when the total
+  prompt fit in the device buffer.
 
   Before running a full TTS smoke, isolate the firmware loaded-playback service
   without a provider request or bridge TTS path:
@@ -1842,6 +1846,25 @@ KOIZUMI-112 diagnostic firmware update:
   and smoke checks around 133 s. These are ROS transport completion results;
   operator-listening audible quality, volume, and intelligibility still need a
   separate confirmation before claiming natural speech behavior.
+- Operator-listening confirmed the topic-first longer-prompt path produced
+  sound but was too broken up to recognize as speech. Treat the ACK/window
+  topic-first path as transport bring-up, not audible-quality proof. A loaded
+  playback comparison with 640 byte load-service chunks timed out on the first
+  request even though the total PCM size fit the firmware buffer. Re-running
+  with 64 byte load chunks completed a short loaded TTS smoke and showed
+  `audio_playback_load`, `loaded_playback_started`, `loaded_playback_queued`,
+  `loaded_playback_drained`, `tts_finished`, and terminal action result events.
+  Firmware now queues the already-loaded PCM buffer directly into M5Unified
+  rather than feeding 20 ms frames from the ROS loop, expands the fixed loaded
+  buffer to 32 KiB, and keeps the loaded PCM alive until speaker release.
+  Reducing normal per-load-chunk firmware diagnostics to sampled events reduced
+  event volume but did not materially improve service round-trip latency on the
+  host serial TCP bridge: 64 byte load chunks still took roughly 1.3-2.0 s each.
+  A 128 byte loaded TTS smoke timed out after the first chunk took roughly 32 s,
+  so 64 byte chunks remain the only observed reliable setting on this setup.
+  Firmware now permits a new `sequence=0` loaded transaction to reset a stale
+  incomplete load after the inter-chunk timeout, avoiding a reboot after a
+  failed load-size experiment.
 
 ## Cleanup
 

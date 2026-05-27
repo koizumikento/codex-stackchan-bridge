@@ -807,7 +807,7 @@ The proposed experimental transaction is:
 5. After the final chunk is acknowledged, the bridge starts
    `/stackchan/<device_id>/device/audio/play` with a `format`, sample rate,
    channel count, and the same `command_id`, but no streaming chunks. Firmware
-   then drains its loaded buffer into M5Unified speaker frames.
+   then passes the stable loaded buffer directly to M5Unified playback.
 
 This is a local maintenance-grade transport experiment for speech reliability,
 not a new public raw-audio command surface. `stackchanctl say` and
@@ -850,12 +850,19 @@ Rules:
 - `sequence` must be monotonic and contiguous from 0. Firmware rejects gaps
   rather than buffering out-of-order load writes.
 - `total_bytes` must fit the firmware-owned bounded RAM buffer. The K151
-  prototype currently reserves 16 KiB, enough for current short Japanese TTS
-  smokes but not a general audio-file transfer.
+  bring-up profile currently reserves 32 KiB, enough for short local TTS
+  prompts but not a general audio-file transfer.
 - `format=PCM_S16LE`, `sample_rate=16000`, and `channels=1` are required.
 - `pcm` is bounded by the same `uint8[<=1280]` IDL limit as `AudioChunk`.
+  On the current serial micro-ROS path, bridge load chunks should stay much
+  smaller than that limit; 640 byte synchronous service requests timed out
+  during K151 host-serial validation.
 - `end_of_stream=true` marks the final chunk. The bridge may start
   `/stackchan/<device_id>/device/audio/play` only after `complete=true`.
+- If an incomplete load transaction stalls, firmware may accept a new
+  `sequence=0` request after its playback inter-chunk timeout and reset the
+  stale loaded buffer. This recovery path is for failed local transfers; it does
+  not make concurrent loaded playback sessions valid.
 - Responses carry counters and structured `Result` only; they must not echo PCM.
 - Firmware plays a complete loaded buffer only when the playback action uses the
   same `command_id` and no first-goal chunk. Normal topic/pull playback remains
@@ -1347,6 +1354,14 @@ over the service. If future chunks are already buffered and the next expected
 sequence is missing, firmware may request that missing sequence immediately.
 The pull helper is used when expected-sequence progress goes idle or when the
 device needs a small end-of-stream confirmation.
+For local TTS audible-quality checks, the bridge should prefer the firmware
+load service before playback when the synthesized PCM fits the bounded device
+buffer. The topic/pull relay remains useful for transport bring-up and short
+diagnostics, but loaded playback lets firmware pass one stable PCM buffer to
+M5Unified instead of relying on ROS executor timing between speaker frames.
+Serial load-service chunks should stay small enough for the current
+micro-ROS/host-serial bridge; larger synchronous PCM service payloads may time
+out even when the total loaded buffer would fit.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout, 35
 seconds by default in the bridge, large enough for goal acceptance, firmware
