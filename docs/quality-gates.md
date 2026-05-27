@@ -11,6 +11,9 @@ This document defines the quality gates for this repository. These gates are int
 - Safety behavior must be validated at the firmware boundary, not only in the CLI.
 - JSON output and structured errors are part of the public contract.
 - MCP stdio adapters must keep JSON-RPC on `stdout` and logs on `stderr`.
+- Media completion and audible quality are different gates. `tts_finished`,
+  action completion, and firmware drain events prove transport/software
+  completion; they do not prove that speech was intelligible to an operator.
 
 ## Required Gates By Area
 
@@ -133,9 +136,15 @@ Required for bridge event changes:
   assumption, overrun/underrun mapping, same-direction `FIRMWARE_BUSY`, and
   bounded queue behavior.
 - TTS routing tests cover local provider selection, VOICEVOX adapter error
-  mapping, 16 kHz mono PCM normalization, voice profile config, event
-  redaction, and forwarding synthesized audio through the same playback relay
-  used by `/stackchan/<device_id>/cmd/audio/play`.
+  mapping, 16 kHz mono PCM normalization, voice profile config, balanced
+  default tuning, event redaction, and forwarding synthesized audio through the
+  documented loaded playback path. The default serial TTS payload path must not
+  depend on per-chunk service ACK responses; use bounded topic payloads plus a
+  transaction-level firmware load-complete observation and the playback action
+  result.
+- Smoke helper tests preserve early readiness observations such as
+  `firmware_ready` across paginated event queries, especially for long media
+  smokes where later event pages may no longer contain startup events.
 - Camera routing tests cover metadata-only command results, oversize discard,
   timeout/failure propagation, and no image bytes in public observations.
 - `perform` remains reserved unless implemented; if implemented, bridge tests

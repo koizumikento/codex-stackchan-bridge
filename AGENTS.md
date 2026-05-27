@@ -62,6 +62,15 @@ Development assistant surfaces:
   not vendor TTS engines or voice libraries into this repository without a
   documented license and distribution decision. Refer to voices by bridge-owned
   profile names, not provider-specific raw IDs, in Codex-facing commands.
+- For default local TTS over serial hardware, audio payload bytes should use
+  the documented loaded playback topic transaction, then one firmware
+  `audio_playback_load` completion observation and the normal playback action
+  result. Do not reintroduce per-chunk application service ACKs as the default
+  TTS payload path.
+- Treat `tts_finished`, bridge action completion, and loaded-playback drain as
+  transport/software evidence only. Audible quality, intelligibility, volume,
+  and naturalness require an explicit operator-listening result before marking
+  audible-quality work done.
 - Speech text, PCM audio, image payloads, NFC tag IDs, IR/raw remote codes, secrets, and similar sensitive payloads must be redacted from normal logs and avoided in public events unless the relevant contract explicitly allows bounded, local exposure.
 - The repository license is MIT.
 
@@ -84,6 +93,10 @@ Development assistant surfaces:
 - During micro-ROS Agent bring-up, prefer same-container Agent, bridge, and
   smoke checks before blaming firmware. Docker Desktop can expose the ROS graph
   while still dropping cross-container DDS samples.
+- For smoke harnesses, preserve early readiness observations such as
+  `firmware_ready` across the whole run. Do not fail a successful media smoke
+  just because a later paginated event query no longer includes an early
+  readiness event.
 - Docker compose may be used as an optional helper for local services such as
   VOICEVOX, but it must not replace the documented Python Docker helpers unless
   the repository deliberately changes its bring-up workflow. Keep Windows host

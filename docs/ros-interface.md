@@ -793,7 +793,7 @@ Rules:
   sequence, and payload size before playback. The service is a transport
   helper, not a raw speaker control.
 
-### Experimental loaded playback transaction
+### Loaded playback transaction
 
 K151 hardware smokes originally showed that the topic-plus-pull playback relay
 could complete very short prompts, but could not carry TTS-sized PCM reliably:
@@ -801,34 +801,36 @@ minimal TTS `あ` produced 21 x 160 byte transport chunks and failed near
 sequence 3, while `こんにちは` produced 56 chunks and failed before completion.
 The ACK/window transport later completed minimal local TTS with smaller 64-byte
 chunks, but still has high latency and residual duplicate/orphan chunk cleanup.
-The next speech transport must therefore continue avoiding synchronous
-audio-bearing service responses on the real-time speaker path.
+The standard speech transport therefore avoids synchronous audio-bearing
+service responses on the real-time speaker path.
 
-The proposed experimental transaction is:
+The standard loaded playback transaction for bridge-owned local TTS is:
 
 1. The bridge allocates a local `command_id` and synthesizes or decodes bounded
    PCM locally.
-2. The bridge writes audio to firmware before playback using the firmware-owned,
-   device-scoped `/stackchan/<device_id>/device/audio/playback/load` service.
-3. Each write carries `CommandMeta`, format, sample rate, channel count,
-   total length or chunk count, monotonic `sequence`, and a bounded payload.
-   Firmware returns only a structured `Result`, accepted sequence, and buffered
-   byte/chunk counters; firmware responses must not carry PCM.
+2. The bridge sends audio to firmware before playback using bounded
+   `/stackchan/<device_id>/device/audio/playback/chunks` messages with loaded
+   payload metadata. The older
+   `/stackchan/<device_id>/device/audio/playback/load` service remains a
+   diagnostic fallback only.
+3. Each loaded topic chunk carries format, sample rate, channel count, decoded
+   total byte count, total chunk count, monotonic `sequence`, and a bounded
+   payload. Firmware responses must not carry PCM.
 4. Firmware stores the payload in a bounded per-device playback buffer keyed by
    `command_id`. It rejects overflow, format mismatch, duplicate active loads,
    out-of-order writes, and stale command IDs with structured errors.
-5. After the final chunk is acknowledged, the bridge starts
-   `/stackchan/<device_id>/device/audio/play` with a `format`, sample rate,
-   channel count, and the same `command_id`, but no streaming chunks. Firmware
-   then passes the stable loaded buffer directly to M5Unified playback.
+5. After firmware emits the matching transaction-level `audio_playback_load`
+   completion event, the bridge starts
+   `/stackchan/<device_id>/device/audio/play` with the same `command_id`, but no
+   streaming chunks. Firmware then passes the stable loaded buffer directly to
+   M5Unified playback.
 
-This is a local maintenance-grade transport experiment for speech reliability,
-not a new public raw-audio command surface. `stackchanctl say` and
-`stackchanctl audio play` remain the user-facing commands. The load path must
-stay device-scoped, bounded, redacted in normal logs, and covered by mock,
-bridge, firmware, and hardware-smoke validation before it replaces the current
-topic-first relay. The current topic-first relay remains the validated path for
-the 20 ms short prompt.
+This is the standard local speech reliability path, not a new public raw-audio
+command surface. `stackchanctl say` and `stackchanctl audio play` remain the
+user-facing commands. The load path must stay device-scoped, bounded, redacted
+in normal logs, and covered by mock, bridge, firmware, and hardware-smoke
+validation. The topic-first relay and synchronous load service remain
+diagnostic paths, not the default TTS payload path.
 
 ### `/stackchan/<device_id>/device/audio/playback/load`
 

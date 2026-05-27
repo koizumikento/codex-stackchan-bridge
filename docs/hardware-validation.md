@@ -139,6 +139,9 @@ hardware bring-up issue complete.
   PCM loaded-transfer diagnostics should still keep
   `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES=64` unless the target has been
   revalidated with larger synchronous requests.
+  The smoke harness should preserve startup events such as `firmware_ready`
+  across the whole run; a later event page may no longer include early readiness
+  events after a long TTS check.
 
   Before running a full TTS smoke, isolate the firmware loaded-playback service
   without a provider request or bridge TTS path:
