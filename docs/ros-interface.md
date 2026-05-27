@@ -1316,11 +1316,12 @@ the 20 ms baseline before handing them to the speaker task.
 When chunks arrive through the serial micro-ROS topic path, firmware may hold a
 small fixed in-RAM jitter buffer for future sequences and process them only
 after the missing expected sequence arrives. Duplicate future chunks are ignored
-inside that bounded window. The K151 bring-up buffer can hold 24 future chunks
-up to the firmware audio chunk maximum, while the bridge currently uses 160
-byte transport chunks and firmware re-aggregates accepted PCM into 20 ms
-`playRaw()` speaker frames. Larger future chunks may be rejected to keep device
-RAM bounded. A missing expected sequence that stops progressing past
+inside that bounded window. The standard K151 build keeps 8 future-chunk slots
+for this diagnostic relay because loaded playback is the preferred audible TTS
+path. A firmware build may enable an extended 24-slot topic relay buffer for
+transport diagnostics, but that spends roughly 10 KiB more static RAM and
+should not be the default speech path. Larger future chunks may be rejected to
+keep device RAM bounded. A missing expected sequence that stops progressing past
 the firmware gap timeout remains `AUDIO_UNDERRUN`; the jitter buffer is only an
 ordering cushion, not a reliable retransmission contract.
 The bridge may mark the pull stream end-of-stream after the CLI-origin chunk

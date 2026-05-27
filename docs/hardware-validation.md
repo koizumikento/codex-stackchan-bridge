@@ -1865,6 +1865,15 @@ KOIZUMI-112 diagnostic firmware update:
   Firmware now permits a new `sequence=0` loaded transaction to reset a stale
   incomplete load after the inter-chunk timeout, avoiding a reboot after a
   failed load-size experiment.
+- KOIZUMI-161 follow-up reduces standard-build static RAM pressure by treating
+  loaded playback as the default speech path and shrinking the diagnostic
+  topic/pull future-chunk jitter buffer from the earlier 24-slot bring-up
+  setting to 8 slots. Define
+  `STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER=1` only when intentionally
+  reproducing old topic relay diagnostics and accepting roughly 10 KiB more
+  static RAM use. The standard PlatformIO build passed with RAM at 276440 /
+  327680 bytes (84.4%). This change is build/contract validation only until
+  another operator-listening smoke can confirm the audible result.
 
 ## Cleanup
 

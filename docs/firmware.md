@@ -557,6 +557,23 @@ Baseline audio path:
   buffer after the playback inter-chunk timeout so one failed load does not
   require rebooting the device. The load transaction must not expose PCM bytes
   or speech text in normal diagnostics.
+- K151 audio playback RAM should be treated as a scarce firmware resource. The
+  current static playback allocations are approximately:
+
+  | Allocation | Standard size | Purpose |
+  | --- | ---: | --- |
+  | Loaded playback buffer | 32 KiB | Stable PCM buffer for local TTS playback |
+  | Topic/pull future-chunk jitter buffer | about 5 KiB | Diagnostic topic relay lookahead, 8 x 640 byte PCM slots plus metadata |
+  | Speaker runtime frame buffers | about 5 KiB | Rotating `playRaw()` buffers held while M5Unified drains queued frames |
+  | ROS audio request/response PCM sequences | several 1280 byte sequences | Bounded micro-ROS message/service storage |
+
+  The standard build keeps only 8 topic/pull future-chunk slots because loaded
+  playback is the preferred audible TTS path. A bring-up build may define
+  `STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER=1` to restore the older 24-slot
+  topic relay buffer for transport diagnostics, at the cost of roughly 10 KiB
+  more static RAM. Increasing the loaded playback buffer above 32 KiB overflowed
+  DRAM during K151 validation; reducing transfer size through compression or a
+  different transport is preferred over growing firmware RAM buffers.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.

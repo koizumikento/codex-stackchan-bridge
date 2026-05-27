@@ -611,6 +611,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kAudioPlaybackNoChunkTimeoutMs = 6000", main)
         self.assertIn("kAudioPlaybackMaxSpeakerDrainMs", main)
         self.assertIn("kAudioPlaybackPendingGapTimeoutMs = 5000", main)
+        self.assertIn("STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER", main)
+        self.assertIn("kAudioPlaybackPendingChunkSlots = 8", main)
         self.assertIn("kAudioPlaybackPendingChunkSlots = 24", main)
         self.assertIn("kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes", main)
         self.assertIn("play_audio_free_pending_chunk_slots", main)

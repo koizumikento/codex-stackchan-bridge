@@ -254,7 +254,14 @@ constexpr unsigned long kAudioPlaybackAckPublishIntervalMs = 50;
 constexpr unsigned long kAudioPlaybackPendingGapTimeoutMs = 5000;
 constexpr unsigned long kAudioPlaybackTerminalStaleSuppressMs = 5000;
 constexpr uint32_t kAudioPlaybackChunkDiagnosticSampleInterval = 16;
+#ifndef STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER
+#define STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER 0
+#endif
+#if STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER
 constexpr size_t kAudioPlaybackPendingChunkSlots = 24;
+#else
+constexpr size_t kAudioPlaybackPendingChunkSlots = 8;
+#endif
 constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
 constexpr size_t kAudioPlaybackLoadBufferBytes = 32 * 1024;
 constexpr uint8_t kAudioPlaybackSpeakerVolume = 192;
