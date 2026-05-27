@@ -29,6 +29,7 @@ from stackchan_bridge.ros_node import (
     _audio_playback_pull_lookahead_chunks,
     _audio_playback_ack_first_chunk_retry_count,
     _audio_playback_topic_initial_window_chunks,
+    _loaded_audio_transfer_candidates,
     _next_audio_chunk_transport_control,
     _records_after_event_id,
     _sequence_for_event_id,
@@ -44,6 +45,7 @@ from stackchan_bridge.ros_node import (
 from stackchan_bridge.models import CapabilitySnapshot, Result, StatusSnapshot
 from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
 from stackchan_bridge.telemetry import HeadPoseSnapshot, PowerStatusSnapshot
+from stackchan_bridge.tts_provider import AUDIO_CHUNK_FORMAT_ID, TtsAudio
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +67,27 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertEqual(buffered, 2)
         self.assertEqual(retry_buffered, 2)
         self.assertEqual([chunk.sequence for chunk in queue], [5, 6])
+
+    def test_loaded_audio_transfer_candidates_prefers_adpcm_then_pcm(self) -> None:
+        with mock.patch.dict(os.environ, {"STACKCHAN_TTS_LOADED_ADPCM": "1"}):
+            candidates = _loaded_audio_transfer_candidates(TtsAudio(pcm=b"\x00\x00\x01\x00"))
+
+        self.assertEqual([candidate.encoding for candidate in candidates], [
+            "ima_adpcm_4bit",
+            "pcm_s16le",
+        ])
+        self.assertEqual(candidates[0].format_id, 2)
+        self.assertEqual(candidates[0].payload, b"\x00\x00\x00\x00\x01")
+        self.assertEqual(candidates[0].decoded_bytes, 4)
+        self.assertEqual(candidates[1].format_id, AUDIO_CHUNK_FORMAT_ID)
+        self.assertEqual(candidates[1].payload, b"\x00\x00\x01\x00")
+
+    def test_loaded_audio_transfer_candidates_can_disable_adpcm(self) -> None:
+        with mock.patch.dict(os.environ, {"STACKCHAN_TTS_LOADED_ADPCM": "0"}):
+            candidates = _loaded_audio_transfer_candidates(TtsAudio(pcm=b"\x00\x00\x01\x00"))
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].encoding, "pcm_s16le")
 
     def test_select_playback_chunk_for_pull_discards_acknowledged_sequences(self) -> None:
         queue = [
@@ -601,6 +624,11 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY",
             "STACKCHAN_TTS_LOADED_PLAYBACK",
+            "STACKCHAN_TTS_LOADED_ADPCM",
+            "AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT",
+            "encode_ima_adpcm_4bit",
+            "_loaded_audio_transfer_candidates",
+            "audio playback compressed load unsupported; falling back to PCM",
             "_audio_playback_load_chunk_bytes",
             "_audio_playback_pull_service_fallback_after_nacks",
             "_audio_playback_topic_initial_window_chunks",

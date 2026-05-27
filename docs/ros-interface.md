@@ -890,7 +890,10 @@ The ADPCM stream uses a tiny project-local framing: `sequence=0` starts with a
 4 byte header (`int16_le predictor`, `uint8 step_index`, `uint8 reserved=0`)
 followed by IMA nibbles packed low nibble first. Later chunks continue the same
 decoder state. Firmware decodes into the loaded PCM buffer and may ignore one
-final padding nibble only on the `end_of_stream=true` chunk.
+final padding nibble only on the `end_of_stream=true` chunk. Bridge-owned TTS
+uses this compressed loaded path by default when loaded playback is enabled,
+and falls back to `PCM_S16LE` loaded writes if firmware returns
+`UNSUPPORTED_FEATURE` for the compressed format.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
