@@ -8,9 +8,15 @@ from unittest import mock
 
 from stackchan_bridge.event_buffer import EventRecord
 from stackchan_bridge.ros_node import (
+    AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT,
+    AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS,
     AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV,
     AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV,
+    AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
     _coerce_telemetry_device_id,
@@ -28,6 +34,11 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_stackchan_status,
     _audio_playback_pull_lookahead_chunks,
     _audio_playback_ack_first_chunk_retry_count,
+    _audio_playback_loaded_topic_complete_timeout_sec,
+    _audio_playback_loaded_topic_publish_interval_sec,
+    _audio_playback_loaded_topic_settle_sec,
+    _audio_playback_load_chunk_bytes,
+    _audio_playback_load_chunk_bytes_for_format,
     _audio_playback_topic_initial_window_chunks,
     _loaded_audio_transfer_candidates,
     _next_audio_chunk_transport_control,
@@ -179,6 +190,82 @@ class RosNodeHelperTests(unittest.TestCase):
             {AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV: "99"},
         ):
             self.assertEqual(_audio_playback_ack_first_chunk_retry_count(), 3)
+
+    def test_audio_playback_loaded_topic_settle_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV: "0.25"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_settle_sec(), 0.25)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_settle_sec(), 2.0)
+
+    def test_audio_playback_loaded_topic_publish_interval_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.25)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV: "0.01"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.01)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.25)
+
+    def test_audio_playback_loaded_topic_complete_timeout_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV: "12"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 12.0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 60.0)
+
+    def test_audio_playback_load_chunk_defaults_keep_pcm_small_and_adpcm_validated(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_load_chunk_bytes(), 64)
+            self.assertEqual(
+                _audio_playback_load_chunk_bytes_for_format(AUDIO_CHUNK_FORMAT_ID),
+                64,
+            )
+            self.assertEqual(
+                _audio_playback_load_chunk_bytes_for_format(
+                    AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT
+                ),
+                96,
+            )
+
+    def test_audio_playback_load_chunk_envs_are_bounded_for_loaded_service(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV: "2049"},
+            clear=True,
+        ):
+            self.assertEqual(_audio_playback_load_chunk_bytes(), 1280)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_ENV: "7"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _audio_playback_load_chunk_bytes_for_format(
+                    AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT
+                ),
+                6,
+            )
 
     def test_next_audio_chunk_transport_control_uses_ack_and_missing_sequence(self) -> None:
         request = SimpleNamespace(
@@ -612,6 +699,9 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC",
             "AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT = 2",
             "STACKCHAN_AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
             "_publish_device_audio_chunk_with_retries",
             "_republish_device_audio_chunk_for_pull",
             "_select_playback_chunks_for_topic_window",
@@ -619,22 +709,31 @@ class RosNodeHelperTests(unittest.TestCase):
             "AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64",
             "AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160",
             "AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64",
+            "AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 96",
+            "AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280",
             "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES",
+            "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY",
             "STACKCHAN_TTS_LOADED_PLAYBACK",
             "STACKCHAN_TTS_LOADED_ADPCM",
+            "STACKCHAN_TTS_LOADED_TRANSPORT",
             "AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT",
             "encode_ima_adpcm_4bit",
             "_loaded_audio_transfer_candidates",
+            "_publish_loaded_audio_playback",
             "audio playback compressed load unsupported; falling back to PCM",
             "_audio_playback_load_chunk_bytes",
+            "_audio_playback_load_chunk_bytes_for_format",
             "_audio_playback_pull_service_fallback_after_nacks",
             "_audio_playback_topic_initial_window_chunks",
             "_audio_playback_pull_lookahead_chunks",
             "_audio_playback_ack_republish_min_interval_sec",
             "_audio_playback_ack_first_chunk_retry_count",
+            "_audio_playback_loaded_topic_settle_sec",
+            "_audio_playback_loaded_topic_publish_interval_sec",
+            "_audio_playback_loaded_topic_complete_timeout_sec",
             "_audio_playback_pull_only",
             "_audio_playback_loaded_tts",
             "_wait_for_device_audio_playback_subscription",

@@ -627,14 +627,18 @@ buffer lifetime required by the device library.
 For longer speech, KOIZUMI-146 tracks an experimental loaded-playback
 transaction because hardware smokes show that real-time topic/service retries
 do not deliver TTS-sized PCM in order. In that design, `stackchanctl say` still
-uses the bridge backend, but the bridge first writes bounded local PCM into a
+uses the bridge backend, but the bridge first writes bounded local audio into a
 firmware-owned, device-scoped playback buffer through
-`/stackchan/<device_id>/device/audio/playback/load` with ACK-only responses,
-then starts the normal firmware playback action for the same `command_id`. The
-bridge uses this path for TTS by default when the firmware load service is
-available; set `STACKCHAN_TTS_LOADED_PLAYBACK=0` to force the older topic-first
-relay for diagnostics. This load path must not expose PCM, speech text, or raw
-audio bytes in normal CLI output or MCP responses.
+`/stackchan/<device_id>/device/audio/playback/chunks`, then starts the normal
+firmware playback action for the same `command_id`. The loaded topic payload
+uses `total_chunks`, decoded `total_bytes`, and final `end_of_stream=true`
+metadata; it does not wait for a service response per chunk. The bridge uses
+this path for TTS by default when loaded playback is enabled. Set
+`STACKCHAN_TTS_LOADED_PLAYBACK=0` to force the older topic-first relay for
+diagnostics, or `STACKCHAN_TTS_LOADED_TRANSPORT=service` to use the older
+`/stackchan/<device_id>/device/audio/playback/load` service fallback. This load
+path must not expose PCM, speech text, or raw audio bytes in normal CLI output
+or MCP responses.
 For KOIZUMI-111 diagnostics, developers can set
 `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES` to a bounded byte count such as
 `64` to move the first playback segment into the action goal. Developers can
@@ -643,13 +647,32 @@ also set `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES` to an even byte count such as
 bridge-owned TTS currently defaults to a `64` byte first-goal payload and
 160 byte topic/pull transport chunks, then firmware aggregates accepted PCM
 back into 20 ms speaker frames. The loaded playback transaction has a separate
-`STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES` knob and defaults to 64 byte
-service requests because K151 serial validation showed that larger synchronous
-`LoadAudioChunk` requests, including 640 byte requests, can time out before
-firmware callback response. For loaded TTS, the bridge defaults to
+`STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES` knob and keeps PCM fallback
+requests at 64 bytes by default when the service fallback is selected because
+K151 serial validation showed that larger synchronous PCM `LoadAudioChunk`
+requests, including 640 byte requests, can time out before firmware callback
+response. For loaded TTS, the bridge defaults to
 `STACKCHAN_TTS_LOADED_ADPCM=1`, which sends `IMA_ADPCM_4BIT` payloads with
-decoded PCM byte counts and falls back to PCM if firmware reports
-`UNSUPPORTED_FEATURE`; set it to `0` to force PCM loaded-transfer diagnostics.
+decoded PCM byte counts; set it to `0` to force PCM loaded-transfer
+diagnostics.
+ADPCM loaded TTS also has a separate
+`STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES` diagnostic knob. It currently
+defaults to 96 byte payload chunks because COM3 host-serial validation
+completed short loaded ADPCM TTS at 96 bytes while 128, 256, and 512 byte
+compressed service-load requests timed out before the first firmware callback
+response. `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC` controls the
+small post-publish delay before the playback action goal; it defaults to 0.15 s
+and is a local serial bring-up guard, not a media ACK.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC` controls the small
+inter-chunk pacing for the topic payload path; it defaults to 0.25 s because
+COM3 host-serial validation dropped or reordered loaded chunks when the bridge
+published every 0.005 s. Values above 0.25 s are bounded to 0.25 s. This pacing
+does not wait for per-chunk responses; it only leaves room for bounded ROS and
+micro-ROS serial queues.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
+the bridge waits for the firmware's final `audio_playback_load` completion
+event before starting the playback action; it defaults to 20 s. This is a
+single transaction-level readiness check, not per-chunk ACK.
 The TTS path can be forced back to pull-only diagnostics with
 `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`, but that is not the recommended speech
 path on serial hardware because larger service responses may time out and tiny
@@ -925,7 +948,12 @@ Audio bring-up diagnostics may also use:
 - `STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES`
 - `STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES`
 - `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES`
+- `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY`
+- `STACKCHAN_TTS_LOADED_TRANSPORT`
 
 ## Mock backend
 

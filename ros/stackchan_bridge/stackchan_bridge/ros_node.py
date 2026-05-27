@@ -62,9 +62,15 @@ AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT = 2
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
+AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 96
+AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
+AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
+AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.25
+AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
 AUDIO_PLAYBACK_FIRST_GOAL_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES"
 AUDIO_PLAYBACK_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES"
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES"
+AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_ENV = "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES"
 AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_PULL_SERVICE_FALLBACK_AFTER_NACKS"
 )
@@ -81,6 +87,16 @@ AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV = (
 AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 AUDIO_PLAYBACK_LOADED_ADPCM_ENV = "STACKCHAN_TTS_LOADED_ADPCM"
+AUDIO_PLAYBACK_LOADED_TRANSPORT_ENV = "STACKCHAN_TTS_LOADED_TRANSPORT"
+AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC"
+)
+AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC"
+)
+AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC"
+)
 
 
 def _audio_playback_chunk_bytes() -> int:
@@ -97,15 +113,38 @@ def _audio_playback_load_chunk_bytes() -> int:
     return _bounded_even_audio_chunk_bytes(
         raw_value,
         AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT,
+        maximum=AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX,
     )
 
 
-def _bounded_even_audio_chunk_bytes(raw_value: str, default: int) -> int:
+def _audio_playback_adpcm_load_chunk_bytes() -> int:
+    raw_value = os.environ.get(AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_ENV)
+    if raw_value is None:
+        return AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT
+    return _bounded_even_audio_chunk_bytes(
+        raw_value,
+        AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT,
+        maximum=AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX,
+    )
+
+
+def _audio_playback_load_chunk_bytes_for_format(format_id: int) -> int:
+    if format_id == AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT:
+        return max(4, _audio_playback_adpcm_load_chunk_bytes())
+    return _audio_playback_load_chunk_bytes()
+
+
+def _bounded_even_audio_chunk_bytes(
+    raw_value: str,
+    default: int,
+    *,
+    maximum: int = AUDIO_CHUNK_BYTES,
+) -> int:
     try:
         value = int(raw_value)
     except ValueError:
         return default
-    value = min(max(value, 2), AUDIO_CHUNK_BYTES)
+    value = min(max(value, 2), maximum)
     if value % 2:
         value -= 1
     return max(value, 2)
@@ -187,6 +226,13 @@ def _audio_playback_loaded_adpcm() -> bool:
     }
 
 
+def _audio_playback_loaded_transport() -> str:
+    value = os.environ.get(AUDIO_PLAYBACK_LOADED_TRANSPORT_ENV, "topic").strip().lower()
+    if value in {"service", "svc", "load_service"}:
+        return "service"
+    return "topic"
+
+
 def _loaded_audio_transfer_candidates(audio: TtsAudio) -> tuple[EncodedAudioPayload, ...]:
     pcm_payload = EncodedAudioPayload(
         payload=audio.pcm,
@@ -241,6 +287,45 @@ def _audio_playback_ack_republish_min_interval_sec() -> float:
             0.0,
         ),
         2.0,
+    )
+
+
+def _audio_playback_loaded_topic_settle_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC,
+            ),
+            0.0,
+        ),
+        2.0,
+    )
+
+
+def _audio_playback_loaded_topic_publish_interval_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC,
+            ),
+            0.0,
+        ),
+        0.25,
+    )
+
+
+def _audio_playback_loaded_topic_complete_timeout_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC,
+            ),
+            0.0,
+        ),
+        60.0,
     )
 
 
@@ -1954,9 +2039,16 @@ def main(args: list[str] | None = None) -> None:
             target.command_id = getattr(source, "command_id", "")
             target.direction = int(getattr(source, "direction", 0))
             target.sequence = int(getattr(source, "sequence", 0))
+            _set_optional_field(target, "total_chunks", int(getattr(source, "total_chunks", 0)))
+            _set_optional_field(target, "total_bytes", int(getattr(source, "total_bytes", 0)))
             target.format = int(getattr(source, "format", 0))
             target.sample_rate = int(getattr(source, "sample_rate", 0))
             target.channels = int(getattr(source, "channels", 0))
+            _set_optional_field(
+                target,
+                "end_of_stream",
+                bool(getattr(source, "end_of_stream", False)),
+            )
             target.pcm = bytes(getattr(source, "pcm", b""))
 
         def _buffer_synthesized_playback_chunks(
@@ -1987,9 +2079,12 @@ def main(args: list[str] | None = None) -> None:
                 message.command_id = meta.command_id
                 message.direction = AUDIO_PLAYBACK_DIRECTION
                 message.sequence = sequence
+                _set_optional_field(message, "total_chunks", 0)
+                _set_optional_field(message, "total_bytes", 0)
                 message.format = AUDIO_CHUNK_FORMAT_ID
                 message.sample_rate = audio.sample_rate
                 message.channels = audio.channels
+                _set_optional_field(message, "end_of_stream", False)
                 message.pcm = audio.pcm[start : start + chunk_bytes]
                 self._handle_cmd_audio_chunk(device_id, message)
 
@@ -2043,6 +2138,12 @@ def main(args: list[str] | None = None) -> None:
             ros_meta: object,
             audio: TtsAudio,
         ) -> Result | None:
+            if _audio_playback_loaded_transport() == "topic":
+                return self._publish_loaded_audio_playback(
+                    device_id,
+                    meta,
+                    audio,
+                )
             client = self._device_audio_load_clients.get(device_id)
             if client is None or not client.wait_for_service(timeout_sec=0.1):
                 self.get_logger().info(
@@ -2074,6 +2175,101 @@ def main(args: list[str] | None = None) -> None:
                 recoverable=True,
             )
 
+        def _publish_loaded_audio_playback(
+            self,
+            device_id: str,
+            meta: CommandMeta,
+            audio: TtsAudio,
+        ) -> Result:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            if publisher is None:
+                return _make_transport_result(
+                    f"firmware audio playback chunk topic for '{device_id}' is unavailable"
+                )
+            self._wait_for_device_audio_playback_subscription(device_id, meta.command_id)
+            candidate = _loaded_audio_transfer_candidates(audio)[0]
+            chunk_bytes = _audio_playback_load_chunk_bytes_for_format(candidate.format_id)
+            total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
+            publish_interval_sec = _audio_playback_loaded_topic_publish_interval_sec()
+            for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
+                message = self._audio_chunk_type()
+                message.device_id = device_id
+                message.command_id = meta.command_id
+                message.direction = AUDIO_PLAYBACK_DIRECTION
+                message.sequence = sequence
+                _set_optional_field(message, "total_chunks", total_chunks)
+                _set_optional_field(message, "total_bytes", candidate.decoded_bytes)
+                message.format = candidate.format_id
+                message.sample_rate = audio.sample_rate
+                message.channels = audio.channels
+                _set_optional_field(message, "end_of_stream", sequence + 1 >= total_chunks)
+                message.pcm = candidate.payload[start : start + chunk_bytes]
+                self._publish_device_audio_chunk(device_id, message)
+                if publish_interval_sec > 0 and sequence + 1 < total_chunks:
+                    time.sleep(publish_interval_sec)
+            settle_sec = _audio_playback_loaded_topic_settle_sec()
+            if settle_sec > 0:
+                time.sleep(settle_sec)
+            complete_result = self._wait_for_loaded_audio_topic_complete(
+                device_id,
+                meta.command_id,
+                timeout_sec=_audio_playback_loaded_topic_complete_timeout_sec(),
+            )
+            if complete_result is not None:
+                return complete_result
+            self.get_logger().info(
+                "audio playback loaded over topic before play action "
+                f"device_id={device_id!r} command_id={meta.command_id!r} "
+                f"encoding={candidate.encoding!r} chunks={total_chunks} "
+                f"encoded_bytes={len(candidate.payload)} "
+                f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
+                f"publish_interval_ms={int(publish_interval_sec * 1000)} "
+                f"settle_ms={int(settle_sec * 1000)}"
+            )
+            return Result.accepted("audio playback loaded over topic")
+
+        def _wait_for_loaded_audio_topic_complete(
+            self,
+            device_id: str,
+            command_id: str,
+            *,
+            timeout_sec: float,
+        ) -> Result | None:
+            if timeout_sec <= 0:
+                return None
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                records = tuple(
+                    record
+                    for record in self.event_buffer.records(device_id)
+                    if record.command_id == command_id
+                    and record.event_name == "audio_playback_load"
+                )
+                for record in records:
+                    payload = dict(record.payload)
+                    if payload.get("stage") != "topic":
+                        continue
+                    error_code = str(payload.get("result") or "")
+                    if error_code and error_code != "OK":
+                        return Result.rejected(
+                            error_code,
+                            "firmware rejected loaded audio topic payload",
+                            recoverable=True,
+                        )
+                    if bool(payload.get("complete", False)):
+                        self.get_logger().info(
+                            "audio playback loaded topic complete "
+                            f"device_id={device_id!r} command_id={command_id!r} "
+                            f"sequence={payload.get('seq')} "
+                            f"buffered_bytes={payload.get('buf')} "
+                            f"chunks={payload.get('chunks')}"
+                        )
+                        return None
+                time.sleep(0.05)
+            return _make_timeout_result(
+                f"firmware audio playback topic load for '{device_id}' timed out"
+            )
+
         def _load_device_audio_playback_payload(
             self,
             device_id: str,
@@ -2083,9 +2279,7 @@ def main(args: list[str] | None = None) -> None:
             candidate: EncodedAudioPayload,
             client: object,
         ) -> Result:
-            chunk_bytes = _audio_playback_load_chunk_bytes()
-            if candidate.format_id == AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT:
-                chunk_bytes = max(chunk_bytes, 4)
+            chunk_bytes = _audio_playback_load_chunk_bytes_for_format(candidate.format_id)
             total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
             for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
                 chunk = candidate.payload[start : start + chunk_bytes]

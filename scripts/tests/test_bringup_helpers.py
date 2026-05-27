@@ -59,6 +59,32 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             microros_agent_container.parse_chunk_sizes("63")
 
+    def test_audio_tts_smoke_passthrough_includes_adpcm_controls(self) -> None:
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_TTS_LOADED_ADPCM",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_TTS_LOADED_TRANSPORT",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

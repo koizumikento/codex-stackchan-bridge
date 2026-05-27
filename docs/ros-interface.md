@@ -624,6 +624,8 @@ Fields and bounds are the same as
 `/stackchan/<device_id>/device/audio/playback/chunks`.
 This ingress accepts `direction=PLAYBACK` only. Capture chunks are firmware
 observations and must not be published on this command topic.
+For normal streaming playback, `total_chunks=0`, `total_bytes=0`, and
+`end_of_stream=false`; those fields are reserved for preloaded media payloads.
 QoS is best effort, volatile, keep last 8.
 
 ### `/stackchan/<device_id>/device/audio/playback/chunks`
@@ -641,6 +643,17 @@ This firmware-owned input topic accepts `direction=PLAYBACK` only. It is
 separate from capture output so the firmware does not need to publish and
 subscribe on the same audio chunk topic
 while micro-ROS is running over serial.
+
+The same topic also carries loaded-playback payloads before the playback action
+goal. In that mode, every chunk sets `total_chunks`, decoded `total_bytes`, and
+`end_of_stream` on the final chunk. Firmware buffers and decodes those chunks
+locally, then the normal `/stackchan/<device_id>/device/audio/play` action
+provides the terminal confirmation. This avoids per-chunk application
+request/response while preserving a final action result for the speech command.
+The bridge paces loaded topic chunks with a local serial transport interval
+instead of requiring per-chunk ACKs; current hardware validation uses 0.25 s
+because 0.005 s topic pacing caused sequence gaps on the COM3 micro-ROS serial
+path.
 
 `sequence` is monotonic per `command_id` plus `direction`. At most one playback
 session may be active per device; same-direction concurrent sessions are
@@ -852,11 +865,17 @@ Rules:
 - `total_bytes` must fit the firmware-owned bounded RAM buffer. The K151
   bring-up profile currently reserves 32 KiB, enough for short local TTS
   prompts but not a general audio-file transfer.
-- `format=PCM_S16LE`, `sample_rate=16000`, and `channels=1` are required.
+- `format=PCM_S16LE` or `IMA_ADPCM_4BIT`, `sample_rate=16000`, and
+  `channels=1` are required.
 - `pcm` is bounded by the same `uint8[<=1280]` IDL limit as `AudioChunk`.
-  On the current serial micro-ROS path, bridge load chunks should stay much
-  smaller than that limit; 640 byte synchronous service requests timed out
-  during K151 host-serial validation.
+  On the current serial micro-ROS path, PCM bridge load chunks should stay much
+  smaller than that limit; 640 byte synchronous PCM service requests timed out
+  during K151 host-serial validation. Compressed ADPCM loaded TTS defaults to
+  96 byte service requests on the COM3 host-serial validation path because that
+  size completed short loaded TTS while 128, 256, and 512 byte compressed load
+  requests timed out before the first firmware callback response. Use 64 bytes
+  as the conservative fallback; larger values remain diagnostic-only until the
+  serial micro-ROS MTU/resource path is revalidated.
 - `end_of_stream=true` marks the final chunk. The bridge may start
   `/stackchan/<device_id>/device/audio/play` only after `complete=true`.
 - If an incomplete load transaction stalls, firmware may accept a new
@@ -906,9 +925,12 @@ Fields:
 - `command_id`
 - `direction`
 - `sequence`
+- `total_chunks`
+- `total_bytes`
 - `format`
 - `sample_rate`
 - `channels`
+- `end_of_stream`
 - `pcm`
 
 Baseline audio format is PCM 16 kHz mono 16-bit.
@@ -919,6 +941,11 @@ IDL constraints:
 - `format` is `PCM_S16LE=1` for baseline capture/playback chunks.
 - `IMA_ADPCM_4BIT=2` is reserved for compressed loaded playback payloads and is
   not a baseline capture format.
+- `total_chunks` and `total_bytes` are zero for ordinary streaming chunks.
+  Loaded playback sets them on every chunk; `total_bytes` is the decoded PCM
+  byte count.
+- `end_of_stream` is false for ordinary streaming chunks and true on the final
+  loaded playback chunk.
 - `pcm` is `uint8[<=1280]`.
 - 20 ms chunks are 640 bytes.
 - 40 ms chunks are 1280 bytes and are the maximum baseline chunk size.
@@ -1384,14 +1411,21 @@ over the service. If future chunks are already buffered and the next expected
 sequence is missing, firmware may request that missing sequence immediately.
 The pull helper is used when expected-sequence progress goes idle or when the
 device needs a small end-of-stream confirmation.
-For local TTS audible-quality checks, the bridge should prefer the firmware
-load service before playback when the synthesized PCM fits the bounded device
-buffer. The topic/pull relay remains useful for transport bring-up and short
-diagnostics, but loaded playback lets firmware pass one stable PCM buffer to
-M5Unified instead of relying on ROS executor timing between speaker frames.
-Serial load-service chunks should stay small enough for the current
-micro-ROS/host-serial bridge; larger synchronous PCM service payloads may time
-out even when the total loaded buffer would fit.
+For local TTS audible-quality checks, the bridge should prefer loaded playback
+when the synthesized PCM fits the bounded device buffer. The default loaded
+path sends format-dependent audio payloads over
+`/stackchan/<device_id>/device/audio/playback/chunks` before the playback
+action and uses the action result as the final confirmation, not per-chunk
+application ACK. The bridge may pace topic chunks slightly to avoid overrunning
+bounded publisher/subscriber queues; this pacing is not an acknowledgement
+loop. Before starting the playback action, the bridge waits for the
+transaction-level firmware `audio_playback_load` completion event for the
+matching `command_id`; this confirms the preloaded buffer is ready without
+requiring a response for each payload chunk. The older synchronous load service
+remains available as a diagnostic fallback. Serial load-service chunks should
+stay small enough for the current micro-ROS/host-serial bridge; larger
+synchronous PCM service payloads may time out even when the total loaded buffer
+would fit.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout, 35
 seconds by default in the bridge, large enough for goal acceptance, firmware
