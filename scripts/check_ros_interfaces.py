@@ -239,6 +239,8 @@ def main() -> int:
             require("uint8[<=1280] first_chunk_pcm" in text, "PlayAudio first chunk bound drifted")
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
+    require("uint8 PCM_S16LE=1" in audio, "AudioChunk PCM_S16LE constant drifted")
+    require("uint8 IMA_ADPCM_4BIT=2" in audio, "AudioChunk IMA_ADPCM_4BIT constant missing")
     require("uint8[<=1280] pcm" in audio, "AudioChunk pcm bound drifted")
 
     playback_ack = (MSGS / "msg" / "AudioPlaybackAck.msg").read_text()

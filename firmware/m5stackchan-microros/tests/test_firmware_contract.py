@@ -583,12 +583,18 @@ class FirmwareContractTests(unittest.TestCase):
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
+        audio_msg = (
+            ROOT.parent.parent / "ros" / "stackchan_msgs" / "msg" / "AudioChunk.msg"
+        ).read_text()
 
         self.assertIn("kAudioSampleRate = 16000", audio)
         self.assertIn("kAudioChannels = 1", audio)
         self.assertIn("kAudioChunkMs = 20", audio)
         self.assertIn("kAudioMaxChunkMs = 40", audio)
         self.assertIn("kAudioMaxChunkBytes = 1280", audio)
+        self.assertIn("uint8 PCM_S16LE=1", audio_msg)
+        self.assertIn("uint8 IMA_ADPCM_4BIT=2", audio_msg)
+        self.assertIn("uint8[<=1280] pcm", audio_msg)
         self.assertIn('"AUDIO_UNDERRUN"', audio)
         self.assertIn('"MIC_OVERRUN"', audio)
         self.assertIn("publish_audio_underrun_event", audio)

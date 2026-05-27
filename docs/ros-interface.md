@@ -878,15 +878,14 @@ KOIZUMI-162 compressed loaded playback decision:
 | G.726 ADPCM | 4:1 at 32 kbit/s | More stateful telephony codec | Needs deeper implementation/license review | Defer |
 | Opus/Speex | Higher speech compression | Larger codec runtime and heap/stack risk | Permissive upstream licenses exist, but firmware fit is unproven | Defer |
 
-The first compressed-audio implementation should extend the numeric audio
-format contract rather than add a new service. `AudioChunk.format` should gain
-an `IMA_ADPCM_4BIT=2` constant, and `LoadAudioChunk.format=IMA_ADPCM_4BIT`
-should mean the bounded byte field carries encoded ADPCM payload while
-`total_bytes` remains the decoded PCM byte count that must fit firmware RAM.
-The field is still named `pcm` in the current IDL for compatibility; docs,
-tests, and implementation must treat it as format-dependent audio payload for
-non-PCM formats and must keep payload bytes redacted from logs, events, CLI
-JSON, and MCP responses.
+The first compressed-audio implementation extends the numeric audio format
+contract rather than adding a new service. `AudioChunk.format` includes
+`IMA_ADPCM_4BIT=2`; `LoadAudioChunk.format=IMA_ADPCM_4BIT` means the bounded
+byte field carries encoded ADPCM payload while `total_bytes` remains the
+decoded PCM byte count that must fit firmware RAM. The field is still named
+`pcm` in the current IDL for compatibility; docs, tests, and implementation
+must treat it as format-dependent audio payload for non-PCM formats and must
+keep payload bytes redacted from logs, events, CLI JSON, and MCP responses.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -909,7 +908,9 @@ Baseline audio format is PCM 16 kHz mono 16-bit.
 IDL constraints:
 
 - `direction` is `PLAYBACK=1` or `CAPTURE=2`.
-- `format` is `PCM_S16LE=1`.
+- `format` is `PCM_S16LE=1` for baseline capture/playback chunks.
+- `IMA_ADPCM_4BIT=2` is reserved for compressed loaded playback payloads and is
+  not a baseline capture format.
 - `pcm` is `uint8[<=1280]`.
 - 20 ms chunks are 640 bytes.
 - 40 ms chunks are 1280 bytes and are the maximum baseline chunk size.
