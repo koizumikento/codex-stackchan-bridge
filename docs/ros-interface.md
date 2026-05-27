@@ -651,9 +651,9 @@ locally, then the normal `/stackchan/<device_id>/device/audio/play` action
 provides the terminal confirmation. This avoids per-chunk application
 request/response while preserving a final action result for the speech command.
 The bridge paces loaded topic chunks with a local serial transport interval
-instead of requiring per-chunk ACKs; current hardware validation uses 0.25 s
-because 0.005 s topic pacing caused sequence gaps on the COM3 micro-ROS serial
-path.
+instead of requiring per-chunk ACKs; current hardware validation uses 0.02 s.
+The COM3 micro-ROS serial path completed short and longer loaded ADPCM TTS at
+0.02 s, while 0.01 s and 0.005 s topic pacing caused sequence gaps.
 
 `sequence` is monotonic per `command_id` plus `direction`. At most one playback
 session may be active per device; same-direction concurrent sessions are

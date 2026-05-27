@@ -116,7 +116,7 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
   $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.25'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.02'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
@@ -360,16 +360,24 @@ hardware bring-up issue complete.
   `AUDIO_UNDERRUN` with 128 byte chunks. See `tmp/tts_bridge_smoke_10.log` and
   `tmp/tts_bridge_smoke_12.log` from that run, and track the transport fix in
   KOIZUMI-140 before marking KOIZUMI-138 complete.
-- 2026-05-27 KOIZUMI-160 local VOICEVOX smoke completed the loaded ADPCM topic
+- 2026-05-28 KOIZUMI-160 local VOICEVOX smoke completed the loaded ADPCM topic
   path on COM3 with `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, and firmware
   `audio_playback_load` `complete=true` for 13 chunks / 4778 decoded PCM bytes.
   The same smoke recorded `loaded_playback_started`, `loaded_playback_queued`,
-  and `loaded_playback_drained`. The successful focused run used the default
-  0.25 s loaded-topic publish interval and `--allow-missing-firmware-ready`
+  and `loaded_playback_drained`. That initial successful focused run used a
+  conservative 0.25 s loaded-topic publish interval and
+  `--allow-missing-firmware-ready`
   because `firmware_ready` appeared in the first event page but the later smoke
   summary cursor did not include it. Treat that cursor check as harness work,
   not a TTS transport failure.
+- 2026-05-28 KOIZUMI-169 lowered loaded ADPCM topic pacing on the same COM3
+  path. Short `say` smoke passed at 0.10 s, 0.05 s, and twice at 0.02 s.
+  A longer `say` smoke also passed at 0.02 s with 36 chunks / 13528 decoded
+  PCM bytes. The 0.01 s run failed with `MALFORMED_AUDIO_CHUNK`: firmware
+  accepted `seq=0`, then saw `seq=5` while still expecting the contiguous next
+  chunk. Keep 0.02 s as the fastest validated default until repeated longer
+  prompts prove a lower value is stable.
 - Before firmware reports audio capabilities as available, confirm
   `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
   capture return structured `UNSUPPORTED_FEATURE` results while still reporting
