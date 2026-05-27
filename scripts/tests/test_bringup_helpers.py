@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import unittest
+from unittest import mock
 
 from scripts import microros_agent_container
 
@@ -16,6 +17,40 @@ def smoke_args(
         skip_build=skip_build,
         clean_ros_build=clean_ros_build,
         allow_stale_install=allow_stale_install,
+    )
+
+
+def bridge_smoke_args(
+    *,
+    allow_missing_firmware_ready: bool = False,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        image="test-image",
+        skip_build=True,
+        clean_ros_build=False,
+        allow_stale_install=False,
+        disconnect_check=False,
+        reconnect_check=False,
+        allow_missing_firmware_ready=allow_missing_firmware_ready,
+        disconnect_face_command="",
+        face_check="",
+        say_check="はい",
+        say_voice="default",
+        led_check=False,
+        motion_check="",
+        motion_disconnect_check="",
+        motion_expected_error="",
+        pose_pan_deg=None,
+        pose_tilt_deg=None,
+        home_check=False,
+        soak_seconds=0,
+        soak_interval_seconds=1,
+        timeout=30,
+        pty="/tmp/stackchan-test-pty",
+        tcp_host="host.docker.internal",
+        tcp_port=11411,
+        baud=921600,
+        verbose=4,
     )
 
 
@@ -84,6 +119,21 @@ class MicroRosAgentContainerTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
             microros_agent_container.ENV_PASSTHROUGH,
         )
+
+    def test_bridge_smoke_preserves_early_firmware_ready_observation(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(bridge_smoke_args())
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("firmware_ready_seen=0", command)
+        self.assertIn('firmware_ready_seen=1', command)
+        self.assertIn('STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$firmware_ready_seen', command)
+        self.assertIn('[ "$firmware_ready_seen" = "1" ] || result=1', command)
+        self.assertNotIn('[ "$firmware_ready_result" -eq 0 ] || result=1', command)
 
 
 if __name__ == "__main__":

@@ -979,6 +979,7 @@ set +e
 export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:${{PYTHONPATH:-}}
 bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
 result=0
+firmware_ready_seen=0
 bridge_args=""
 if [ "{say_tts_enabled}" = "1" ]; then
   export STACKCHAN_TTS_ENDPOINT="${{STACKCHAN_TTS_ENDPOINT:-http://host.docker.internal:50021}}"
@@ -1111,6 +1112,9 @@ if [ -n "{say_check}" ]; then
   say_tts_finished_result=$?
   echo "STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=$([ "$say_tts_finished_result" -eq 0 ] && echo 1 || echo 0)"
   [ "$say_tts_finished_result" -eq 0 ] || result=1
+  if printf '%s\n' "$say_events_output" | grep -q 'firmware_ready'; then
+    firmware_ready_seen=1
+  fi
 fi
 if [ -n "{motion_check}" ]; then
   echo "--- stackchanctl motion {motion_check} ---"
@@ -1335,9 +1339,12 @@ echo "STACKCHAN_BRIDGE_EVENTS_EXIT=$events_result"
 [ "$events_result" -eq 0 ] || result=1
 printf '%s\\n' "$events_output" | grep -q 'firmware_ready'
 firmware_ready_result=$?
-echo "STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$([ "$firmware_ready_result" -eq 0 ] && echo 1 || echo 0)"
+if [ "$firmware_ready_result" -eq 0 ]; then
+  firmware_ready_seen=1
+fi
+echo "STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$firmware_ready_seen"
 if [ "{allow_missing_firmware_ready}" != "1" ]; then
-  [ "$firmware_ready_result" -eq 0 ] || result=1
+  [ "$firmware_ready_seen" = "1" ] || result=1
 fi
 if [ "{reconnect_check}" = "1" ]; then
   device_connected_count=$(printf '%s\n' "$events_output" | grep -c 'device_connected')
