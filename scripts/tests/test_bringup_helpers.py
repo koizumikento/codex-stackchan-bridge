@@ -73,6 +73,7 @@ def sensor_sweep_args() -> argparse.Namespace:
         media_audio_playback_amplitude=1200,
         media_audio_playback_wait=True,
         media_camera_quality=50,
+        media_mode="all",
         media_playback_only=True,
         skip_media_smoke=False,
     )
@@ -206,6 +207,70 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         self.assertIn('after_event_id="$next_after_event_id"', command)
         self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=", command)
         self.assertIn('[ "$audio_play_timeout_settled_result" -ne 0 ]', command)
+
+    def test_sensor_sweep_exposes_focused_camera_media_mode(self) -> None:
+        args = sensor_sweep_args()
+        args.media_playback_only = False
+        args.media_mode = "camera-only"
+
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_sensor_sweep(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn('media_mode="camera-only"', command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_MEDIA_MODE=$media_mode", command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1", command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=1", command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=", command)
+        self.assertIn(
+            "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_FIRMWARE_BUSY_SEEN=",
+            command,
+        )
+        self.assertIn(
+            "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_CAMERA_FAILED_SEEN=",
+            command,
+        )
+
+    def test_sensor_sweep_exposes_focused_audio_capture_media_mode(self) -> None:
+        args = sensor_sweep_args()
+        args.media_playback_only = False
+        args.media_mode = "audio-capture-only"
+
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_sensor_sweep(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn('media_mode="audio-capture-only"', command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1", command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=", command)
+        self.assertIn(
+            "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=",
+            command,
+        )
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=1", command)
+
+    def test_sensor_sweep_legacy_playback_only_flag_overrides_media_mode(self) -> None:
+        args = sensor_sweep_args()
+        args.media_playback_only = True
+        args.media_mode = "camera-only"
+
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_sensor_sweep(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn('media_mode="playback-only"', command)
 
 
 if __name__ == "__main__":

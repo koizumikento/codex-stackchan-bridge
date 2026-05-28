@@ -189,6 +189,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="JPEG quality used by the hardware camera smoke.",
     )
     tcp_pty_sweep.add_argument(
+        "--media-mode",
+        choices=("all", "playback-only", "audio-capture-only", "camera-only"),
+        default="all",
+        help=(
+            "Select which hardware media smoke checks to run. Use focused modes "
+            "when validating camera or microphone behavior after a prior media "
+            "action may still be settling."
+        ),
+    )
+    tcp_pty_sweep.add_argument(
         "--media-playback-only",
         action="store_true",
         help=(
@@ -630,7 +640,11 @@ def run_tcp_pty_sensor_sweep(args: argparse.Namespace) -> int:
     playback_duration_ms = max(1.0, float(args.media_audio_playback_duration_ms))
     playback_frequency = max(1.0, float(args.media_audio_playback_frequency))
     playback_amplitude = min(30000, max(1, int(args.media_audio_playback_amplitude)))
-    media_playback_only = "1" if args.media_playback_only else "0"
+    media_mode = (
+        "playback-only"
+        if args.media_playback_only
+        else getattr(args, "media_mode", "all")
+    )
     audio_play_wait_arg = "--wait" if args.media_audio_playback_wait else ""
     command = f"""
 set +e
@@ -810,10 +824,16 @@ wait_media_action_terminal() {{
 }}
 
 run_media_smoke() {{
-  prompt_wav=$(mktemp /tmp/stackchan-prompt-XXXXXX.wav)
+  media_mode="{media_mode}"
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_MODE=$media_mode"
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=$([ "$media_mode" = "playback-only" ] && echo 1 || echo 0)"
   mic_wav=$(mktemp /tmp/stackchan-mic-XXXXXX.wav)
   frame_jpg=$(mktemp /tmp/stackchan-frame-XXXXXX.jpg)
-  python3 - "$prompt_wav" <<'PY'
+  media_active_after_playback=0
+
+  run_audio_play_smoke() {{
+    prompt_wav=$(mktemp /tmp/stackchan-prompt-XXXXXX.wav)
+    python3 - "$prompt_wav" <<'PY'
 import math
 import sys
 import wave
@@ -834,86 +854,159 @@ with wave.open(sys.argv[1], "wb") as wav:
     wav.writeframes(bytes(samples))
 PY
 
-  echo "--- stackchanctl audio play smoke ---"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_MS={playback_duration_ms}"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_FREQUENCY={playback_frequency}"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_AMPLITUDE={playback_amplitude}"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_WAIT=$([ -n "{audio_play_wait_arg}" ] && echo 1 || echo 0)"
-  audio_play_before_events=$(python3 -m stackchanctl --backend bridge --timeout 5 events list --limit 1 --json 2>&1)
-  audio_play_before_event_id=$(printf '%s\n' "$audio_play_before_events" | json_cursor)
-  audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play {audio_play_wait_arg} "$prompt_wav" --json 2>&1)
-  audio_play_result=$?
-  rm -f "$prompt_wav"
-  printf '%s\n' "$audio_play_output"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
-  audio_play_command_id=$(printf '%s\n' "$audio_play_output" | json_command_id)
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_COMMAND_ID_PRESENT=$([ -n "$audio_play_command_id" ] && echo 1 || echo 0)"
-  printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
-  audio_play_unsupported_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=$([ "$audio_play_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
-  printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
-  audio_play_ok_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
-  printf '%s\n' "$audio_play_output" | grep -Eqi '"result_state": *"timeout"|"code": *"TIMEOUT"'
-  audio_play_timeout_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SEEN=$([ "$audio_play_timeout_result" -eq 0 ] && echo 1 || echo 0)"
-  audio_play_timeout_settled_result=1
-  if [ "$audio_play_timeout_result" -eq 0 ]; then
-    wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" {max(10, int(args.timeout))} "$audio_play_before_event_id"
-    audio_play_settle_result=$?
-    [ "$audio_play_settle_result" -eq 0 ] && audio_play_timeout_settled_result=0
+    echo "--- stackchanctl audio play smoke ---"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=0"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_MS={playback_duration_ms}"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_FREQUENCY={playback_frequency}"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_AMPLITUDE={playback_amplitude}"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_WAIT=$([ -n "{audio_play_wait_arg}" ] && echo 1 || echo 0)"
+    audio_play_before_events=$(python3 -m stackchanctl --backend bridge --timeout 5 events list --limit 1 --json 2>&1)
+    audio_play_before_event_id=$(printf '%s\n' "$audio_play_before_events" | json_cursor)
+    audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play {audio_play_wait_arg} "$prompt_wav" --json 2>&1)
+    audio_play_result=$?
+    rm -f "$prompt_wav"
+    printf '%s\n' "$audio_play_output"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
+    audio_play_command_id=$(printf '%s\n' "$audio_play_output" | json_command_id)
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_COMMAND_ID_PRESENT=$([ -n "$audio_play_command_id" ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+    audio_play_unsupported_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=$([ "$audio_play_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"FIRMWARE_BUSY"'
+    audio_play_firmware_busy_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_FIRMWARE_BUSY_SEEN=$([ "$audio_play_firmware_busy_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
+    audio_play_ok_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_play_output" | grep -Eqi '"result_state": *"timeout"|"code": *"TIMEOUT"'
+    audio_play_timeout_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SEEN=$([ "$audio_play_timeout_result" -eq 0 ] && echo 1 || echo 0)"
+    audio_play_settle_result=0
+    audio_play_timeout_settled_result=1
+    audio_play_settled_result=1
+    if [ -n "$audio_play_command_id" ] &&
+       [ "$audio_play_unsupported_result" -ne 0 ] &&
+       [ "$audio_play_firmware_busy_result" -ne 0 ]; then
+      wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" {max(10, int(args.timeout))} "$audio_play_before_event_id"
+      audio_play_settle_result=$?
+      [ "$audio_play_settle_result" -eq 0 ] && audio_play_settled_result=0
+      if [ "$audio_play_timeout_result" -eq 0 ] && [ "$audio_play_settle_result" -eq 0 ]; then
+        audio_play_timeout_settled_result=0
+      fi
+    fi
     echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=$audio_play_settle_result"
-    [ "$audio_play_settle_result" -eq 0 ] || result=1
-  else
-    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=0"
-  fi
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=$([ "$audio_play_timeout_settled_result" -eq 0 ] && echo 1 || echo 0)"
-  if [ "{media_playback_only}" = "1" ]; then
-    rm -f "$mic_wav" "$frame_jpg"
-    echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=1"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLED_SEEN=$([ "$audio_play_settled_result" -eq 0 ] && echo 1 || echo 0)"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=$([ "$audio_play_timeout_settled_result" -eq 0 ] && echo 1 || echo 0)"
     if [ "$audio_play_unsupported_result" -ne 0 ] &&
        [ "$audio_play_ok_result" -ne 0 ] &&
        [ "$audio_play_timeout_settled_result" -ne 0 ]; then
       result=1
     fi
-    return
-  fi
-  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=0"
+    if [ "$audio_play_unsupported_result" -ne 0 ] &&
+       [ "$audio_play_firmware_busy_result" -ne 0 ] &&
+       [ "$audio_play_settled_result" -ne 0 ]; then
+      media_active_after_playback=1
+      result=1
+    fi
+  }}
 
-  echo "--- stackchanctl audio capture smoke ---"
-  audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {max(0.001, float(args.media_audio_capture_seconds))} --output "$mic_wav" --json 2>&1)
-  audio_capture_result=$?
-  rm -f "$mic_wav"
-  printf '%s\n' "$audio_capture_output"
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=$audio_capture_result"
-  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
-  audio_capture_unsupported_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=$([ "$audio_capture_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
-  printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"MIC_OVERRUN"'
-  audio_capture_mic_overrun_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=$([ "$audio_capture_mic_overrun_result" -eq 0 ] && echo 1 || echo 0)"
-  printf '%s\n' "$audio_capture_output" | grep -Eq '"ok": *true'
-  audio_capture_ok_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
+  run_audio_capture_smoke() {{
+    echo "--- stackchanctl audio capture smoke ---"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=0"
+    audio_capture_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {max(0.001, float(args.media_audio_capture_seconds))} --output "$mic_wav" --json 2>&1)
+    audio_capture_result=$?
+    audio_capture_bytes=$([ -s "$mic_wav" ] && wc -c < "$mic_wav" || echo 0)
+    rm -f "$mic_wav"
+    printf '%s\n' "$audio_capture_output"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=$audio_capture_result"
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=$audio_capture_bytes"
+    printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+    audio_capture_unsupported_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN=$([ "$audio_capture_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"MIC_OVERRUN"'
+    audio_capture_mic_overrun_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=$([ "$audio_capture_mic_overrun_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_capture_output" | grep -Eq '"code": *"FIRMWARE_BUSY"'
+    audio_capture_firmware_busy_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=$([ "$audio_capture_firmware_busy_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$audio_capture_output" | grep -Eq '"ok": *true'
+    audio_capture_ok_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=$([ "$audio_capture_ok_result" -eq 0 ] && echo 1 || echo 0)"
+    if [ "$audio_capture_unsupported_result" -ne 0 ] &&
+       [ "$audio_capture_mic_overrun_result" -ne 0 ] &&
+       [ "$audio_capture_ok_result" -ne 0 ]; then
+      result=1
+    fi
+  }}
 
-  echo "--- stackchanctl camera capture smoke ---"
-  camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality {min(95, max(1, int(args.media_camera_quality)))} --json 2>&1)
-  camera_result=$?
-  rm -f "$frame_jpg"
-  printf '%s\n' "$camera_output"
-  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=$camera_result"
-  printf '%s\n' "$camera_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
-  camera_unsupported_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN=$([ "$camera_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
-  printf '%s\n' "$camera_output" | grep -Eq '"ok": *true'
-  camera_ok_result=$?
-  echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=$([ "$camera_ok_result" -eq 0 ] && echo 1 || echo 0)"
+  run_camera_capture_smoke() {{
+    echo "--- stackchanctl camera capture smoke ---"
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=0"
+    camera_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output "$frame_jpg" --quality {min(95, max(1, int(args.media_camera_quality)))} --json 2>&1)
+    camera_result=$?
+    camera_bytes=$([ -s "$frame_jpg" ] && wc -c < "$frame_jpg" || echo 0)
+    rm -f "$frame_jpg"
+    printf '%s\n' "$camera_output"
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=$camera_result"
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=$camera_bytes"
+    printf '%s\n' "$camera_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
+    camera_unsupported_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN=$([ "$camera_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$camera_output" | grep -Eq '"code": *"CAMERA_CAPTURE_FAILED"'
+    camera_capture_failed_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_CAMERA_FAILED_SEEN=$([ "$camera_capture_failed_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$camera_output" | grep -Eq '"code": *"FIRMWARE_BUSY"'
+    camera_firmware_busy_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_FIRMWARE_BUSY_SEEN=$([ "$camera_firmware_busy_result" -eq 0 ] && echo 1 || echo 0)"
+    printf '%s\n' "$camera_output" | grep -Eq '"ok": *true'
+    camera_ok_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=$([ "$camera_ok_result" -eq 0 ] && echo 1 || echo 0)"
+    if [ "$camera_unsupported_result" -ne 0 ] &&
+       [ "$camera_capture_failed_result" -ne 0 ] &&
+       [ "$camera_ok_result" -ne 0 ]; then
+      result=1
+    fi
+  }}
 
-  if {{ [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; }} ||
-     {{ [ "$audio_capture_unsupported_result" -ne 0 ] && [ "$audio_capture_mic_overrun_result" -ne 0 ] && [ "$audio_capture_ok_result" -ne 0 ]; }} ||
-     {{ [ "$camera_unsupported_result" -ne 0 ] && [ "$camera_ok_result" -ne 0 ]; }}; then
-    result=1
-  fi
+  case "$media_mode" in
+    playback-only)
+      run_audio_play_smoke
+      rm -f "$mic_wav" "$frame_jpg"
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=1"
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+      echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=1"
+      echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+      ;;
+    audio-capture-only)
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1"
+      run_audio_capture_smoke
+      rm -f "$frame_jpg"
+      echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=1"
+      echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+      ;;
+    camera-only)
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1"
+      rm -f "$mic_wav"
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=1"
+      echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+      run_camera_capture_smoke
+      ;;
+    *)
+      run_audio_play_smoke
+      if [ "$media_active_after_playback" -eq 1 ]; then
+        rm -f "$mic_wav" "$frame_jpg"
+        echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=1"
+        echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=1"
+        echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=1"
+        echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=1"
+      else
+        echo "STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+        run_audio_capture_smoke
+        echo "STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=0"
+        run_camera_capture_smoke
+      fi
+      ;;
+  esac
 }}
 
 echo "--- stackchanctl observe ---"

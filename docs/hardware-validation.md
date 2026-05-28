@@ -518,6 +518,24 @@ hardware bring-up issue complete.
   test, add `--skip-media-smoke` to avoid spending the sweep budget on unrelated
   media commands.
 
+  For focused media reruns after a playback timeout or another settling media
+  action, use `--media-mode` instead of the default all-in-one media sequence:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --allow-stale-install --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-mode camera-only --media-camera-quality 50
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --allow-stale-install --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-mode audio-capture-only --media-audio-capture-seconds 0.02
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --allow-stale-install --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-mode playback-only --media-audio-playback-wait
+  ```
+
+  The legacy `--media-playback-only` flag is kept as an alias for
+  `--media-mode playback-only`. The default `--media-mode all` waits for the
+  playback command's own terminal `audio_playback_action` event before running
+  audio capture or camera. If the terminal event is not observed, the helper
+  reports `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=1`
+  and `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED_DUE_TO_ACTIVE_MEDIA=1`
+  instead of misclassifying later `FIRMWARE_BUSY` results as capture or camera
+  regressions.
+
   During the printed stimulus window:
 
   | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |
@@ -598,11 +616,18 @@ hardware bring-up issue complete.
   `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN`,
   `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_UNSUPPORTED_SEEN`, and
   `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_UNSUPPORTED_SEEN`, plus corresponding
-  `_OK_SEEN` markers when firmware-owned transport succeeds. Treat either a
-  structured unsupported result or an accepted firmware-confirmed result as a
-  transport smoke pass while that feature is being brought up; the normal
-  redaction scan must still report no PCM, transcript, image, JPEG, or base64
-  payloads.
+  `_OK_SEEN` markers when firmware-owned transport succeeds. Focused media
+  runs also emit `STACKCHAN_SENSOR_SWEEP_MEDIA_MODE`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES`,
+  `STACKCHAN_SENSOR_SWEEP_*_FIRMWARE_BUSY_SEEN`, and camera-specific
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_CAMERA_FAILED_SEEN` markers. Treat a
+  structured unsupported result, bounded `MIC_OVERRUN`, bounded
+  `CAMERA_CAPTURE_FAILED`, or an accepted firmware-confirmed result as a
+  transport smoke classification while that feature is being brought up. A
+  focused run that reports `FIRMWARE_BUSY` is not a target-feature result; let
+  the media path settle and rerun the focused mode. The normal redaction scan
+  must still report no PCM, transcript, image, JPEG, or base64 payloads.
 - Confirm liveness behavior by stopping the host serial TCP bridge or the
   micro-ROS Agent after `connected: true`; within the configured timeout,
   `stackchanctl --backend bridge observe --json` should return
@@ -624,6 +649,39 @@ hardware bring-up issue complete.
 
 Record each real-device sweep here until the sensor adapters move from
 bring-up to routine regression coverage.
+
+2026-05-28, device `default`, COM3 through Windows serial TCP bridge, firmware
+version `bringup`, KOIZUMI-172 focused media rerun after NFC init ordering
+change:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --allow-stale-install --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-mode camera-only --media-camera-quality 50
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-sensor-sweep --skip-build --allow-stale-install --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 35 --stimulus-window-seconds 0 --media-mode audio-capture-only --media-audio-capture-seconds 0.02
+```
+
+Observed results:
+
+- Camera-only smoke: pass. The command returned `ok=true` /
+  `result_state: ACCEPTED`, `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=5465`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_FIRMWARE_BUSY_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_CAMERA_FAILED_SEEN=0`.
+- Audio-capture-only smoke: pass. The command returned `ok=true` /
+  `result_state: ACCEPTED`, `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=684`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_MIC_OVERRUN_SEEN=0`.
+- Redaction checks: pass on both focused runs.
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0` and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. JPEG/WAV file bytes
+  were not printed or copied into Linear; only sizes and result markers were
+  recorded.
+- Harness behavior: pass for focused-mode separation. The camera run printed
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_SKIPPED=1`; the audio-capture run
+  printed `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SKIPPED=1` and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_SKIPPED=1`. Neither focused media
+  command was contaminated by a previous playback `FIRMWARE_BUSY`.
 
 2026-05-22, device `default`, COM3 through Windows serial TCP bridge, firmware
 version `bringup`, command:
