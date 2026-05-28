@@ -1331,10 +1331,10 @@ void initialize_sensor_adapters() {
   initialize_imu_adapter();
   initialize_power_monitor_adapter();
   ltr553_sensor_initialized = initialize_ltr553_sensor();
-  stackchan_nfc_initialized = initialize_nfc_adapter();
   initialize_ir_adapter();
   initialize_audio_probe_adapters();
   stackchan_camera_snapshot_initialized = initialize_camera_adapter();
+  stackchan_nfc_initialized = initialize_nfc_adapter();
 }
 
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS

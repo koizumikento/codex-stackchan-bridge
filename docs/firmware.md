@@ -787,7 +787,9 @@ its examples use `M5UnitUnifiedNFC` for NFC and `IRremoteESP8266` for IR.
 Follow that BSP example boundary rather than inventing another direct wire
 path. UnitNFC is added to `M5UnitUnified` on `M5.In_I2C`, matching the
 StackChan-BSP `examples/NFC/Detect` sketch; do not reinitialize Arduino `Wire`
-manually during normal bring-up. The IR receive adapter follows the BSP
+manually during normal bring-up. Initialize camera probing before the UnitNFC
+adapter so a camera `M5.In_I2C.release()` cannot detach the NFC adapter after
+it has been registered. The IR receive adapter follows the BSP
 `examples/IR/Receive` sketch's GPIO 10 / `IRrecv` path. IMU samples feed only
 the firmware `ImuEventEstimator`; raw accel and gyro values are not published in
 `observe` or normal events. NFC events use `tag_ref` references derived

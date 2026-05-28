@@ -842,6 +842,28 @@ from `M5.Ex_I2C` to the StackChan-BSP example path `M5.In_I2C`:
   known remote while watching the safe counters before marking KOIZUMI-75 or
   KOIZUMI-76 done.
 
+2026-05-28 KOIZUMI-75 follow-up, device `default`, COM3 through the Windows
+serial TCP bridge, after moving UnitNFC initialization after camera probing so
+camera `M5.In_I2C.release()` cannot detach an already-registered NFC unit:
+
+- `uv run --no-project python -m unittest firmware.m5stackchan-microros.tests.test_firmware_contract`:
+  pass.
+- `uv run --no-project python scripts/firmware_platformio.py build`: pass.
+- `uv run --no-project python scripts/firmware_platformio.py upload --port COM3
+  --upload-speed 115200 --no-stub`: pass.
+- `tcp-pty-sensor-sweep --tcp-host host.docker.internal --tcp-port 11411
+  --baud 921600 --verbose 4 --timeout 12 --stimulus-window-seconds 90
+  --skip-media-smoke`: pass after rebuilding the ROS package in-container.
+  The sweep observed `nfc_detected`, `nfc_removed`, `nfc_read_failed`,
+  `remote_button_pressed`, and `remote_command_received`, with
+  `STACKCHAN_EVENT_STIMULUS_NFC_STATUS=PASS`,
+  `STACKCHAN_EVENT_STIMULUS_IR_STATUS=PASS`,
+  `STACKCHAN_SENSOR_SWEEP_EVENTS_SENSITIVE_PAYLOAD_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`.
+- Public and device event payloads used bounded `tag_ref` and `remote_ref`
+  values. Do not record raw tag IDs, UIDs, raw IR codes, or protocol dumps from
+  this validation in issue trackers or normal logs.
+
 2026-05-23 ROS 2 command-path follow-up, device `default`, COM3 through the
 Windows serial TCP bridge, after the BSP-aligned UnitNFC firmware upload:
 

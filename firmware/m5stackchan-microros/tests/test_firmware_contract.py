@@ -1087,6 +1087,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("stackchan_nfc_detect_attempts", main)
         self.assertIn("stackchan_nfc_detect_hits", main)
         self.assertIn("stackchan_nfc_identify_failures", main)
+        self.assertLess(
+            main.index("stackchan_camera_snapshot_initialized = initialize_camera_adapter()"),
+            main.index("stackchan_nfc_initialized = initialize_nfc_adapter()"),
+        )
         self.assertIn("constexpr uint16_t kIrRecvPin = 10", main)
         self.assertIn("stackchan_irrecv.enableIRIn()", main)
         self.assertIn("stackchan_ir_decode_count", main)
