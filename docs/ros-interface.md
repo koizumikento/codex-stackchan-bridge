@@ -363,6 +363,11 @@ Rules:
 - Baseline rate is 2-10 Hz.
 - `distance_m` may be NaN when the sensor is not calibrated for distance.
 - `signal` is normalized `0.0..1.0` when available.
+- K151 semantic events use a low LTR553 signal threshold because early live
+  capture observed `raw=3` / `signal≈0.001465` as the first usable manual
+  stimulus. Firmware emits `proximity_near` at `signal >= 0.0010` and
+  `proximity_clear` at `signal <= 0.0005`; raw samples remain telemetry-only
+  and semantic event payloads stay bounded.
 
 ### `/stackchan/<device_id>/device/proximity/raw`
 

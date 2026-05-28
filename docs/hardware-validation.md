@@ -658,6 +658,10 @@ Observed results:
   with surface `stackchan_head` while untouched.
 - Proximity sample: `sensor_index=0`, `raw=0`, `signal=0.0`,
   `distance_m=.nan`, and `saturated=false` in the sweep environment.
+- Later manual live capture for KOIZUMI-131 observed the first usable LTR553
+  stimulus around `raw=3` / `signal=0.001465...`; firmware semantic proximity
+  thresholds are therefore intentionally low and hysteretic until a broader
+  distance fixture is collected.
 - Light sample: `sensor_index=0`, `raw=0`, `illuminance_lux=0.0`, and
   `saturated=false` in the sweep environment.
 - Power sample: USB-powered and charging with `voltage_v=4.181250095367432`,

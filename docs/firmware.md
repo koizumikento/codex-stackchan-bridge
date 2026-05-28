@@ -847,6 +847,12 @@ Baseline firmware event sources:
 - power: `battery_recovered`, `charging_started`, `charging_stopped`,
   `power_source_changed`, `brownout_risk`, `power_fault`
 
+K151 proximity semantic events are estimated from LTR553 normalized signal with
+firmware-owned hysteresis. `proximity_near` currently starts at `signal >=
+0.0010`, and `proximity_clear` requires `signal <= 0.0005`; raw proximity
+values remain on telemetry topics and are not copied into semantic event
+payloads.
+
 Current K151 bring-up samples CoreS3 BtnA, BtnB, and BtnC through `M5.update()`
 and publishes the bounded button ids `a`, `b`, and `c`. `button_held` uses a
 firmware-owned 700 ms default threshold. Bridge may coalesce repeated events,

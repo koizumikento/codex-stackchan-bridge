@@ -414,6 +414,33 @@ class FirmwareContractTests(unittest.TestCase):
         )
         subprocess.run([str(output)], check=True)
 
+    def test_sensors_contract_cpp_harness(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler not available")
+
+        binary = ROOT / "tests" / "sensors_contract_test"
+        source = ROOT / "tests" / "sensors_contract_test.cpp"
+        if binary.exists():
+            binary.unlink()
+        if binary.with_suffix(".exe").exists():
+            binary.with_suffix(".exe").unlink()
+
+        output = binary.with_suffix(".exe") if compiler.lower().endswith("cl.exe") else binary
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-I",
+                str(ROOT / "include"),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        subprocess.run([str(output)], check=True)
+
     def test_main_rejects_external_safety_priority_and_tracks_agent_health(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
 
@@ -999,7 +1026,9 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("ProximityEventEstimator", sensors)
         self.assertIn("LightEventEstimator", sensors)
         self.assertIn("PowerEventEstimator", sensors)
-        self.assertIn("kProximityNearSignal", sensors)
+        self.assertIn("kProximityNearSignal = 0.0010f", sensors)
+        self.assertIn("kProximityClearSignal = 0.0005f", sensors)
+        self.assertIn("telemetry.signal <= kProximityClearSignal", sensors)
         self.assertIn("kBatteryLowVoltageV", sensors)
         self.assertIn("kBrownoutRiskVoltageV", sensors)
         self.assertIn("DeviceEventKind::PickedUp", sensors)

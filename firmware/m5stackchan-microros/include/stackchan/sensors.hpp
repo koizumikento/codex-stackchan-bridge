@@ -28,7 +28,8 @@ constexpr uint8_t kTouchZone1 = 1;
 constexpr uint8_t kTouchZone2 = 2;
 constexpr uint8_t kTouchZone3 = 4;
 constexpr uint8_t kTouchMaxZones = 3;
-constexpr float kProximityNearSignal = 0.75f;
+constexpr float kProximityNearSignal = 0.0010f;
+constexpr float kProximityClearSignal = 0.0005f;
 constexpr float kLightDarkLux = 15.0f;
 constexpr float kLightBrightLux = 500.0f;
 constexpr float kBatteryLowVoltageV = 3.55f;
@@ -318,7 +319,7 @@ class ProximityEventEstimator {
       near_ = true;
       return events.publish(DeviceEventKind::ProximityNear, telemetry.stamp_ms, "", "{}");
     }
-    if (near_ && telemetry.signal < kProximityNearSignal) {
+    if (near_ && telemetry.signal <= kProximityClearSignal) {
       near_ = false;
       return events.publish(DeviceEventKind::ProximityClear, telemetry.stamp_ms, "", "{}");
     }
