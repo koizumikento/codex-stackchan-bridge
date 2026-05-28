@@ -436,6 +436,9 @@ bool capture_audio_action_init_failed = false;
 bool capture_camera_action_init_failed = false;
 bool play_audio_action_init_failed = false;
 bool stackchan_touch_sensor_initialized = false;
+bool stackchan_touch_output_read_ok = false;
+uint8_t stackchan_touch_output_raw = 0;
+uint32_t stackchan_touch_output_read_failures = 0;
 bool stackchan_power_monitor_initialized = false;
 bool ltr553_sensor_initialized = false;
 bool ltr553_part_id_read_ok = false;
@@ -1141,6 +1144,18 @@ bool ltr553_read_block(uint8_t start_reg, uint8_t* values, size_t length) {
       kLtr553I2cFreq);
 }
 
+bool si12t_read_output_register(uint8_t* value) {
+  if (value == nullptr) {
+    return false;
+  }
+  return M5.In_I2C.readRegister(
+      SI12T_GND_ADDRESS,
+      SI12T_OUTPUT1_ADDR,
+      value,
+      1,
+      100000);
+}
+
 float calculate_ltr553_lux(uint16_t ch0, uint16_t ch1) {
   const uint32_t total = static_cast<uint32_t>(ch0) + ch1;
   if (total == 0) {
@@ -1463,6 +1478,7 @@ stackchan::TouchStateTelemetry read_touch_state_telemetry(uint32_t now_ms) {
   copy_bounded(telemetry.surface, sizeof(telemetry.surface), "stackchan_head");
 
   if (!stackchan_touch_sensor_initialized) {
+    stackchan_touch_output_read_ok = false;
     return telemetry;
   }
 
@@ -1474,6 +1490,24 @@ stackchan::TouchStateTelemetry read_touch_state_telemetry(uint32_t now_ms) {
     telemetry.intensities[index] = intensity;
     if (intensity > 0) {
       telemetry.zone_mask |= static_cast<uint8_t>(1U << index);
+    }
+  }
+  uint8_t output_raw = 0;
+  stackchan_touch_output_read_ok = si12t_read_output_register(&output_raw);
+  if (stackchan_touch_output_read_ok) {
+    stackchan_touch_output_raw = output_raw;
+  } else {
+    stackchan_touch_output_raw = 0;
+    ++stackchan_touch_output_read_failures;
+  }
+  if (telemetry.zone_mask == 0 && stackchan_touch_output_read_ok && output_raw != 0) {
+    for (uint8_t sensor_index = 0; sensor_index < stackchan::kTouchMaxZones; ++sensor_index) {
+      const uint8_t intensity = (output_raw >> (sensor_index * 2)) & 0x03;
+      const uint8_t zone_index = (stackchan::kTouchMaxZones - 1) - sensor_index;
+      telemetry.intensities[zone_index] = intensity;
+      if (intensity > 0) {
+        telemetry.zone_mask |= static_cast<uint8_t>(1U << zone_index);
+      }
     }
   }
   return telemetry;
@@ -1601,6 +1635,12 @@ void print_sensor_input_diagnostics(uint32_t now_ms) {
   stackchan_diag_print(static_cast<int>(touch.intensities[1]));
   stackchan_diag_print(" touch_i2=");
   stackchan_diag_print(static_cast<int>(touch.intensities[2]));
+  stackchan_diag_print(" touch_output_read_ok=");
+  stackchan_diag_print(stackchan_touch_output_read_ok ? "true" : "false");
+  stackchan_diag_print(" touch_output_raw=");
+  stackchan_diag_print(static_cast<int>(stackchan_touch_output_raw));
+  stackchan_diag_print(" touch_output_read_failures=");
+  stackchan_diag_print(stackchan_touch_output_read_failures);
   stackchan_diag_print(" ltr553_init=");
   stackchan_diag_print(ltr553_sensor_initialized ? "true" : "false");
   stackchan_diag_print(" ltr553_bus=in_i2c");

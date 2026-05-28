@@ -332,6 +332,10 @@ Rules:
 - `surface` defaults to `head` for the body touch panel.
 - `zone_mask` uses `ZONE_1`, `ZONE_2`, and `ZONE_3`.
 - `intensities` is bounded to 3 entries.
+- Firmware may use the Si12T `OUTPUT1` register as a bounded fallback source
+  when the BSP intensity array reports all zeros. The raw `OUTPUT1` byte is
+  firmware-only diagnostic data and must not appear in normal `observe`, public
+  events, or semantic touch event payloads.
 - Raw capacitive baselines are not published in normal telemetry.
 
 ### `/stackchan/<device_id>/device/touch/state`

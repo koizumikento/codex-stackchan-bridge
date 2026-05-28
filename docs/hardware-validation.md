@@ -528,8 +528,13 @@ hardware bring-up issue complete.
   During manual touch, near/far, and light/dark stimuli, inspect the bounded
   `sensor_input_diag_stage` boot markers and then the `sensor_input_diag`
   fields: `touch_zone_mask`, `touch_i0..touch_i2`, `ltr553_part_ok`,
+  `touch_output_read_ok`, `touch_output_raw`, `touch_output_read_failures`,
   `ltr553_manufacturer_ok`, `ps_read_ok`, `ps_raw`, `als_read_ok`, `als_raw`,
-  `power_voltage_v`, and `in_i2c_released_for_camera`. The profile keeps the
+  `power_voltage_v`, and `in_i2c_released_for_camera`. If
+  `touch_output_read_ok=true` and `touch_output_raw` changes while
+  `touch_i0..touch_i2` remain zero, treat it as a BSP intensity mapping issue.
+  If `touch_output_read_ok=false`, treat it as an Si12T/I2C read path issue.
+  The profile keeps the
   normal runtime serial baud, currently 921600 bps. The `--upload-speed 115200`
   examples are flashing-only settings and do not change the firmware runtime
   transport. The diagnostic waits briefly at `pre_m5_begin`; open the monitor

@@ -112,6 +112,9 @@ touch, power, and LTR553 sensor adapters to separate sensor wiring/read
 failures from optional adapter pressure. LTR553 uses the managed `M5.In_I2C`
 path; avoid direct `Wire` bus ownership here. Stop the micro-ROS Agent first
 and flash a normal build again after the monitor run.
+Touch diagnostics also include the Si12T `OUTPUT1` read result and raw byte so
+an all-zero zone/intensity report can be separated from an I2C read failure or
+a BSP intensity mapping issue.
 
 If the Agent creates the ROS graph but no samples reach ROS 2, build a
 temporary minimal bring-up profile before changing command behavior:

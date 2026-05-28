@@ -904,6 +904,12 @@ only the touch, power, and LTR553 sensor adapters so it can distinguish sensor
 wiring/read failures from optional adapter pressure. LTR553 register access
 uses the managed `M5.In_I2C` path; do not switch it back to direct `Wire`
 transactions because direct bus ownership can block micro-ROS Agent bring-up.
+Touch diagnostics include Si12T `OUTPUT1` read success, raw byte, and read
+failure count. Normal ROS touch telemetry may use that same bounded `OUTPUT1`
+value as a fallback only when the BSP intensity array is all zero, so a live
+surface touch is not hidden by a stale intensity mapping. The raw `OUTPUT1`
+byte stays in firmware-only diagnostics and is not copied into normal
+`observe`, public events, or semantic event payloads.
 This is a local maintenance/debug
 profile only, not a normal ROS, CLI, or MCP command surface; restore a normal
 firmware build after the monitor run.
