@@ -67,6 +67,7 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
 AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
+MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.6
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
 TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03
@@ -102,6 +103,88 @@ AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV = (
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC"
 )
+MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
+
+
+class MediaActionGate:
+    def __init__(self, settle_sec: float, *, clock=time.monotonic) -> None:
+        self._settle_sec = max(0.0, float(settle_sec))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._active: dict[str, SimpleNamespace] = {}
+        self._settling: dict[str, SimpleNamespace] = {}
+
+    def begin(self, device_id: str, command_id: str, label: str) -> Result | None:
+        now = self._clock()
+        with self._lock:
+            settling = self._settling.get(device_id)
+            if settling is not None:
+                remaining = float(settling.until_monotonic) - now
+                if remaining > 0:
+                    return Result.rejected(
+                        "FIRMWARE_BUSY",
+                        (
+                            f"firmware media action for '{device_id}' is settling "
+                            f"after timed-out {settling.label} "
+                            f"command_id={settling.command_id!r}; "
+                            f"retry after {remaining:.1f}s"
+                        ),
+                        recoverable=True,
+                    )
+                self._settling.pop(device_id, None)
+
+            active = self._active.get(device_id)
+            if active is not None and active.command_id != command_id:
+                return Result.rejected(
+                    "FIRMWARE_BUSY",
+                    (
+                        f"firmware media action for '{device_id}' is already active "
+                        f"command_id={active.command_id!r} label={active.label!r}"
+                    ),
+                    recoverable=True,
+                )
+
+            self._active[device_id] = SimpleNamespace(
+                command_id=command_id,
+                label=label,
+                started_monotonic=now,
+            )
+            return None
+
+    def finish(self, device_id: str, command_id: str, label: str, result: Result) -> float:
+        now = self._clock()
+        timed_out = (
+            result.state == STATE_TIMEOUT
+            or result.error_code == "TIMEOUT"
+            or "timed out" in result.message.lower()
+        )
+        with self._lock:
+            active = self._active.get(device_id)
+            if active is not None and active.command_id == command_id:
+                self._active.pop(device_id, None)
+            if timed_out and self._settle_sec > 0:
+                until = now + self._settle_sec
+                self._settling[device_id] = SimpleNamespace(
+                    command_id=command_id,
+                    label=label,
+                    until_monotonic=until,
+                )
+                return until
+            settling = self._settling.get(device_id)
+            if settling is not None and settling.command_id == command_id:
+                self._settling.pop(device_id, None)
+            return 0.0
+
+    def settling_command_id(self, device_id: str) -> str | None:
+        now = self._clock()
+        with self._lock:
+            settling = self._settling.get(device_id)
+            if settling is None:
+                return None
+            if float(settling.until_monotonic) <= now:
+                self._settling.pop(device_id, None)
+                return None
+            return str(settling.command_id)
 
 
 def _audio_playback_chunk_bytes() -> int:
@@ -331,6 +414,19 @@ def _audio_playback_loaded_topic_complete_timeout_sec() -> float:
             0.0,
         ),
         60.0,
+    )
+
+
+def _media_action_settle_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                MEDIA_ACTION_SETTLE_SEC_ENV,
+                MEDIA_ACTION_SETTLE_SEC,
+            ),
+            0.0,
+        ),
+        30.0,
     )
 
 
@@ -896,6 +992,10 @@ def main(args: list[str] | None = None) -> None:
             self.declare_parameter("device_media_action_timeout_sec", 35.0)
             self._device_media_action_timeout_sec = float(
                 self.get_parameter("device_media_action_timeout_sec").value
+            )
+            self.declare_parameter("media_action_settle_sec", _media_action_settle_sec())
+            self._media_action_gate = MediaActionGate(
+                float(self.get_parameter("media_action_settle_sec").value)
             )
             self._tts_provider = None
             self._tts_default_voice = "default"
@@ -3090,6 +3190,77 @@ def main(args: list[str] | None = None) -> None:
                 goal_handle.abort()
             return result
 
+        def _begin_device_media_action(
+            self,
+            device_id: str,
+            command_id: str,
+            label: str,
+        ) -> Result | None:
+            result = self._media_action_gate.begin(device_id, command_id, label)
+            if result is not None:
+                self.get_logger().warning(
+                    "firmware media action gate rejected command "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r} error_code={result.error_code!r} "
+                    f"message={result.message!r}"
+                )
+            return result
+
+        def _finish_device_media_action(
+            self,
+            device_id: str,
+            command_id: str,
+            label: str,
+            result: Result,
+        ) -> None:
+            settle_until = self._media_action_gate.finish(
+                device_id,
+                command_id,
+                label,
+                result,
+            )
+            if settle_until <= 0:
+                return
+            self.get_logger().warning(
+                "firmware media action timed out; settling before next media command "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"label={label!r} settle_ms="
+                f"{int(max(0.0, settle_until - time.monotonic()) * 1000)}"
+            )
+
+        def _log_late_device_action_future(
+            self,
+            future: object,
+            *,
+            device_id: str,
+            command_id: str,
+            label: str,
+            phase: str,
+        ) -> None:
+            def _callback(done_future: object) -> None:
+                try:
+                    value = done_future.result()
+                except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                    self.get_logger().warning(
+                        "late firmware media action future failed "
+                        f"device_id={device_id!r} command_id={command_id!r} "
+                        f"label={label!r} phase={phase!r} error={exc!r}"
+                    )
+                    return
+                accepted = getattr(value, "accepted", None)
+                result = getattr(getattr(value, "result", None), "result", None)
+                error_code = getattr(result, "error_code", "")
+                ok = getattr(result, "ok", None)
+                self.get_logger().warning(
+                    "late firmware media action future completed "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r} phase={phase!r} accepted={accepted!r} "
+                    f"ok={ok!r} error_code={error_code!r}"
+                )
+
+            if hasattr(future, "add_done_callback"):
+                future.add_done_callback(_callback)
+
         def _call_device_camera_capture(
             self,
             device_id: str,
@@ -3114,12 +3285,34 @@ def main(args: list[str] | None = None) -> None:
             goal.width = int(request.width)
             goal.height = int(request.height)
             goal.quality = int(request.quality)
-            return self._send_device_camera_capture_goal(
-                client,
-                goal,
-                f"camera capture action for '{device_id}'",
-                timeout_sec=self._device_media_action_timeout_sec,
+            label = "camera capture"
+            gate_result = self._begin_device_media_action(
+                device_id,
+                meta.command_id,
+                label,
             )
+            if gate_result is not None:
+                return gate_result, None
+            device_result = _make_transport_result(
+                f"firmware camera capture action for '{device_id}' did not complete"
+            )
+            try:
+                device_result, device_image = self._send_device_camera_capture_goal(
+                    client,
+                    goal,
+                    f"camera capture action for '{device_id}'",
+                    timeout_sec=self._device_media_action_timeout_sec,
+                    device_id=device_id,
+                    command_id=meta.command_id,
+                )
+                return device_result, device_image
+            finally:
+                self._finish_device_media_action(
+                    device_id,
+                    meta.command_id,
+                    label,
+                    device_result,
+                )
 
         def _call_device_audio_play(
             self,
@@ -3150,20 +3343,44 @@ def main(args: list[str] | None = None) -> None:
             goal.first_chunk_pcm = bytes(getattr(request, "first_chunk_pcm", b""))
             goal.face_hint = getattr(request, "face_hint", "")
             goal.motion_hint = getattr(request, "motion_hint", "")
-            return self._send_device_action_goal(
-                client,
-                goal,
-                f"audio playback action for '{device_id}'",
-                timeout_sec=self._device_media_action_timeout_sec,
-                on_accepted=lambda: self._activate_playback_chunk_relay(
-                    device_id,
-                    meta.command_id,
-                ),
-                on_finished=lambda: self._finish_playback_chunk_relay(
-                    device_id,
-                    meta.command_id,
-                ),
+            label = "audio playback"
+            gate_result = self._begin_device_media_action(
+                device_id,
+                meta.command_id,
+                label,
             )
+            if gate_result is not None:
+                return gate_result
+            device_result = _make_transport_result(
+                f"firmware audio playback action for '{device_id}' did not complete"
+            )
+            try:
+                device_result = self._send_device_action_goal(
+                    client,
+                    goal,
+                    f"audio playback action for '{device_id}'",
+                    timeout_sec=self._device_media_action_timeout_sec,
+                    device_id=device_id,
+                    command_id=meta.command_id,
+                    on_accepted=lambda: self._activate_playback_chunk_relay(
+                        device_id,
+                        meta.command_id,
+                    ),
+                    on_finished=lambda: self._finish_playback_chunk_relay(
+                        device_id,
+                        meta.command_id,
+                    ),
+                )
+                if device_result.state == STATE_TIMEOUT:
+                    self._finish_playback_chunk_relay(device_id, meta.command_id)
+                return device_result
+            finally:
+                self._finish_device_media_action(
+                    device_id,
+                    meta.command_id,
+                    label,
+                    device_result,
+                )
 
         def _call_device_audio_capture(
             self,
@@ -3190,12 +3407,34 @@ def main(args: list[str] | None = None) -> None:
                 self._device_media_action_timeout_sec,
                 (goal.duration_ms / 1000.0) + 2.0,
             )
-            return self._send_device_action_goal(
-                client,
-                goal,
-                f"audio capture action for '{device_id}'",
-                timeout_sec=timeout_sec,
+            label = "audio capture"
+            gate_result = self._begin_device_media_action(
+                device_id,
+                meta.command_id,
+                label,
             )
+            if gate_result is not None:
+                return gate_result
+            device_result = _make_transport_result(
+                f"firmware audio capture action for '{device_id}' did not complete"
+            )
+            try:
+                device_result = self._send_device_action_goal(
+                    client,
+                    goal,
+                    f"audio capture action for '{device_id}'",
+                    timeout_sec=timeout_sec,
+                    device_id=device_id,
+                    command_id=meta.command_id,
+                )
+                return device_result
+            finally:
+                self._finish_device_media_action(
+                    device_id,
+                    meta.command_id,
+                    label,
+                    device_result,
+                )
 
         def _send_device_camera_capture_goal(
             self,
@@ -3204,13 +3443,27 @@ def main(args: list[str] | None = None) -> None:
             label: str,
             *,
             timeout_sec: float | None = None,
+            device_id: str = "",
+            command_id: str = "",
         ) -> tuple[Result, object | None]:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable"), None
 
             goal_future = client.send_goal_async(goal)
-            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
+            wait_result = self._wait_for_future(
+                goal_future,
+                label,
+                timeout_sec=timeout_sec,
+                cancel_on_timeout=False,
+            )
             if wait_result is not None:
+                self._log_late_device_action_future(
+                    goal_future,
+                    device_id=device_id,
+                    command_id=command_id,
+                    label=label,
+                    phase="goal_response",
+                )
                 return wait_result, None
             try:
                 device_goal_handle = goal_future.result()
@@ -3227,8 +3480,20 @@ def main(args: list[str] | None = None) -> None:
                 )
 
             result_future = device_goal_handle.get_result_async()
-            wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
+            wait_result = self._wait_for_future(
+                result_future,
+                label,
+                timeout_sec=timeout_sec,
+                cancel_on_timeout=False,
+            )
             if wait_result is not None:
+                self._log_late_device_action_future(
+                    result_future,
+                    device_id=device_id,
+                    command_id=command_id,
+                    label=label,
+                    phase="result_response",
+                )
                 return (
                     _make_camera_capture_failed_result(f"firmware {label} timed out"),
                     None,
@@ -3252,6 +3517,8 @@ def main(args: list[str] | None = None) -> None:
             label: str,
             *,
             timeout_sec: float | None = None,
+            device_id: str = "",
+            command_id: str = "",
             on_accepted=None,
             on_finished=None,
         ) -> Result:
@@ -3259,8 +3526,20 @@ def main(args: list[str] | None = None) -> None:
                 return _make_transport_result(f"firmware {label} is unavailable")
 
             goal_future = client.send_goal_async(goal)
-            wait_result = self._wait_for_future(goal_future, label, timeout_sec=timeout_sec)
+            wait_result = self._wait_for_future(
+                goal_future,
+                label,
+                timeout_sec=timeout_sec,
+                cancel_on_timeout=False,
+            )
             if wait_result is not None:
+                self._log_late_device_action_future(
+                    goal_future,
+                    device_id=device_id,
+                    command_id=command_id,
+                    label=label,
+                    phase="goal_response",
+                )
                 return wait_result
             try:
                 device_goal_handle = goal_future.result()
@@ -3277,8 +3556,20 @@ def main(args: list[str] | None = None) -> None:
 
             try:
                 result_future = device_goal_handle.get_result_async()
-                wait_result = self._wait_for_future(result_future, label, timeout_sec=timeout_sec)
+                wait_result = self._wait_for_future(
+                    result_future,
+                    label,
+                    timeout_sec=timeout_sec,
+                    cancel_on_timeout=False,
+                )
                 if wait_result is not None:
+                    self._log_late_device_action_future(
+                        result_future,
+                        device_id=device_id,
+                        command_id=command_id,
+                        label=label,
+                        phase="result_response",
+                    )
                     return wait_result
                 try:
                     result_response = result_future.result()
@@ -3295,6 +3586,7 @@ def main(args: list[str] | None = None) -> None:
             label: str,
             *,
             timeout_sec: float | None = None,
+            cancel_on_timeout: bool = True,
         ) -> Result | None:
             deadline = time.monotonic() + (
                 self._device_command_timeout_sec if timeout_sec is None else timeout_sec
@@ -3303,7 +3595,8 @@ def main(args: list[str] | None = None) -> None:
                 time.sleep(0.01)
             if future.done():
                 return None
-            future.cancel()
+            if cancel_on_timeout and hasattr(future, "cancel"):
+                future.cancel()
             return _make_timeout_result(f"firmware {label} timed out")
 
     rclpy.init(args=args)

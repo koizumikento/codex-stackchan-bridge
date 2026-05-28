@@ -97,6 +97,11 @@ Development assistant surfaces:
   `firmware_ready` across the whole run. Do not fail a successful media smoke
   just because a later paginated event query no longer includes an early
   readiness event.
+- After a timed-out media smoke, treat the device media path as settling before
+  running the next playback/capture/camera check. The bridge should reject a new
+  media command with structured `FIRMWARE_BUSY` during that bounded window and
+  diagnostics should identify the previous `command_id` without logging PCM,
+  image bytes, or speech text.
 - Docker compose may be used as an optional helper for local services such as
   VOICEVOX, but it must not replace the documented Python Docker helpers unless
   the repository deliberately changes its bring-up workflow. Keep Windows host

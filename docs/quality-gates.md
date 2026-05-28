@@ -133,7 +133,8 @@ Required for bridge event changes:
 - Power telemetry tests cover latest snapshot storage, stale detection, public
   topic naming, and `device_id` preservation while relaying telemetry.
 - Audio routing tests cover command_id/direction separation, no per-chunk ACK
-  assumption, overrun/underrun mapping, same-direction `FIRMWARE_BUSY`, and
+  assumption, overrun/underrun mapping, same-direction `FIRMWARE_BUSY`, media
+  action timeout settle gating with previous `command_id` diagnostics, and
   bounded queue behavior.
 - TTS routing tests cover local provider selection, VOICEVOX adapter error
   mapping, 16 kHz mono PCM normalization, voice profile config, balanced

@@ -757,6 +757,40 @@ run_power_status() {{
   echo "STACKCHAN_SENSOR_SWEEP_POWER_STATUS_STRUCTURED_ERROR_SEEN=$([ "$power_error_result" -eq 0 ] && echo 1 || echo 0)"
 }}
 
+json_command_id() {{
+  python3 -c 'import json,sys; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); print(data.get("command_id") or (data.get("metadata") or dict()).get("command_id") or "")' 2>/dev/null
+}}
+
+media_action_terminal_seen() {{
+  command_id="$1"
+  event_name="$2"
+  python3 -c 'import json,sys; cmd=sys.argv[1]; name=sys.argv[2]; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); stages=("goal_failed","goal_succeeded","goal_response_busy","result_ready","result_response_sent"); events=data.get("events") or list(); sys.exit(0 if any(e.get("command_id") == cmd and e.get("event_name") == name and ((e.get("payload") or dict()).get("stage") in stages) for e in events) else 1)' "$command_id" "$event_name"
+}}
+
+wait_media_action_terminal() {{
+  command_id="$1"
+  event_name="$2"
+  timeout_sec="$3"
+  if [ -z "$command_id" ]; then
+    echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_COMMAND_ID_PRESENT=0"
+    return 1
+  fi
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_COMMAND_ID_PRESENT=1"
+  deadline=$(( $(date +%s) + timeout_sec ))
+  while [ "$(date +%s)" -le "$deadline" ]; do
+    settle_events_output=$(python3 -m stackchanctl --backend bridge --timeout 5 events list --limit 50 --json 2>&1)
+    printf '%s\n' "$settle_events_output" | media_action_terminal_seen "$command_id" "$event_name"
+    settle_seen=$?
+    if [ "$settle_seen" -eq 0 ]; then
+      echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_TERMINAL_SEEN=1"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_TERMINAL_SEEN=0"
+  return 1
+}}
+
 run_media_smoke() {{
   prompt_wav=$(mktemp /tmp/stackchan-prompt-XXXXXX.wav)
   mic_wav=$(mktemp /tmp/stackchan-mic-XXXXXX.wav)
@@ -792,12 +826,25 @@ PY
   rm -f "$prompt_wav"
   printf '%s\n' "$audio_play_output"
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_EXIT=$audio_play_result"
+  audio_play_command_id=$(printf '%s\n' "$audio_play_output" | json_command_id)
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_COMMAND_ID_PRESENT=$([ -n "$audio_play_command_id" ] && echo 1 || echo 0)"
   printf '%s\n' "$audio_play_output" | grep -Eq '"code": *"UNSUPPORTED_FEATURE"'
   audio_play_unsupported_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_UNSUPPORTED_SEEN=$([ "$audio_play_unsupported_result" -eq 0 ] && echo 1 || echo 0)"
   printf '%s\n' "$audio_play_output" | grep -Eq '"ok": *true'
   audio_play_ok_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=$([ "$audio_play_ok_result" -eq 0 ] && echo 1 || echo 0)"
+  printf '%s\n' "$audio_play_output" | grep -Eqi '"result_state": *"timeout"|"code": *"TIMEOUT"'
+  audio_play_timeout_result=$?
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SEEN=$([ "$audio_play_timeout_result" -eq 0 ] && echo 1 || echo 0)"
+  if [ "$audio_play_timeout_result" -eq 0 ]; then
+    wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" {max(10, int(args.timeout))}
+    audio_play_settle_result=$?
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=$audio_play_settle_result"
+    [ "$audio_play_settle_result" -eq 0 ] || result=1
+  else
+    echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=0"
+  fi
   if [ "{media_playback_only}" = "1" ]; then
     rm -f "$mic_wav" "$frame_jpg"
     echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=1"

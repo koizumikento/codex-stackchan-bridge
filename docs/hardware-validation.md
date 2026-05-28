@@ -407,6 +407,13 @@ hardware bring-up issue complete.
   `stackchanctl events`.
 - Confirm malformed format, sequence gaps, disconnect, and timeout cases produce
   structured recoverable errors.
+- After a timed-out playback smoke, do not treat the next media smoke as clean
+  until the helper reports the same `command_id` reaching a terminal
+  `audio_playback_action` event or the run fails. The bridge also keeps a
+  bounded media-settle gate after timed-out playback, audio capture, or camera
+  actions; a command during that window should return structured
+  `FIRMWARE_BUSY` with the previous `command_id` instead of accepting a
+  possibly contaminated media session.
 
 ## LED
 

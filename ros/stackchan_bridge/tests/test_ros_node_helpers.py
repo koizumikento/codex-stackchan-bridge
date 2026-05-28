@@ -19,6 +19,7 @@ from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
+    MEDIA_ACTION_SETTLE_SEC_ENV,
     _coerce_telemetry_device_id,
     _copy_command_meta,
     _copy_power_status,
@@ -37,6 +38,7 @@ from stackchan_bridge.ros_node import (
     _audio_playback_loaded_topic_complete_timeout_sec,
     _audio_playback_loaded_topic_publish_interval_sec,
     _audio_playback_loaded_topic_settle_sec,
+    _media_action_settle_sec,
     _audio_playback_load_chunk_bytes,
     _audio_playback_load_chunk_bytes_for_format,
     _audio_playback_topic_initial_window_chunks,
@@ -52,6 +54,7 @@ from stackchan_bridge.ros_node import (
     _reject_external_safety_priority,
     _relay_telemetry_message,
     _status_matches_device_id,
+    MediaActionGate,
 )
 from stackchan_bridge.models import CapabilitySnapshot, Result, StatusSnapshot
 from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
@@ -232,6 +235,46 @@ class RosNodeHelperTests(unittest.TestCase):
             {AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV: "99"},
         ):
             self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 60.0)
+
+    def test_media_action_settle_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {MEDIA_ACTION_SETTLE_SEC_ENV: "0.5"}):
+            self.assertEqual(_media_action_settle_sec(), 0.5)
+
+        with mock.patch.dict(os.environ, {MEDIA_ACTION_SETTLE_SEC_ENV: "99"}):
+            self.assertEqual(_media_action_settle_sec(), 30.0)
+
+    def test_media_action_gate_blocks_after_timeout_until_settled(self) -> None:
+        now = 100.0
+        gate = MediaActionGate(3.0, clock=lambda: now)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        gate.finish(
+            "default",
+            "cmd-1",
+            "audio playback",
+            Result(False, 4, "TIMEOUT", "firmware audio playback timed out", True),
+        )
+
+        blocked = gate.begin("default", "cmd-2", "audio playback")
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked.error_code, "FIRMWARE_BUSY")
+        self.assertIn("cmd-1", blocked.message)
+
+        now = 104.0
+        self.assertIsNone(gate.begin("default", "cmd-2", "audio playback"))
+
+    def test_media_action_gate_releases_immediately_after_success(self) -> None:
+        gate = MediaActionGate(3.0, clock=lambda: 10.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        gate.finish(
+            "default",
+            "cmd-1",
+            "audio playback",
+            Result.completed("audio playback completed"),
+        )
+
+        self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
 
     def test_audio_playback_load_chunk_defaults_keep_pcm_small_and_adpcm_validated(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

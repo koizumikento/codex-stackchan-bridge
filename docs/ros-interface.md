@@ -1432,6 +1432,15 @@ The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout, 35
 seconds by default in the bridge, large enough for goal acceptance, firmware
 buffering, chunk transfer, and terminal result delivery.
+If a firmware-owned media action times out at the bridge, the bridge treats the
+device media path as settling before it accepts another playback, capture, or
+camera media action for that device. During this bounded settle window, a new
+media command returns structured `FIRMWARE_BUSY` with the previous
+`command_id`; this prevents a late goal/result response from a timed-out smoke
+from contaminating the next audible or camera check. Late media goal/result
+future completion diagnostics include `device_id`, `command_id`, action label,
+phase, and structured result metadata only. They must not log PCM, image bytes,
+speech text, or provider payloads.
 
 Baseline format: PCM 16 kHz mono 16-bit.
 
