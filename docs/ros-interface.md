@@ -924,6 +924,12 @@ final padding nibble only on the `end_of_stream=true` chunk. Bridge-owned TTS
 uses this compressed loaded path by default when loaded playback is enabled,
 and falls back to `PCM_S16LE` loaded writes if firmware returns
 `UNSUPPORTED_FEATURE` for the compressed format.
+For the topic-loaded path, the bridge sends a bounded loaded chunk window and
+waits for firmware `audio_playback_load` progress before sending the next
+window. Firmware progress events may expose redacted transport counters such as
+`expected_seq`, `received_seq`, `buf_chunks`, `chunks`, `complete`, `result`,
+and a short `detail`, but must not expose PCM, ADPCM payload bytes, speech text,
+provider request bodies, or raw provider identifiers.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 

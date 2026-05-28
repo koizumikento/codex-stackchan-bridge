@@ -141,8 +141,10 @@ Required for bridge event changes:
   default tuning, event redaction, and forwarding synthesized audio through the
   documented loaded playback path. The default serial TTS payload path must not
   depend on per-chunk service ACK responses; use bounded topic payloads plus a
-  transaction-level firmware load-complete observation and the playback action
-  result.
+  transaction-progress/load-complete observation and the playback action result.
+  Loaded topic diagnostics may expose redacted sequence counters such as
+  expected and received sequence numbers, but must not expose speech text,
+  provider request bodies, or PCM/ADPCM payload bytes.
 - Smoke helper tests preserve early readiness observations such as
   `firmware_ready` across paginated event queries, especially for long media
   smokes where later event pages may no longer contain startup events.

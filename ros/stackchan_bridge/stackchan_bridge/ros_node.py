@@ -67,6 +67,7 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
 AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
+AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS = 1
 MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.6
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
@@ -102,6 +103,9 @@ AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV = (
 )
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC"
+)
+AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS"
 )
 MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
 
@@ -415,6 +419,35 @@ def _audio_playback_loaded_topic_complete_timeout_sec() -> float:
         ),
         60.0,
     )
+
+
+def _audio_playback_loaded_topic_window_chunks() -> int:
+    return min(
+        max(
+            _env_int(
+                AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS,
+            ),
+            1,
+        ),
+        8,
+    )
+
+
+def _loaded_audio_topic_buffered_chunks(payload: dict[str, object]) -> int:
+    for key in ("expected_seq", "buf_chunks"):
+        if key not in payload:
+            continue
+        try:
+            return max(int(payload.get(key, 0)), 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _loaded_audio_topic_error_code(payload: dict[str, object]) -> str:
+    error_code = str(payload.get("result") or "")
+    return "" if error_code == "OK" else error_code
 
 
 def _media_action_settle_sec() -> float:
@@ -2308,6 +2341,8 @@ def main(args: list[str] | None = None) -> None:
             chunk_bytes = _audio_playback_load_chunk_bytes_for_format(candidate.format_id)
             total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
             publish_interval_sec = _audio_playback_loaded_topic_publish_interval_sec()
+            window_chunks = _audio_playback_loaded_topic_window_chunks()
+            progress_timeout_sec = _audio_playback_loaded_topic_complete_timeout_sec()
             for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
                 message = self._audio_chunk_type()
                 message.device_id = device_id
@@ -2322,7 +2357,20 @@ def main(args: list[str] | None = None) -> None:
                 _set_optional_field(message, "end_of_stream", sequence + 1 >= total_chunks)
                 message.pcm = candidate.payload[start : start + chunk_bytes]
                 self._publish_device_audio_chunk(device_id, message)
-                if publish_interval_sec > 0 and sequence + 1 < total_chunks:
+                should_wait_for_progress = (
+                    sequence + 1 >= total_chunks
+                    or (sequence + 1) % window_chunks == 0
+                )
+                if should_wait_for_progress:
+                    progress_result = self._wait_for_loaded_audio_topic_progress(
+                        device_id,
+                        meta.command_id,
+                        min_buffered_chunks=sequence + 1,
+                        timeout_sec=progress_timeout_sec,
+                    )
+                    if progress_result is not None:
+                        return progress_result
+                elif publish_interval_sec > 0:
                     time.sleep(publish_interval_sec)
             settle_sec = _audio_playback_loaded_topic_settle_sec()
             if settle_sec > 0:
@@ -2340,10 +2388,52 @@ def main(args: list[str] | None = None) -> None:
                 f"encoding={candidate.encoding!r} chunks={total_chunks} "
                 f"encoded_bytes={len(candidate.payload)} "
                 f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
+                f"window_chunks={window_chunks} "
                 f"publish_interval_ms={int(publish_interval_sec * 1000)} "
                 f"settle_ms={int(settle_sec * 1000)}"
             )
             return Result.accepted("audio playback loaded over topic")
+
+        def _wait_for_loaded_audio_topic_progress(
+            self,
+            device_id: str,
+            command_id: str,
+            *,
+            min_buffered_chunks: int,
+            timeout_sec: float,
+        ) -> Result | None:
+            if timeout_sec <= 0:
+                return None
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                records = tuple(
+                    record
+                    for record in self.event_buffer.records(device_id)
+                    if record.command_id == command_id
+                    and record.event_name == "audio_playback_load"
+                )
+                for record in records:
+                    payload = dict(record.payload)
+                    if payload.get("stage") != "topic":
+                        continue
+                    error_code = _loaded_audio_topic_error_code(payload)
+                    if error_code:
+                        detail = str(payload.get("detail") or "")
+                        return Result.rejected(
+                            error_code,
+                            "firmware rejected loaded audio topic payload"
+                            + (f" ({detail})" if detail else ""),
+                            recoverable=True,
+                        )
+                    if _loaded_audio_topic_buffered_chunks(payload) >= min_buffered_chunks:
+                        return None
+                    if bool(payload.get("complete", False)):
+                        return None
+                time.sleep(0.02)
+            return _make_timeout_result(
+                f"firmware audio playback topic load progress for '{device_id}' "
+                f"timed out at {min_buffered_chunks} chunks"
+            )
 
         def _wait_for_loaded_audio_topic_complete(
             self,
@@ -2366,11 +2456,13 @@ def main(args: list[str] | None = None) -> None:
                     payload = dict(record.payload)
                     if payload.get("stage") != "topic":
                         continue
-                    error_code = str(payload.get("result") or "")
-                    if error_code and error_code != "OK":
+                    error_code = _loaded_audio_topic_error_code(payload)
+                    if error_code:
+                        detail = str(payload.get("detail") or "")
                         return Result.rejected(
                             error_code,
-                            "firmware rejected loaded audio topic payload",
+                            "firmware rejected loaded audio topic payload"
+                            + (f" ({detail})" if detail else ""),
                             recoverable=True,
                         )
                     if bool(payload.get("complete", False)):

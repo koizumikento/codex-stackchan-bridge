@@ -16,6 +16,7 @@ from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV,
     AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
@@ -38,11 +39,14 @@ from stackchan_bridge.ros_node import (
     _audio_playback_loaded_topic_complete_timeout_sec,
     _audio_playback_loaded_topic_publish_interval_sec,
     _audio_playback_loaded_topic_settle_sec,
+    _audio_playback_loaded_topic_window_chunks,
     _media_action_settle_sec,
     _audio_playback_load_chunk_bytes,
     _audio_playback_load_chunk_bytes_for_format,
     _audio_playback_topic_initial_window_chunks,
     _loaded_audio_transfer_candidates,
+    _loaded_audio_topic_buffered_chunks,
+    _loaded_audio_topic_error_code,
     _next_audio_chunk_transport_control,
     _records_after_event_id,
     _sequence_for_event_id,
@@ -235,6 +239,42 @@ class RosNodeHelperTests(unittest.TestCase):
             {AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV: "99"},
         ):
             self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 60.0)
+
+    def test_audio_playback_loaded_topic_window_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV: "2"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 2)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV: "0"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 1)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 8)
+
+    def test_loaded_audio_topic_payload_helpers_support_progress_and_errors(self) -> None:
+        self.assertEqual(
+            _loaded_audio_topic_buffered_chunks({"expected_seq": 3, "buf_chunks": 2}),
+            3,
+        )
+        self.assertEqual(
+            _loaded_audio_topic_buffered_chunks({"buf_chunks": 2}),
+            2,
+        )
+        self.assertEqual(_loaded_audio_topic_buffered_chunks({"expected_seq": "bad"}), 0)
+        self.assertEqual(_loaded_audio_topic_error_code({"result": ""}), "")
+        self.assertEqual(_loaded_audio_topic_error_code({"result": "OK"}), "")
+        self.assertEqual(
+            _loaded_audio_topic_error_code({"result": "MALFORMED_AUDIO_CHUNK"}),
+            "MALFORMED_AUDIO_CHUNK",
+        )
 
     def test_media_action_settle_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {MEDIA_ACTION_SETTLE_SEC_ENV: "0.5"}):
@@ -745,6 +785,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
             "TTS_SPEED_SCALE_DEFAULT = 1.6",
             "TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03",
             "TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03",

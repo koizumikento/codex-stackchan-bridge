@@ -117,6 +117,7 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.02'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
@@ -136,6 +137,11 @@ hardware bring-up issue complete.
   serial TCP bridge; the previous service-load path completed short ADPCM TTS
   at 96 bytes while 128, 256, and 512 byte compressed load requests timed out
   before the first firmware callback response.
+  Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
+  host-serial TCP path. The bridge waits for bounded firmware
+  `audio_playback_load` progress before sending the next loaded topic window so
+  sequence gaps show up as redacted `expected_seq`/`received_seq` diagnostics
+  instead of an opaque malformed payload.
   PCM loaded-transfer diagnostics should still keep
   `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES=64` unless the target has been
   revalidated with larger synchronous requests.

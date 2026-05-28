@@ -836,6 +836,32 @@ void log_play_audio_action_diagnostic(
   stackchan_diag_println(play_audio_result_request_pending ? "true" : "false");
 }
 
+const char* audio_load_result_detail(const stackchan::Result& result) {
+  if (result.ok || result.message == nullptr) {
+    return "";
+  }
+  if (strstr(result.message, "sequence is not contiguous") != nullptr) {
+    return "sequence_gap";
+  }
+  if (strstr(result.message, "final counters") != nullptr) {
+    return "counter_mismatch";
+  }
+  if (strstr(result.message, "header") != nullptr) {
+    return "adpcm_header";
+  }
+  if (strstr(result.message, "byte length") != nullptr) {
+    return "byte_length";
+  }
+  if (strstr(result.message, "format") != nullptr) {
+    return "format";
+  }
+  if (strstr(result.message, "buffer") != nullptr ||
+      strstr(result.message, "size") != nullptr) {
+    return "buffer";
+  }
+  return "other";
+}
+
 void log_play_audio_load_diagnostic(
     const char* stage,
     const char* command_id,
@@ -849,6 +875,7 @@ void log_play_audio_load_diagnostic(
   const bool should_log =
       complete ||
       !result.ok ||
+      (stage != nullptr && strcmp(stage, "topic") == 0) ||
       sequence <= 1 ||
       (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
        sequence % kAudioPlaybackChunkDiagnosticSampleInterval == 0);
@@ -860,15 +887,20 @@ void log_play_audio_load_diagnostic(
       payload,
       sizeof(payload),
       "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"chunks\":%lu,"
-      "\"buf\":%lu,\"buf_chunks\":%lu,\"complete\":%s,\"result\":\"%s\"}",
+      "\"buf\":%lu,\"buf_chunks\":%lu,\"expected_seq\":%lu,"
+      "\"received_seq\":%lu,\"complete\":%s,\"result\":\"%s\","
+      "\"detail\":\"%s\"}",
       stage == nullptr ? "" : stage,
       static_cast<unsigned long>(sequence),
       static_cast<unsigned long>(bytes),
       static_cast<unsigned long>(total_chunks),
       static_cast<unsigned long>(buffered_bytes),
       static_cast<unsigned long>(buffered_chunks),
+      static_cast<unsigned long>(buffered_chunks),
+      static_cast<unsigned long>(sequence),
       complete ? "true" : "false",
-      result.error_code);
+      result.error_code,
+      audio_load_result_detail(result));
   event_publisher.publish_name(
       "audio_playback_load",
       millis(),

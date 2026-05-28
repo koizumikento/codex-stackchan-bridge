@@ -667,8 +667,11 @@ and is a local serial bring-up guard, not a media ACK.
 inter-chunk pacing for the topic payload path; it defaults to 0.02 s because
 COM3 host-serial validation completed short and longer loaded ADPCM TTS at
 0.02 s while 0.01 s and 0.005 s dropped or reordered loaded chunks. Values
-above 0.25 s are bounded to 0.25 s. This pacing does not wait for per-chunk
-responses; it only leaves room for bounded ROS and micro-ROS serial queues.
+above 0.25 s are bounded to 0.25 s. The topic payload path also uses
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to limit how
+many loaded chunks are in flight before waiting for firmware
+`audio_playback_load` progress. This is a transaction-progress gate over
+bounded events, not a service ACK per audio chunk.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
 the bridge waits for the firmware's final `audio_playback_load` completion
 event before starting the playback action; it defaults to 20 s. This is a
@@ -962,6 +965,7 @@ Audio bring-up diagnostics may also use:
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`
 - `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY`
 - `STACKCHAN_TTS_LOADED_TRANSPORT`
 
