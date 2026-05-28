@@ -2110,16 +2110,19 @@ KOIZUMI-112 diagnostic firmware update:
   capture after flashing should verify that text or an asymmetric marker appears
   in the expected orientation; if it is still reversed, flip the firmware
   horizontal mirror value instead of adding CLI post-processing.
-- After flashing the KOIZUMI-175 camera bring-up firmware on 2026-05-29,
-  camera-only smoke passed with `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=0`,
-  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
-  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=6860`. A follow-up direct
-  bridge capture saved `tmp/stackchan_camera_koizumi175_mirror.jpg` at 8267
-  bytes. The captured frame showed readable label text, confirming that the
-  firmware horizontal mirror setting corrected the observed left-right reversal.
-  On Windows Docker Desktop, this validation used the host serial TCP bridge
-  via IPv4 `192.168.65.254` because `host.docker.internal` resolved to an IPv6
+- The first KOIZUMI-175 hardware check with horizontal mirror enabled was a
+  false positive: `tmp/stackchan_camera_koizumi175_mirror.jpg` was 8267 bytes
+  and the camera command succeeded, but the captured label text was still
+  mirrored. Treat `set_hmirror(..., 1)` as the wrong direction for this board
+  orientation and verify again with the firmware mirror value disabled. On
+  Windows Docker Desktop, this validation used the host serial TCP bridge via
+  IPv4 `192.168.65.254` because `host.docker.internal` resolved to an IPv6
   address that refused the connection in this run.
+- After disabling the firmware horizontal mirror value and reflashing the
+  camera bring-up profile on 2026-05-29, a direct bridge capture saved
+  `tmp/stackchan_camera_koizumi175_fixed.jpg` at 7928 bytes. The center label
+  text was readable in the expected orientation, confirming that
+  `set_hmirror(..., 0)` is the correct setting for this board.
 
 ## Cleanup
 
