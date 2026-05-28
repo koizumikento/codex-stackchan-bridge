@@ -51,7 +51,8 @@ Required for CLI changes:
   PCM, and transcript text in CLI JSON, MCP results, events, and diagnostics.
 - Camera command tests cover QVGA JPEG metadata, `quality=1..95`, max 96 KiB,
   chunk reassembly, timeout, oversized payload handling, unsupported firmware,
-  and absence of image bytes/base64 in CLI JSON or diagnostics.
+  first-frame freshness after camera bring-up, and absence of image
+  bytes/base64 in CLI JSON or diagnostics.
 - Maintenance-separation tests prove normal CLI/MCP/Codex command groups cannot
   reach calibration writes, raw hardware controls, NVS import/export, or
   maintenance unlocks.

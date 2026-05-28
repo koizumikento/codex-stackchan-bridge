@@ -2087,6 +2087,22 @@ KOIZUMI-112 diagnostic firmware update:
   `tmp/stackchan_camera_preview.jpg` at 2651 bytes. Normal output/log redaction
   checks remained clean; JPEG bytes and base64 did not appear in CLI JSON,
   public events, or normal logs.
+- KOIZUMI-174 baseline before the warm-up fix reproduced first-frame
+  instability without rebuilding or reflashing: two fresh CLI captures through
+  the existing Agent/bridge path produced different hashes and sizes. The first
+  file was dark at 2372 bytes, while a second capture three seconds later was
+  bright and 8532 bytes. Treat this as camera warm-up or stale frame buffer
+  behavior, not as old output-file reuse. The fix should validate that the
+  first capture after camera bring-up is already usable under normal lighting.
+- The KOIZUMI-174 warm-up fix drains three bounded camera frames before the
+  final snapshot. After build and COM3 upload on 2026-05-29, the first direct
+  CLI capture after reset saved `tmp/stackchan_camera_koizumi174_first.jpg` at
+  8219 bytes and produced a visibly lit frame under the same room lighting.
+  A follow-up camera-only smoke using `--skip-build --allow-stale-install`
+  passed with `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=7303`. Normal output and
+  event redaction remained clean.
 
 ## Cleanup
 

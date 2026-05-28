@@ -263,7 +263,10 @@ structured completion only; JPEG bytes are published on
 `/stackchan/<device_id>/device/camera/chunks` as `CameraFrameChunk` messages
 correlated by `command_id`. Camera chunks are bounded to 256 bytes and paced on
 the firmware side so the default serial path does not depend on action-result
-payload delivery or per-chunk application ACKs.
+payload delivery or per-chunk application ACKs. Before the final snapshot,
+firmware may drain a small bounded number of warm-up frames without publishing
+or logging their payload bytes so the first CLI capture after camera bring-up
+does not expose a stale or exposure-unsettled frame.
 
 ## Capability status and degraded operation
 

@@ -275,6 +275,9 @@ constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
+constexpr uint8_t kCameraWarmupFrames = 3;
+constexpr unsigned long kCameraWarmupFrameDelayMs = 100;
+constexpr unsigned long kCameraWarmupMaxMs = 700;
 constexpr unsigned long kCameraFrameChunkPublishIntervalMs = 4;
 constexpr int kYawServoId = 1;
 constexpr int kPitchServoId = 2;
@@ -5153,12 +5156,31 @@ uint8_t camera_driver_quality_from_goal(uint8_t quality) {
              (stackchan::kCameraMaxQuality - stackchan::kCameraMinQuality));
 }
 
+bool drain_camera_warmup_frames(uint32_t started_ms) {
+  for (uint8_t frame_index = 0; frame_index < kCameraWarmupFrames; ++frame_index) {
+    const unsigned long elapsed_ms = millis() - started_ms;
+    if (elapsed_ms > kCameraWarmupMaxMs || elapsed_ms > kCameraCaptureTimeoutMs) {
+      return false;
+    }
+    camera_fb_t* warmup_frame = esp_camera_fb_get();
+    if (warmup_frame == nullptr) {
+      return false;
+    }
+    esp_camera_fb_return(warmup_frame);
+    delay(kCameraWarmupFrameDelayMs);
+  }
+  return true;
+}
+
 stackchan::Result capture_camera_frame_to_result(uint8_t quality, const char* command_id) {
   const uint32_t started_ms = millis();
   if (stackchan_camera_sensor != nullptr) {
     stackchan_camera_sensor->set_quality(
         stackchan_camera_sensor,
         camera_driver_quality_from_goal(quality));
+  }
+  if (!drain_camera_warmup_frames(started_ms)) {
+    return camera_capture_failed_result("camera warmup frame drain failed");
   }
   camera_fb_t* frame = esp_camera_fb_get();
   if (frame == nullptr) {
