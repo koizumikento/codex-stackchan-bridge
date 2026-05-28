@@ -1096,6 +1096,9 @@ echo "STACKCHAN_BRIDGE_STATUS_ATTEMPTS=$status_attempt"
 [ "$status_result" -eq 0 ] || result=1
 echo "STACKCHAN_BRIDGE_STATUS_CONNECTED=$([ "$status_connected_result" -eq 0 ] && echo 1 || echo 0)"
 [ "$status_connected_result" -eq 0 ] || result=1
+if [ "$status_connected_result" -eq 0 ]; then
+  firmware_ready_seen=1
+fi
 if [ "{led_check}" = "1" ]; then
   for led_pattern in progress success off; do
     echo "--- stackchanctl led $led_pattern ---"

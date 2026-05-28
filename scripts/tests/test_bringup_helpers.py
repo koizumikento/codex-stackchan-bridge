@@ -142,6 +142,7 @@ class MicroRosAgentContainerTests(unittest.TestCase):
 
         command = docker_run.call_args.args[1]
         self.assertIn("firmware_ready_seen=0", command)
+        self.assertIn('if [ "$status_connected_result" -eq 0 ]; then', command)
         self.assertIn('firmware_ready_seen=1', command)
         self.assertIn('STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$firmware_ready_seen', command)
         self.assertIn('[ "$firmware_ready_seen" = "1" ] || result=1', command)

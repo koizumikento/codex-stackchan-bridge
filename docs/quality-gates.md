@@ -150,7 +150,10 @@ Required for bridge event changes:
   idempotency rule so retried chunks cannot be decoded twice.
 - Smoke helper tests preserve early readiness observations such as
   `firmware_ready` across paginated event queries, especially for long media
-  smokes where later event pages may no longer contain startup events.
+  smokes where later event pages may no longer contain startup events. Repeated
+  hardware smokes may also count a connected public status sample as a harness
+  readiness observation when the firmware was already running before the bridge
+  started.
 - Camera routing tests cover metadata-only command results, oversize discard,
   timeout/failure propagation, and no image bytes in public observations.
 - `perform` remains reserved unless implemented; if implemented, bridge tests
