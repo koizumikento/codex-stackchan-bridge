@@ -93,7 +93,10 @@ Do not put large unbounded payloads into simple services when an action plus chu
 
 Audio payloads use bounded chunk topics. Baseline audio is PCM 16 kHz mono 16-bit with 20 ms chunks by default and 40 ms chunks allowed when transport overhead matters.
 
-Camera capture is QVGA JPEG snapshot only in the baseline contract. Continuous streaming requires a documented resource and transport decision.
+Camera capture is QVGA JPEG snapshot only in the baseline contract. The action
+coordinates request/progress/completion; JPEG bytes use a bounded camera chunk
+topic correlated by `device_id` and `command_id`. Continuous streaming requires
+a separate documented resource and transport decision.
 
 ## Testing
 

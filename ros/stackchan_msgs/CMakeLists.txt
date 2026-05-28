@@ -9,6 +9,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AudioChunk.msg"
   "msg/AudioPlaybackAck.msg"
+  "msg/CameraFrameChunk.msg"
   "msg/CapabilityStatus.msg"
   "msg/CommandMeta.msg"
   "msg/CompressedImagePayload.msg"

@@ -83,7 +83,9 @@ AUDIO_PLAYBACK_CHUNK_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_DISCOVERY_WAIT_SEC = 0.35
 AUDIO_PLAYBACK_EXPECTED_SUBSCRIPTIONS = 1
 CAMERA_JPEG_FORMAT = "jpeg"
+CAMERA_CHUNK_JPEG_FORMAT = 1
 CAMERA_MAX_PAYLOAD_BYTES = 96 * 1024
+CAMERA_CHUNK_MAX_BYTES = 256
 
 
 def _audio_playback_first_goal_bytes() -> int:
@@ -176,6 +178,116 @@ class _AudioCaptureCollector:
             )
             return b""
         return b"".join(self._chunks[index] for index in expected)
+
+
+class _CameraFrameCollector:
+    def __init__(self, device_id: str, command_id: str) -> None:
+        self.device_id = device_id
+        self.command_id = command_id
+        self._chunks: dict[int, bytes] = {}
+        self._total_chunks: int | None = None
+        self._total_bytes: int | None = None
+        self._saw_end = False
+        self.error: ErrorDetail | None = None
+
+    def handle_chunk(self, message) -> None:
+        if getattr(message, "device_id", "") != self.device_id:
+            return
+        if getattr(message, "command_id", "") != self.command_id:
+            return
+        if int(getattr(message, "format", 0)) != CAMERA_CHUNK_JPEG_FORMAT:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk was not JPEG",
+                recoverable=True,
+            )
+            return
+        if int(getattr(message, "width", 0)) != 320 or int(getattr(message, "height", 0)) != 240:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk metadata was not QVGA",
+                recoverable=True,
+            )
+            return
+        total_bytes = int(getattr(message, "total_bytes", 0))
+        total_chunks = int(getattr(message, "total_chunks", 0))
+        if total_bytes <= 0 or total_bytes > CAMERA_MAX_PAYLOAD_BYTES or total_chunks <= 0:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk had invalid bounds metadata",
+                recoverable=True,
+            )
+            return
+        if self._total_bytes is not None and self._total_bytes != total_bytes:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk total byte count changed mid-frame",
+                recoverable=True,
+            )
+            return
+        if self._total_chunks is not None and self._total_chunks != total_chunks:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk count changed mid-frame",
+                recoverable=True,
+            )
+            return
+        data = bytes(getattr(message, "data", b""))
+        if not data or len(data) > CAMERA_CHUNK_MAX_BYTES:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk payload size was invalid",
+                recoverable=True,
+            )
+            return
+        sequence = int(getattr(message, "sequence", 0))
+        if sequence < 0 or sequence >= total_chunks:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk sequence was out of range",
+                recoverable=True,
+            )
+            return
+        self._total_bytes = total_bytes
+        self._total_chunks = total_chunks
+        self._chunks[sequence] = data
+        if bool(getattr(message, "end_of_stream", False)):
+            self._saw_end = True
+
+    def complete(self) -> bool:
+        return (
+            self._total_chunks is not None
+            and self._saw_end
+            and sorted(self._chunks) == list(range(self._total_chunks))
+        )
+
+    def jpeg(self) -> bytes:
+        if self.error is not None:
+            return b""
+        if self._total_chunks is None or self._total_bytes is None:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera capture completed without JPEG chunks",
+                recoverable=True,
+            )
+            return b""
+        expected = list(range(self._total_chunks))
+        if sorted(self._chunks) != expected:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunks were not contiguous",
+                recoverable=True,
+            )
+            return b""
+        data = b"".join(self._chunks[index] for index in expected)
+        if len(data) != self._total_bytes:
+            self.error = ErrorDetail(
+                code="CAMERA_CAPTURE_FAILED",
+                message="camera frame chunk byte count did not match metadata",
+                recoverable=True,
+            )
+            return b""
+        return data
 
 
 class BridgeClient(Protocol):
@@ -495,7 +607,7 @@ class RclpyBridgeClient:
                 RunMotion,
                 Say,
             )
-            from stackchan_msgs.msg import AudioChunk
+            from stackchan_msgs.msg import AudioChunk, CameraFrameChunk
             from stackchan_msgs.srv import GetHeadPose, GetPowerStatus, GetStatus, SetFace, SetLed
             from stackchan_msgs.srv import (
                 ClearEventCursor,
@@ -527,12 +639,16 @@ class RclpyBridgeClient:
         self._capture_audio_type = CaptureAudio
         self._capture_camera_type = CaptureCamera
         self._audio_chunk_type = AudioChunk
+        self._camera_chunk_type = CameraFrameChunk
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
         self._audio_chunk_publishers = {}
         self._audio_chunk_qos = QoSProfile(depth=8)
         self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         self._audio_chunk_qos.durability = DurabilityPolicy.VOLATILE
+        self._camera_chunk_qos = QoSProfile(depth=64)
+        self._camera_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self._camera_chunk_qos.durability = DurabilityPolicy.VOLATILE
 
     def get_status(self, meta: CommandMeta, timeout: float) -> DeviceStatus:
         request = self._get_status_type.Request()
@@ -808,35 +924,44 @@ class RclpyBridgeClient:
                     recoverable=False,
                 ),
             )
-        camera_result = {}
+        collector = _CameraFrameCollector(meta.device_id, meta.command_id)
+        subscription = self._node.create_subscription(
+            self._camera_chunk_type,
+            f"/stackchan/{meta.device_id}/device/camera/chunks",
+            collector.handle_chunk,
+            getattr(self, "_camera_chunk_qos", 16),
+        )
+        self._wait_for_camera_frame_publisher(subscription, timeout)
         goal = self._capture_camera_type.Goal()
         _copy_meta(goal.meta, meta)
         goal.format = CAMERA_JPEG_FORMAT
         goal.width = 320
         goal.height = 240
         goal.quality = quality
-        response = self._send_action_goal(
-            self._capture_camera_type,
-            f"/stackchan/{meta.device_id}/cmd/camera/capture",
-            goal,
-            wait=wait,
-            timeout=timeout,
-            on_result=lambda result: camera_result.setdefault("image", result.image),
-        )
+        try:
+            response = self._send_action_goal(
+                self._capture_camera_type,
+                f"/stackchan/{meta.device_id}/cmd/camera/capture",
+                goal,
+                wait=wait,
+                timeout=timeout,
+            )
+            if response.ok:
+                self._spin_camera_collector_until_complete(collector, timeout)
+        finally:
+            destroy_subscription = getattr(self._node, "destroy_subscription", None)
+            if destroy_subscription is not None:
+                destroy_subscription(subscription)
         if not response.ok:
             return response
-        image = camera_result.get("image")
-        if image is None:
+        jpeg = collector.jpeg()
+        if collector.error is not None:
             return BridgeCommandResponse(
                 ok=False,
                 result_state=ResultState.REJECTED,
-                error=ErrorDetail(
-                    code="CAMERA_CAPTURE_FAILED",
-                    message="camera capture completed without an image payload",
-                    recoverable=True,
-                ),
+                error=collector.error,
             )
-        _write_camera_capture_jpeg(output, image)
+        _write_camera_capture_jpeg(output, jpeg)
         return response
 
     def list_events(
@@ -1055,6 +1180,34 @@ class RclpyBridgeClient:
         if not future.done():
             raise BridgeBackendTimeout()
 
+    def _spin_camera_collector_until_complete(
+        self,
+        collector: _CameraFrameCollector,
+        timeout: float,
+    ) -> None:
+        if collector.complete() or collector.error is not None:
+            return
+        spin_once = getattr(self._rclpy, "spin_once", None)
+        if spin_once is None:
+            return
+        deadline = time.monotonic() + min(max(timeout, 0.1), 2.0)
+        while (
+            not collector.complete()
+            and collector.error is None
+            and time.monotonic() < deadline
+        ):
+            spin_once(self._node, timeout_sec=0.02)
+
+    def _wait_for_camera_frame_publisher(self, subscription, timeout: float) -> None:
+        get_publisher_count = getattr(subscription, "get_publisher_count", None)
+        if get_publisher_count is None:
+            return
+        deadline = time.monotonic() + min(max(timeout, 0.0), 1.0)
+        while get_publisher_count() < 1 and time.monotonic() < deadline:
+            spin_once = getattr(self._rclpy, "spin_once", None)
+            if spin_once is not None:
+                spin_once(self._node, timeout_sec=0.02)
+
     def close(self) -> None:
         self._node.destroy_node()
         self._rclpy.shutdown()
@@ -1145,20 +1298,12 @@ def _write_audio_capture_wav(path: str, pcm: bytes) -> None:
         ) from exc
 
 
-def _write_camera_capture_jpeg(path: str, image) -> None:
+def _write_camera_capture_jpeg(path: str, data: bytes) -> None:
     destination = Path(path)
     if destination.parent != Path(".") and not destination.parent.exists():
         raise BridgeBackendError(
             "CAMERA_CAPTURE_FAILED",
             "camera capture output directory does not exist",
-            recoverable=False,
-        )
-    image_format = getattr(image, "format", "")
-    data = bytes(getattr(image, "data", b""))
-    if image_format != CAMERA_JPEG_FORMAT:
-        raise BridgeBackendError(
-            "UNSUPPORTED_FEATURE",
-            "camera capture only supports JPEG payloads",
             recoverable=False,
         )
     if not data:

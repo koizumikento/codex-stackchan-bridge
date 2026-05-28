@@ -189,8 +189,9 @@ compatibility with PlatformIO-style board options. The default ESP32 meta in
 the pinned `micro_ros_platformio` commit
 allows one firmware service. StackChan bring-up currently needs four
 firmware-owned services, playback, audio capture, and camera capture action
-servers, eight telemetry/event publishers, one capture chunk publisher, and one
-playback chunk subscription, so the meta raises
+servers, eight telemetry/event publishers, audio capture chunks, camera frame
+chunks, playback acknowledgements, and one playback chunk subscription, so the
+meta raises
 `RMW_UXRCE_MAX_SERVICES` to `16`, `RMW_UXRCE_MAX_PUBLISHERS` to `20`, and
 `RMW_UXRCE_MAX_SUBSCRIPTIONS` to `4`. It also raises
 `RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and keeps

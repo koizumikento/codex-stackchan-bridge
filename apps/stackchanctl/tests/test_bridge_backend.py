@@ -1232,25 +1232,45 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(response.error.code, "AUDIO_CAPTURE_FAILED")
         self.assertEqual(node.subscriptions, [])
 
-    def test_capture_camera_writes_jpeg_payload_to_output_file(self) -> None:
+    def test_capture_camera_writes_jpeg_chunks_to_output_file(self) -> None:
         jpeg = b"\xff\xd8stackchan\xff\xd9"
-        action = FakeActionClient(
-            action_result=SimpleNamespace(
-                result=SimpleNamespace(
-                    ok=True,
-                    state=2,
-                    error_code="",
-                    message="",
-                    recoverable=False,
-                ),
-                image=SimpleNamespace(format="jpeg", data=jpeg),
-            )
-        )
+        action = FakeActionClient()
+        node = FakeNode()
+
+        def emit_camera_chunks(node, future) -> None:
+            del future
+            first = FakeCameraFrameChunk()
+            first.device_id = "default"
+            first.command_id = "cmd-camera-0001"
+            first.sequence = 0
+            first.total_chunks = 2
+            first.total_bytes = len(jpeg)
+            first.format = 1
+            first.width = 320
+            first.height = 240
+            first.quality = 80
+            first.data = jpeg[:4]
+            second = FakeCameraFrameChunk()
+            second.device_id = "default"
+            second.command_id = "cmd-camera-0001"
+            second.sequence = 1
+            second.total_chunks = 2
+            second.total_bytes = len(jpeg)
+            second.format = 1
+            second.width = 320
+            second.height = 240
+            second.quality = 80
+            second.end_of_stream = True
+            second.data = jpeg[4:]
+            node.emit_message(first)
+            node.emit_message(second)
+
         client = RclpyBridgeClient.__new__(RclpyBridgeClient)
-        client._rclpy = FakeRclpy()
-        client._node = object()
+        client._rclpy = FakeRclpy(on_spin=emit_camera_chunks)
+        client._node = node
         client._action_client_type = action
         client._capture_camera_type = FakeCaptureCamera
+        client._camera_chunk_type = FakeCameraFrameChunk
         client.get_status = lambda meta, timeout: DeviceStatus(
             device_id=meta.device_id,
             connected=True,
@@ -1284,6 +1304,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(action.last_goal.width, 320)
         self.assertEqual(action.last_goal.height, 240)
         self.assertEqual(action.last_goal.quality, 80)
+        self.assertEqual(node.subscriptions, [])
 
     def test_non_wait_action_preserves_facade_rejection(self) -> None:
         response = _normalize_action_response(
@@ -1445,6 +1466,21 @@ class FakeAudioChunk:
         self.pcm = b""
 
 
+class FakeCameraFrameChunk:
+    def __init__(self) -> None:
+        self.device_id = ""
+        self.command_id = ""
+        self.sequence = 0
+        self.total_chunks = 0
+        self.total_bytes = 0
+        self.format = 0
+        self.width = 0
+        self.height = 0
+        self.quality = 0
+        self.end_of_stream = False
+        self.data = b""
+
+
 class FakePublisher:
     def __init__(self) -> None:
         self.messages = []
@@ -1476,6 +1512,9 @@ class FakeNode:
         return True
 
     def emit_audio_chunk(self, message) -> None:
+        self.emit_message(message)
+
+    def emit_message(self, message) -> None:
         for subscription in list(self.subscriptions):
             subscription.callback(message)
 

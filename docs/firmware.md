@@ -254,11 +254,16 @@ pull the next chunk by `command_id` and sequence after action acceptance. The
 pull response is still validated as a normal `AudioChunk(direction=PLAYBACK)`;
 the helper is transport plumbing, not a raw audio command surface.
 
-Camera snapshot starts as a bounded QVGA JPEG action. Firmware should prefer
-driver-native JPEG capture for this path and only use RGB-to-JPEG conversion as
-a fallback when a board profile cannot produce JPEG frames directly. Camera
-quality values from the ROS action are mapped onto the camera driver quality
-range locally in firmware.
+Camera snapshot starts as a bounded QVGA JPEG action plus a bounded payload
+topic. Firmware should prefer driver-native JPEG capture for this path and only
+use RGB-to-JPEG conversion as a fallback when a board profile cannot produce
+JPEG frames directly. Camera quality values from the ROS action are mapped onto
+the camera driver quality range locally in firmware. The action result carries
+structured completion only; JPEG bytes are published on
+`/stackchan/<device_id>/device/camera/chunks` as `CameraFrameChunk` messages
+correlated by `command_id`. Camera chunks are bounded to 256 bytes and paced on
+the firmware side so the default serial path does not depend on action-result
+payload delivery or per-chunk application ACKs.
 
 ## Capability status and degraded operation
 

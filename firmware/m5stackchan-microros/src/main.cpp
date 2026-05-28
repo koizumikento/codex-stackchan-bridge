@@ -38,6 +38,7 @@
 #include <stackchan_msgs/action/play_audio.h>
 #include <stackchan_msgs/msg/audio_chunk.h>
 #include <stackchan_msgs/msg/audio_playback_ack.h>
+#include <stackchan_msgs/msg/camera_frame_chunk.h>
 #include <stackchan_msgs/msg/capability_status.h>
 #include <stackchan_msgs/msg/head_pose.h>
 #include <stackchan_msgs/msg/imu_raw.h>
@@ -274,6 +275,7 @@ constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
+constexpr unsigned long kCameraFrameChunkPublishIntervalMs = 4;
 constexpr int kYawServoId = 1;
 constexpr int kPitchServoId = 2;
 constexpr int kYawDefaultZeroPos = 460;
@@ -366,6 +368,7 @@ rcl_publisher_t status_ros_publisher;
 rcl_publisher_t touch_state_ros_publisher;
 rcl_publisher_t audio_chunk_ros_publisher;
 rcl_publisher_t audio_playback_ack_ros_publisher;
+rcl_publisher_t camera_frame_chunk_ros_publisher;
 rcl_subscription_t audio_chunk_subscription;
 rcl_client_t audio_playback_chunk_client;
 rcl_service_t audio_playback_load_service;
@@ -388,6 +391,7 @@ stackchan_msgs__msg__TouchState touch_state_ros_message;
 stackchan_msgs__msg__AudioChunk audio_chunk_ros_message;
 stackchan_msgs__msg__AudioChunk audio_capture_chunk_ros_message;
 stackchan_msgs__msg__AudioPlaybackAck audio_playback_ack_ros_message;
+stackchan_msgs__msg__CameraFrameChunk camera_frame_chunk_ros_message;
 stackchan_msgs__action__CaptureAudio_SendGoal_Request capture_audio_goal_request;
 stackchan_msgs__action__CaptureAudio_SendGoal_Response capture_audio_goal_response;
 stackchan_msgs__action__CaptureAudio_GetResult_Request capture_audio_result_request;
@@ -422,6 +426,7 @@ char motion_set_service_name[96] = "";
 char audio_chunk_topic_name[96] = "";
 char audio_playback_chunk_topic_name[96] = "";
 char audio_playback_ack_topic_name[96] = "";
+char camera_frame_chunk_topic_name[96] = "";
 char audio_playback_chunk_service_name[96] = "";
 char audio_playback_load_service_name[96] = "";
 char capture_audio_action_name[96] = "";
@@ -2397,12 +2402,16 @@ bool reserve_capture_camera_goal_strings() {
 }
 
 bool reserve_capture_camera_result_storage() {
-  rosidl_runtime_c__uint8__Sequence__fini(
-      &capture_camera_result_response.result.image.data);
-  return reserve_ros_string(&capture_camera_result_response.result.image.format, 16) &&
+  return reserve_ros_string(&capture_camera_result_response.result.image.format, 16);
+}
+
+bool reserve_camera_frame_chunk_message_storage() {
+  rosidl_runtime_c__uint8__Sequence__fini(&camera_frame_chunk_ros_message.data);
+  return reserve_ros_string(&camera_frame_chunk_ros_message.device_id, 32) &&
+         reserve_ros_string(&camera_frame_chunk_ros_message.command_id, 36) &&
          rosidl_runtime_c__uint8__Sequence__init(
-             &capture_camera_result_response.result.image.data,
-             stackchan::kCameraMaxPayloadBytes);
+             &camera_frame_chunk_ros_message.data,
+             stackchan::kCameraFrameChunkBytes);
 }
 
 bool reserve_audio_chunk_message_storage() {
@@ -2772,6 +2781,15 @@ void build_audio_playback_ack_topic_name() {
   audio_playback_ack_topic_name[sizeof(audio_playback_ack_topic_name) - 1] = '\0';
 }
 
+void build_camera_frame_chunk_topic_name() {
+  snprintf(
+      camera_frame_chunk_topic_name,
+      sizeof(camera_frame_chunk_topic_name),
+      "/stackchan/%s/device/camera/chunks",
+      STACKCHAN_DEVICE_ID);
+  camera_frame_chunk_topic_name[sizeof(camera_frame_chunk_topic_name) - 1] = '\0';
+}
+
 void build_audio_playback_chunk_service_name() {
   snprintf(
       audio_playback_chunk_service_name,
@@ -2913,6 +2931,7 @@ bool initialize_microros_entities() {
   touch_state_ros_publisher = rcl_get_zero_initialized_publisher();
   audio_chunk_ros_publisher = rcl_get_zero_initialized_publisher();
   audio_playback_ack_ros_publisher = rcl_get_zero_initialized_publisher();
+  camera_frame_chunk_ros_publisher = rcl_get_zero_initialized_publisher();
   audio_chunk_subscription = rcl_get_zero_initialized_subscription();
   audio_playback_chunk_client = rcl_get_zero_initialized_client();
   audio_playback_load_service = rcl_get_zero_initialized_service();
@@ -2941,6 +2960,7 @@ bool initialize_microros_entities() {
   memset(&audio_chunk_ros_message, 0, sizeof(audio_chunk_ros_message));
   memset(&audio_capture_chunk_ros_message, 0, sizeof(audio_capture_chunk_ros_message));
   memset(&audio_playback_ack_ros_message, 0, sizeof(audio_playback_ack_ros_message));
+  memset(&camera_frame_chunk_ros_message, 0, sizeof(camera_frame_chunk_ros_message));
   memset(&capture_audio_goal_request, 0, sizeof(capture_audio_goal_request));
   memset(&capture_audio_goal_response, 0, sizeof(capture_audio_goal_response));
   memset(&capture_audio_result_request, 0, sizeof(capture_audio_result_request));
@@ -3132,6 +3152,7 @@ bool initialize_microros_entities() {
   build_audio_chunk_topic_name();
   build_audio_playback_chunk_topic_name();
   build_audio_playback_ack_topic_name();
+  build_camera_frame_chunk_topic_name();
   build_audio_playback_chunk_service_name();
   build_audio_playback_load_service_name();
   rmw_qos_profile_t core_audio_chunk_qos = rmw_qos_profile_default;
@@ -3146,6 +3167,10 @@ bool initialize_microros_entities() {
   core_audio_playback_ack_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   core_audio_playback_ack_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
   core_audio_playback_ack_qos.depth = 8;
+  rmw_qos_profile_t core_camera_frame_chunk_qos = rmw_qos_profile_default;
+  core_camera_frame_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  core_camera_frame_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  core_camera_frame_chunk_qos.depth = 16;
 #if STACKCHAN_MICROROS_CORE_AUDIO_TOPIC_BRINGUP
   if (!rcl_ok(rclc_publisher_init(
                   &audio_chunk_ros_publisher,
@@ -3173,6 +3198,15 @@ bool initialize_microros_entities() {
       "capture_audio_action_server_init");
 #endif
 #if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+  if (!rcl_ok(rclc_publisher_init(
+                  &camera_frame_chunk_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, CameraFrameChunk),
+                  camera_frame_chunk_topic_name,
+                  &core_camera_frame_chunk_qos),
+              "camera_frame_chunk_publisher_init")) {
+    return false;
+  }
   (void)try_initialize_capture_camera_action_server(
       "capture_camera_action_server_init");
 #endif
@@ -3271,6 +3305,13 @@ bool initialize_microros_entities() {
   }
 #endif
 #if STACKCHAN_MICROROS_CORE_CAPTURE_CAMERA_BRINGUP
+  if (!stackchan_msgs__msg__CameraFrameChunk__init(&camera_frame_chunk_ros_message) ||
+      !reserve_camera_frame_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=camera_frame_chunk_message_init result=false");
+    stackchan_msgs__msg__CameraFrameChunk__fini(&camera_frame_chunk_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
   if (!stackchan_msgs__action__CaptureCamera_SendGoal_Request__init(&capture_camera_goal_request) ||
       !stackchan_msgs__action__CaptureCamera_SendGoal_Response__init(&capture_camera_goal_response) ||
       !stackchan_msgs__action__CaptureCamera_GetResult_Request__init(&capture_camera_result_request) ||
@@ -3284,6 +3325,7 @@ bool initialize_microros_entities() {
     stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
     stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
     stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__msg__CameraFrameChunk__fini(&camera_frame_chunk_ros_message);
     stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
     return false;
   }
@@ -3620,6 +3662,7 @@ bool initialize_microros_entities() {
   build_audio_chunk_topic_name();
   build_audio_playback_chunk_topic_name();
   build_audio_playback_ack_topic_name();
+  build_camera_frame_chunk_topic_name();
   build_audio_playback_chunk_service_name();
   build_audio_playback_load_service_name();
   rmw_qos_profile_t audio_chunk_qos = rmw_qos_profile_default;
@@ -3634,6 +3677,10 @@ bool initialize_microros_entities() {
   audio_playback_ack_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   audio_playback_ack_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
   audio_playback_ack_qos.depth = 8;
+  rmw_qos_profile_t camera_frame_chunk_qos = rmw_qos_profile_default;
+  camera_frame_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+  camera_frame_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+  camera_frame_chunk_qos.depth = 16;
   if (!rcl_ok(rclc_publisher_init(
                   &audio_chunk_ros_publisher,
                   &microros_node,
@@ -3679,6 +3726,15 @@ bool initialize_microros_entities() {
     return false;
   }
   audio_playback_load_service_initialized = true;
+  if (!rcl_ok(rclc_publisher_init(
+                  &camera_frame_chunk_ros_publisher,
+                  &microros_node,
+                  ROSIDL_GET_MSG_TYPE_SUPPORT(stackchan_msgs, msg, CameraFrameChunk),
+                  camera_frame_chunk_topic_name,
+                  &camera_frame_chunk_qos),
+              "camera_frame_chunk_publisher_init")) {
+    return false;
+  }
   (void)try_initialize_capture_audio_action_server(
       "capture_audio_action_server_init");
   (void)try_initialize_capture_camera_action_server(
@@ -3901,6 +3957,24 @@ bool initialize_microros_entities() {
     stackchan_msgs__msg__StackChanEvent__fini(&event_ros_message);
     return false;
   }
+  if (!stackchan_msgs__msg__CameraFrameChunk__init(&camera_frame_chunk_ros_message) ||
+      !reserve_camera_frame_chunk_message_storage()) {
+    stackchan_diag_println("stackchan micro_ros_step=camera_frame_chunk_message_init result=false");
+    stackchan_msgs__msg__CameraFrameChunk__fini(&camera_frame_chunk_ros_message);
+    stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
+    stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
+    stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
+    stackchan_msgs__action__PlayAudio_SendGoal_Request__fini(&play_audio_goal_request);
+    stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
+    stackchan_msgs__action__CaptureAudio_GetResult_Response__fini(&capture_audio_result_response);
+    stackchan_msgs__action__CaptureAudio_GetResult_Request__fini(&capture_audio_result_request);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Response__fini(&capture_audio_goal_response);
+    stackchan_msgs__action__CaptureAudio_SendGoal_Request__fini(&capture_audio_goal_request);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_capture_chunk_ros_message);
+    stackchan_msgs__msg__AudioChunk__fini(&audio_chunk_ros_message);
+    stackchan_msgs__msg__StackChanStatus__fini(&status_ros_message);
+    return false;
+  }
   if (!stackchan_msgs__action__CaptureCamera_SendGoal_Request__init(&capture_camera_goal_request) ||
       !stackchan_msgs__action__CaptureCamera_SendGoal_Response__init(&capture_camera_goal_response) ||
       !stackchan_msgs__action__CaptureCamera_GetResult_Request__init(&capture_camera_result_request) ||
@@ -3914,6 +3988,7 @@ bool initialize_microros_entities() {
     stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
     stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
     stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+    stackchan_msgs__msg__CameraFrameChunk__fini(&camera_frame_chunk_ros_message);
     stackchan_msgs__action__PlayAudio_GetResult_Response__fini(&play_audio_result_response);
     stackchan_msgs__action__PlayAudio_GetResult_Request__fini(&play_audio_result_request);
     stackchan_msgs__action__PlayAudio_SendGoal_Response__fini(&play_audio_goal_response);
@@ -4358,6 +4433,7 @@ void destroy_microros_entities() {
       stackchan_msgs__action__CaptureCamera_GetResult_Request__fini(&capture_camera_result_request);
       stackchan_msgs__action__CaptureCamera_SendGoal_Response__fini(&capture_camera_goal_response);
       stackchan_msgs__action__CaptureCamera_SendGoal_Request__fini(&capture_camera_goal_request);
+      stackchan_msgs__msg__CameraFrameChunk__fini(&camera_frame_chunk_ros_message);
 #endif
 #if STACKCHAN_MICROROS_CORE_CAPTURE_AUDIO_BRINGUP
       stackchan_msgs__action__CaptureAudio_FeedbackMessage__fini(&capture_audio_feedback_message);
@@ -4401,6 +4477,7 @@ void destroy_microros_entities() {
         fini_result = rcl_action_server_fini(&capture_camera_action_server, &microros_node);
         capture_camera_action_server_initialized = false;
       }
+      fini_result = rcl_publisher_fini(&camera_frame_chunk_ros_publisher, &microros_node);
 #endif
 #if STACKCHAN_MICROROS_CORE_PLAY_AUDIO_BRINGUP
       if (audio_playback_load_service_initialized) {
@@ -4494,6 +4571,7 @@ void destroy_microros_entities() {
     fini_result = rcl_publisher_fini(&touch_state_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&audio_chunk_ros_publisher, &microros_node);
     fini_result = rcl_publisher_fini(&audio_playback_ack_ros_publisher, &microros_node);
+    fini_result = rcl_publisher_fini(&camera_frame_chunk_ros_publisher, &microros_node);
     fini_result = rcl_subscription_fini(&audio_chunk_subscription, &microros_node);
     if (capture_audio_action_server_initialized) {
       fini_result = rcl_action_server_fini(&capture_audio_action_server, &microros_node);
@@ -5010,15 +5088,54 @@ void publish_capture_camera_feedback(float progress, const char* message) {
       "capture_camera_publish_feedback");
 }
 
-bool set_capture_camera_image_result(const uint8_t* data, size_t length) {
-  if (data == nullptr || length == 0 ||
-      length > stackchan::kCameraMaxPayloadBytes ||
-      capture_camera_result_response.result.image.data.capacity < length) {
+bool publish_capture_camera_frame_chunks(
+    const uint8_t* data,
+    size_t length,
+    uint8_t quality,
+    const char* command_id) {
+  if (data == nullptr || length == 0 || length > stackchan::kCameraMaxPayloadBytes ||
+      camera_frame_chunk_ros_message.data.capacity < stackchan::kCameraFrameChunkBytes) {
     return false;
   }
-  assign_ros_string(&capture_camera_result_response.result.image.format, "jpeg");
-  memcpy(capture_camera_result_response.result.image.data.data, data, length);
-  capture_camera_result_response.result.image.data.size = length;
+  const uint32_t total_chunks =
+      static_cast<uint32_t>(
+          (length + stackchan::kCameraFrameChunkBytes - 1) /
+          stackchan::kCameraFrameChunkBytes);
+  assign_ros_string(&camera_frame_chunk_ros_message.device_id, STACKCHAN_DEVICE_ID);
+  assign_ros_string(
+      &camera_frame_chunk_ros_message.command_id,
+      command_id == nullptr ? "" : command_id);
+  camera_frame_chunk_ros_message.total_chunks = total_chunks;
+  camera_frame_chunk_ros_message.total_bytes = static_cast<uint32_t>(length);
+  camera_frame_chunk_ros_message.format =
+      stackchan_msgs__msg__CameraFrameChunk__JPEG;
+  camera_frame_chunk_ros_message.width = stackchan::kCameraWidth;
+  camera_frame_chunk_ros_message.height = stackchan::kCameraHeight;
+  camera_frame_chunk_ros_message.quality = quality;
+  for (uint32_t sequence = 0; sequence < total_chunks; ++sequence) {
+    const size_t offset =
+        static_cast<size_t>(sequence) * stackchan::kCameraFrameChunkBytes;
+    const size_t remaining = length - offset;
+    const size_t chunk_length =
+        remaining < stackchan::kCameraFrameChunkBytes
+            ? remaining
+            : stackchan::kCameraFrameChunkBytes;
+    camera_frame_chunk_ros_message.sequence = sequence;
+    camera_frame_chunk_ros_message.end_of_stream = sequence + 1 == total_chunks;
+    memcpy(camera_frame_chunk_ros_message.data.data, data + offset, chunk_length);
+    camera_frame_chunk_ros_message.data.size = chunk_length;
+    if (!rcl_ok(
+            rcl_publish(
+                &camera_frame_chunk_ros_publisher,
+                &camera_frame_chunk_ros_message,
+                nullptr),
+            "camera_frame_chunk_publish")) {
+      camera_frame_chunk_ros_message.data.size = 0;
+      return false;
+    }
+    delay(kCameraFrameChunkPublishIntervalMs);
+  }
+  camera_frame_chunk_ros_message.data.size = 0;
   return true;
 }
 
@@ -5036,7 +5153,7 @@ uint8_t camera_driver_quality_from_goal(uint8_t quality) {
              (stackchan::kCameraMaxQuality - stackchan::kCameraMinQuality));
 }
 
-stackchan::Result capture_camera_frame_to_result(uint8_t quality) {
+stackchan::Result capture_camera_frame_to_result(uint8_t quality, const char* command_id) {
   const uint32_t started_ms = millis();
   if (stackchan_camera_sensor != nullptr) {
     stackchan_camera_sensor->set_quality(
@@ -5062,9 +5179,9 @@ stackchan::Result capture_camera_frame_to_result(uint8_t quality) {
       esp_camera_fb_return(frame);
       return camera_capture_failed_result("camera JPEG payload exceeds 96 KiB");
     }
-    if (!set_capture_camera_image_result(frame->buf, jpeg_length)) {
+    if (!publish_capture_camera_frame_chunks(frame->buf, jpeg_length, quality, command_id)) {
       esp_camera_fb_return(frame);
-      return camera_capture_failed_result("camera JPEG result buffer is unavailable");
+      return camera_capture_failed_result("camera JPEG chunk publish failed");
     }
     esp_camera_fb_return(frame);
     return camera_capture_completed_result();
@@ -5088,9 +5205,9 @@ stackchan::Result capture_camera_frame_to_result(uint8_t quality) {
     free(jpeg_buffer);
     return camera_capture_failed_result("camera JPEG payload exceeds 96 KiB");
   }
-  if (!set_capture_camera_image_result(jpeg_buffer, jpeg_length)) {
+  if (!publish_capture_camera_frame_chunks(jpeg_buffer, jpeg_length, quality, command_id)) {
     free(jpeg_buffer);
-    return camera_capture_failed_result("camera JPEG result buffer is unavailable");
+    return camera_capture_failed_result("camera JPEG chunk publish failed");
   }
   free(jpeg_buffer);
   return camera_capture_completed_result();
@@ -5115,7 +5232,11 @@ void start_capture_camera_goal(
   publish_capture_camera_feedback(0.0f, "capture started");
   publish_status_heartbeat();
   const stackchan::Result result =
-      capture_camera_frame_to_result(request.goal.quality);
+      capture_camera_frame_to_result(
+          request.goal.quality,
+          request.goal.meta.command_id.data != nullptr
+              ? request.goal.meta.command_id.data
+              : "");
   publish_capture_camera_feedback(result.ok ? 1.0f : 0.0f, result.message);
   const int8_t action_status =
       result.ok

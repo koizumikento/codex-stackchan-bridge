@@ -50,8 +50,8 @@ Required for CLI changes:
   absence of speech text, provider request bodies, raw provider speaker IDs,
   PCM, and transcript text in CLI JSON, MCP results, events, and diagnostics.
 - Camera command tests cover QVGA JPEG metadata, `quality=1..95`, max 96 KiB,
-  timeout, oversized payload handling, unsupported firmware, and absence of
-  image bytes/base64 in CLI JSON or diagnostics.
+  chunk reassembly, timeout, oversized payload handling, unsupported firmware,
+  and absence of image bytes/base64 in CLI JSON or diagnostics.
 - Maintenance-separation tests prove normal CLI/MCP/Codex command groups cannot
   reach calibration writes, raw hardware controls, NVS import/export, or
   maintenance unlocks.
@@ -154,8 +154,9 @@ Required for bridge event changes:
   hardware smokes may also count a connected public status sample as a harness
   readiness observation when the firmware was already running before the bridge
   started.
-- Camera routing tests cover metadata-only command results, oversize discard,
-  timeout/failure propagation, and no image bytes in public observations.
+- Camera routing tests cover metadata-only action results, chunk-topic payload
+  reassembly, oversize discard, timeout/failure propagation, and no image bytes
+  in public observations.
 - `perform` remains reserved unless implemented; if implemented, bridge tests
   cover cancel, preempt, timeout, partial failure, per-step result aggregation,
   and prohibition on maintenance/calibration steps.

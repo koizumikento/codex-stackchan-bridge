@@ -15,6 +15,7 @@ constexpr uint16_t kCameraHeight = 240;
 constexpr uint8_t kCameraMinQuality = 1;
 constexpr uint8_t kCameraMaxQuality = 95;
 constexpr uint32_t kCameraMaxPayloadBytes = 98304;
+constexpr uint16_t kCameraFrameChunkBytes = 256;
 constexpr uint16_t kButtonDebounceMs = 30;
 constexpr uint16_t kButtonHeldMs = 700;
 constexpr float kImuPlacedDownGravityMin = 7.0f;

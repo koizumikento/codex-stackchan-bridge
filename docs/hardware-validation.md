@@ -2073,6 +2073,20 @@ KOIZUMI-112 diagnostic firmware update:
   regenerated micro-ROS build was still running, but the remaining container
   completed successfully: RAM 276448 / 327680 bytes (84.4%), Flash 903105 /
   6553600 bytes (13.8%). This is not an upload or audible smoke result.
+- KOIZUMI-173 moves camera JPEG bytes off the camera action result and onto
+  `/stackchan/default/device/camera/chunks`. The first 1024 byte chunk smoke
+  failed with firmware `camera JPEG chunk publish failed`. The 512 byte chunk
+  build uploaded but the camera smoke rejected the frame as non-contiguous,
+  confirming best-effort serial drops when the burst is too large. The 2026-05-28
+  256 byte, 4 ms paced chunk build uploaded successfully to COM3 and passed
+  camera-only smoke through the host serial TCP bridge:
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=2660`. A follow-up direct
+  capture through the same Agent/bridge path saved
+  `tmp/stackchan_camera_preview.jpg` at 2651 bytes. Normal output/log redaction
+  checks remained clean; JPEG bytes and base64 did not appear in CLI JSON,
+  public events, or normal logs.
 
 ## Cleanup
 

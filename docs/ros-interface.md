@@ -171,14 +171,45 @@ Rules:
 
 ### `CompressedImagePayload`
 
-Camera action results use a compressed-image shaped project message:
+`CompressedImagePayload` is retained for compatibility with the initial
+camera action shape:
 
 ```text
 string<=16 format
 uint8[<=98304] data
 ```
 
-`format` is `jpeg` for the baseline camera contract. The payload limit is 96 KiB.
+`format` is `jpeg` for the baseline camera contract. The payload limit is
+96 KiB. New default camera transport must not put JPEG bytes in action result
+responses; use `/stackchan/<device_id>/device/camera/chunks` instead and leave
+the compatibility action-result payload empty.
+
+### `CameraFrameChunk`
+
+Camera snapshot payload bytes use bounded chunks:
+
+```text
+uint8 JPEG=1
+
+string<=32 device_id
+string<=36 command_id
+uint32 sequence
+uint32 total_chunks
+uint32 total_bytes
+uint8 format
+uint32 width
+uint32 height
+uint8 quality
+bool end_of_stream
+uint8[<=256] data
+```
+
+`format=JPEG`, `width=320`, `height=240`, and `total_bytes<=98304` are the
+baseline. Firmware sends these chunks over best-effort topic transport with a
+small inter-chunk pace rather than putting the JPEG in the action result.
+Receivers correlate chunks by `device_id` and `command_id`, require contiguous
+`sequence` values from `0`, and write payload bytes only to the explicit
+capture output file.
 
 Baseline error codes:
 
@@ -1528,7 +1559,8 @@ Goal fields:
 Result fields:
 
 - `result`
-- `image`
+- `image` compatibility field; default implementations leave it empty and
+  deliver JPEG bytes on `/stackchan/<device_id>/device/camera/chunks`
 
 Feedback fields:
 
@@ -1542,11 +1574,12 @@ Baseline camera behavior:
 - no follow mode or video-like frame sequences
 - QVGA JPEG target
 - `quality` range is 1-95
-- `image` uses `CompressedImagePayload`
-- maximum image payload is 96 KiB
+- maximum JPEG payload is 96 KiB, delivered as `CameraFrameChunk` messages
+  on `/stackchan/<device_id>/device/camera/chunks`
 - Action acceptance means the snapshot request was accepted, not that a valid
   JPEG is already available. Frame acquisition, JPEG encode, size validation,
-  and result delivery are separate failure points.
+  chunk delivery, reassembly, and output-file write are separate failure
+  points.
 - CLI JSON, MCP tool results, public events, and normal logs report metadata
   only; they must not inline base64, JPEG bytes, or image payloads
 - oversize frames are discarded and mapped to `CAMERA_CAPTURE_FAILED` with
@@ -1564,8 +1597,28 @@ Baseline camera behavior:
 - the bridge uses the media-action timeout for camera result delivery because
   firmware frame acquisition and JPEG encoding may exceed the short synchronous
   service timeout
-- result transport must enforce the 96 KiB maximum before exposing metadata to
+- chunk transport must enforce the 96 KiB maximum before exposing metadata to
   callers
+
+### `/stackchan/<device_id>/device/camera/chunks`
+
+Purpose: firmware-owned QVGA JPEG snapshot payload chunks.
+
+Message type: `stackchan_msgs/CameraFrameChunk`
+
+Rules:
+
+- published only for an accepted camera capture action
+- `device_id` and `command_id` match the capture goal metadata
+- `format=JPEG`, `width=320`, `height=240`, and `quality` echoes the accepted
+  goal
+- `sequence` starts at `0`, `total_chunks` is stable across the frame, and
+  the final chunk has `end_of_stream=true`
+- `total_bytes` is the final JPEG byte count and must be `1..98304`
+- each chunk is at most 256 bytes; bridge subscribers should use a deeper local
+  receive queue than the firmware publisher to absorb short callback stalls
+- payload bytes must not appear in normal logs, public events, CLI JSON, or MCP
+  results
 
 ### `/stackchan/<device_id>/cmd/perform`
 
@@ -1710,6 +1763,8 @@ Baseline QoS:
 - `/stackchan/<device_id>/device/audio/playback/chunks`: reliable, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/playback/acks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
+- `/stackchan/<device_id>/device/camera/chunks`: best effort, volatile.
+  Firmware keeps last 16; bridge receivers should keep at least 64.
 - Service and action request/response paths use reliable QoS.
 - Safety/fault signals use reliable QoS and must not be blocked by camera or audio work.
 

@@ -9,6 +9,7 @@ MSGS = ROOT / "ros" / "stackchan_msgs"
 EXPECTED_INTERFACES = [
     "msg/AudioChunk.msg",
     "msg/AudioPlaybackAck.msg",
+    "msg/CameraFrameChunk.msg",
     "msg/CapabilityStatus.msg",
     "msg/CommandMeta.msg",
     "msg/CompressedImagePayload.msg",
@@ -298,6 +299,23 @@ def main() -> int:
 
     image = (MSGS / "msg" / "CompressedImagePayload.msg").read_text()
     require("uint8[<=98304] data" in image, "camera payload bound drifted")
+
+    camera_chunk = (MSGS / "msg" / "CameraFrameChunk.msg").read_text()
+    for field in [
+        "uint8 JPEG=1",
+        "string<=32 device_id",
+        "string<=36 command_id",
+        "uint32 sequence",
+        "uint32 total_chunks",
+        "uint32 total_bytes",
+        "uint8 format",
+        "uint32 width",
+        "uint32 height",
+        "uint8 quality",
+        "bool end_of_stream",
+        "uint8[<=256] data",
+    ]:
+        require(field in camera_chunk, f"CameraFrameChunk missing {field}")
 
     print("stackchan_msgs contract check OK")
     return 0

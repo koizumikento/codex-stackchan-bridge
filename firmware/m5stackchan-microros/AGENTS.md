@@ -88,7 +88,10 @@ Audio is a first-class capability. Device exchange uses PCM 16 kHz mono 16-bit u
 
 Audio playback and capture use actions coordinated with bounded chunks. Chunk duration is 20 ms by default; 40 ms is allowed when transport overhead matters.
 
-Camera owns QVGA JPEG snapshot support. Continuous streaming requires a documented resource and transport decision.
+Camera owns QVGA JPEG snapshot support. The action owns request/progress/result
+state, while JPEG bytes are published as bounded chunks on the firmware-owned
+camera chunk topic. Continuous streaming requires a documented resource and
+transport decision.
 
 NFC reports tag presence and bounded metadata when the contract allows it. Tag
 meaning belongs on the PC/Codex side, and raw identifiers should be minimized or

@@ -735,10 +735,14 @@ sequences require a separate contract.
 The bridge backend rejects camera capture with `UNSUPPORTED_FEATURE` until
 firmware status reports `camera_snapshot` as available, then forwards the goal
 through `/stackchan/<device_id>/cmd/camera/capture` to
-`/stackchan/<device_id>/device/camera/capture` and writes the returned JPEG
-payload to the explicit `--output` file. Missing, empty, non-JPEG, or oversized
-payloads return structured camera capture errors. CLI JSON still reports the
-baseline QVGA JPEG metadata contract and never includes JPEG bytes or base64.
+`/stackchan/<device_id>/device/camera/capture`. The JPEG payload travels on
+`/stackchan/<device_id>/device/camera/chunks` as bounded `CameraFrameChunk`
+messages, currently at most 256 bytes each, correlated by `device_id` and
+`command_id`; `stackchanctl` subscribes before sending the action goal and
+writes contiguous chunks to the explicit `--output` file. Missing, empty,
+non-JPEG, non-contiguous, or oversized payloads return structured camera
+capture errors. CLI JSON still reports the baseline QVGA JPEG metadata
+contract and never includes JPEG bytes or base64.
 If the firmware-owned camera action accepts a goal but does not deliver a
 result before the bridge media-action timeout, the bridge reports
 `CAMERA_CAPTURE_FAILED` instead of surfacing an unclassified CLI `TIMEOUT`.
@@ -746,10 +750,10 @@ The mock backend keeps deterministic camera validation behavior for CLI
 development.
 
 Camera command results should distinguish request acceptance from image
-availability. A future implementation can accept a capture goal, then return
-metadata only after frame acquisition, JPEG encode, size validation, and output
-write complete. If any step fails, the result remains structured and should not
-fall back to embedding image bytes in JSON.
+availability. The action result is completion evidence; the output file is only
+valid after frame acquisition, JPEG encode, chunk reassembly, size validation,
+and file write complete. If any step fails, the result remains structured and
+must not fall back to embedding image bytes in JSON.
 
 ### NFC commands
 
