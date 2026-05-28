@@ -108,7 +108,7 @@ hardware bring-up issue complete.
 
   ```powershell
   $env:STACKCHAN_TTS_ENDPOINT='http://host.docker.internal:50021'
-  $env:STACKCHAN_TTS_SPEED_SCALE='1.6'
+  $env:STACKCHAN_TTS_SPEED_SCALE='1.0'
   $env:STACKCHAN_TTS_PRE_PHONEME_LENGTH='0.03'
   $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.03'
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='256'
@@ -405,15 +405,23 @@ hardware bring-up issue complete.
 - 2026-05-28 KOIZUMI-163 software-side TTS tuning compared local provider
   output without recording speech text in public logs. The old transport-fast
   profile used speed 3.0, zero phoneme padding, threshold 512, and 20 ms trim
-  margin; it produced a very short 149 ms / 4778 byte short prompt. The new
-  balanced default uses speed 1.6, 0.03 s pre/post phoneme padding, threshold
-  256, and 30 ms trim margin. It produced 295 ms / 9436 bytes for the short
-  prompt and 797 ms / 25504 bytes for the longer prompt, staying under the
-  32 KiB loaded playback buffer. The balanced longer-prompt smoke completed on
-  COM3 with 67 ADPCM chunks, `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  margin; it produced a very short 149 ms / 4778 byte short prompt. The
+  transport-balanced profile used speed 1.6, 0.03 s pre/post phoneme padding,
+  threshold 256, and 30 ms trim margin. It produced 295 ms / 9436 bytes for
+  the short prompt and 797 ms / 25504 bytes for the longer prompt, staying
+  under the 32 KiB loaded playback buffer. The balanced longer-prompt smoke
+  completed on COM3 with 67 ADPCM chunks,
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, and
-  `loaded_playback_drained`. Operator-listening intelligibility is still the
-  final KOIZUMI-163 acceptance check.
+  `loaded_playback_drained`.
+- KOIZUMI-163 operator-listening then confirmed the natural-speed audible
+  profile as words for a short-word prompt: speed 1.0, 0.03 s pre/post phoneme
+  padding, threshold 256, 30 ms trim margin, loaded playback topic, IMA ADPCM,
+  and 96 byte ADPCM load chunks. The machine smoke completed with text length
+  5, 70 ADPCM chunks, 26792 decoded bytes, `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, `loaded_playback_queued`, and
+  `loaded_playback_drained`. Use this as the recommended audible short-word
+  smoke profile; do not treat it as proof that longer prompts are natural.
 - Before firmware reports audio capabilities as available, confirm
   `stackchanctl --backend bridge audio play prompt.wav --json` and microphone
   capture return structured `UNSUPPORTED_FEATURE` results while still reporting

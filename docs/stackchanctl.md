@@ -689,11 +689,11 @@ knobs, not a stable user-facing audio quality contract.
 
 Bridge-owned local TTS defaults are tuned for the K151 loaded playback buffer
 rather than provider-native output. Unless overridden, the bridge uses
-`STACKCHAN_TTS_SPEED_SCALE=1.6`,
+`STACKCHAN_TTS_SPEED_SCALE=1.0`,
 `STACKCHAN_TTS_PRE_PHONEME_LENGTH=0.03`,
 `STACKCHAN_TTS_POST_PHONEME_LENGTH=0.03`,
 `STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD=256`, and
-`STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=30.0`. This balanced profile keeps short
+`STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS=30.0`. This audible profile keeps short
 and modest prompts within the 32 KiB firmware loaded-playback buffer while
 avoiding the very short transport-fast profile used during earlier bring-up.
 

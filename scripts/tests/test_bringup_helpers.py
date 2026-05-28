@@ -181,7 +181,7 @@ class MicroRosAgentContainerTests(unittest.TestCase):
             microros_agent_container.run_tcp_pty_bridge_smoke(bridge_smoke_args())
 
         command = docker_run.call_args.args[1]
-        self.assertIn("STACKCHAN_TTS_SPEED_SCALE:-1.6", command)
+        self.assertIn("STACKCHAN_TTS_SPEED_SCALE:-1.0", command)
         self.assertIn("STACKCHAN_TTS_PRE_PHONEME_LENGTH:-0.03", command)
         self.assertIn("STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.03", command)
         self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-256", command)
