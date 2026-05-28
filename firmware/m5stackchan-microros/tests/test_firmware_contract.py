@@ -1010,6 +1010,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("FRAMESIZE_QVGA", main)
         self.assertIn("CAMERA_GRAB_LATEST", main)
         self.assertIn("camera_driver_quality_from_goal", main)
+        self.assertIn("kCameraHorizontalMirror = true", main)
+        self.assertIn("set_hmirror", main)
         self.assertIn("kCameraWarmupFrames = 3", main)
         self.assertIn("kCameraWarmupMaxMs = 700", main)
         self.assertIn("drain_camera_warmup_frames", main)

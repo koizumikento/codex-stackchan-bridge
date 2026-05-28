@@ -279,6 +279,7 @@ constexpr uint8_t kCameraWarmupFrames = 3;
 constexpr unsigned long kCameraWarmupFrameDelayMs = 100;
 constexpr unsigned long kCameraWarmupMaxMs = 700;
 constexpr unsigned long kCameraFrameChunkPublishIntervalMs = 4;
+constexpr bool kCameraHorizontalMirror = true;
 constexpr int kYawServoId = 1;
 constexpr int kPitchServoId = 2;
 constexpr int kYawDefaultZeroPos = 460;
@@ -1302,6 +1303,9 @@ bool initialize_camera_adapter() {
     return false;
   }
   stackchan_camera_sensor->set_framesize(stackchan_camera_sensor, FRAMESIZE_QVGA);
+  stackchan_camera_sensor->set_hmirror(
+      stackchan_camera_sensor,
+      kCameraHorizontalMirror ? 1 : 0);
   return true;
 }
 

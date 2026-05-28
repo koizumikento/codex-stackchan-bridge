@@ -2103,6 +2103,23 @@ KOIZUMI-112 diagnostic firmware update:
   `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
   `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=7303`. Normal output and
   event redaction remained clean.
+- KOIZUMI-175 treats the observed left-right camera reversal as board
+  orientation, not a CLI display concern. The fix belongs in firmware camera
+  sensor setup via horizontal mirror correction so the corrected JPEG is what
+  reaches `/stackchan/<device_id>/device/camera/chunks`. The next hardware
+  capture after flashing should verify that text or an asymmetric marker appears
+  in the expected orientation; if it is still reversed, flip the firmware
+  horizontal mirror value instead of adding CLI post-processing.
+- After flashing the KOIZUMI-175 camera bring-up firmware on 2026-05-29,
+  camera-only smoke passed with `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OUTPUT_BYTES=6860`. A follow-up direct
+  bridge capture saved `tmp/stackchan_camera_koizumi175_mirror.jpg` at 8267
+  bytes. The captured frame showed readable label text, confirming that the
+  firmware horizontal mirror setting corrected the observed left-right reversal.
+  On Windows Docker Desktop, this validation used the host serial TCP bridge
+  via IPv4 `192.168.65.254` because `host.docker.internal` resolved to an IPv6
+  address that refused the connection in this run.
 
 ## Cleanup
 
