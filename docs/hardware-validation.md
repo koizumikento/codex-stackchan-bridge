@@ -118,6 +118,8 @@ hardware bring-up issue complete.
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.02'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='3'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
@@ -142,6 +144,11 @@ hardware bring-up issue complete.
   `audio_playback_load` progress before sending the next loaded topic window so
   sequence gaps show up as redacted `expected_seq`/`received_seq` diagnostics
   instead of an opaque malformed payload.
+  Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=3` and
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES=3` unless explicitly
+  tuning the serial path. The bridge republishes the same loaded topic chunk
+  only after progress stalls, and firmware treats same-command duplicate
+  loaded chunks as idempotent observations instead of decoding them twice.
   PCM loaded-transfer diagnostics should still keep
   `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES=64` unless the target has been
   revalidated with larger synchronous requests.

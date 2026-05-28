@@ -68,6 +68,8 @@ AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
 AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.02
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS = 1
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 3.0
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES = 3
 MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.6
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
@@ -106,6 +108,12 @@ AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV = (
 )
 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS"
+)
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC"
+)
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES"
 )
 MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
 
@@ -429,6 +437,32 @@ def _audio_playback_loaded_topic_window_chunks() -> int:
                 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS,
             ),
             1,
+        ),
+        8,
+    )
+
+
+def _audio_playback_loaded_topic_progress_timeout_sec() -> float:
+    return min(
+        max(
+            _env_float(
+                AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC,
+            ),
+            0.25,
+        ),
+        10.0,
+    )
+
+
+def _audio_playback_loaded_topic_progress_retries() -> int:
+    return min(
+        max(
+            _env_int(
+                AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV,
+                AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES,
+            ),
+            0,
         ),
         8,
     )
@@ -2342,7 +2376,8 @@ def main(args: list[str] | None = None) -> None:
             total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
             publish_interval_sec = _audio_playback_loaded_topic_publish_interval_sec()
             window_chunks = _audio_playback_loaded_topic_window_chunks()
-            progress_timeout_sec = _audio_playback_loaded_topic_complete_timeout_sec()
+            progress_timeout_sec = _audio_playback_loaded_topic_progress_timeout_sec()
+            progress_retries = _audio_playback_loaded_topic_progress_retries()
             for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
                 message = self._audio_chunk_type()
                 message.device_id = device_id
@@ -2362,12 +2397,31 @@ def main(args: list[str] | None = None) -> None:
                     or (sequence + 1) % window_chunks == 0
                 )
                 if should_wait_for_progress:
-                    progress_result = self._wait_for_loaded_audio_topic_progress(
-                        device_id,
-                        meta.command_id,
-                        min_buffered_chunks=sequence + 1,
-                        timeout_sec=progress_timeout_sec,
-                    )
+                    progress_result = None
+                    for retry_index in range(progress_retries + 1):
+                        progress_result = self._wait_for_loaded_audio_topic_progress(
+                            device_id,
+                            meta.command_id,
+                            min_buffered_chunks=sequence + 1,
+                            timeout_sec=progress_timeout_sec,
+                        )
+                        if progress_result is None:
+                            break
+                        if (
+                            progress_result.error_code != "TIMEOUT"
+                            or retry_index >= progress_retries
+                        ):
+                            break
+                        self.get_logger().warning(
+                            "audio playback loaded topic progress timeout; "
+                            "republishing chunk "
+                            f"device_id={device_id!r} "
+                            f"command_id={meta.command_id!r} "
+                            f"sequence={sequence} "
+                            f"min_buffered_chunks={sequence + 1} "
+                            f"retry={retry_index + 1}/{progress_retries}"
+                        )
+                        self._publish_device_audio_chunk(device_id, message)
                     if progress_result is not None:
                         return progress_result
                 elif publish_interval_sec > 0:
@@ -2389,6 +2443,8 @@ def main(args: list[str] | None = None) -> None:
                 f"encoded_bytes={len(candidate.payload)} "
                 f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
                 f"window_chunks={window_chunks} "
+                f"progress_timeout_ms={int(progress_timeout_sec * 1000)} "
+                f"progress_retries={progress_retries} "
                 f"publish_interval_ms={int(publish_interval_sec * 1000)} "
                 f"settle_ms={int(settle_sec * 1000)}"
             )

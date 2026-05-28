@@ -926,7 +926,10 @@ and falls back to `PCM_S16LE` loaded writes if firmware returns
 `UNSUPPORTED_FEATURE` for the compressed format.
 For the topic-loaded path, the bridge sends a bounded loaded chunk window and
 waits for firmware `audio_playback_load` progress before sending the next
-window. Firmware progress events may expose redacted transport counters such as
+window. If progress stalls, the bridge may republish the same chunk within a
+bounded retry count; firmware treats duplicate loaded topic chunks for the same
+command id as idempotent and must not decode duplicate payload bytes twice.
+Firmware progress events may expose redacted transport counters such as
 `expected_seq`, `received_seq`, `buf_chunks`, `chunks`, `complete`, `result`,
 and a short `detail`, but must not expose PCM, ADPCM payload bytes, speech text,
 provider request bodies, or raw provider identifiers.

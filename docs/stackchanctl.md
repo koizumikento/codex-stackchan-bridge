@@ -672,6 +672,11 @@ above 0.25 s are bounded to 0.25 s. The topic payload path also uses
 many loaded chunks are in flight before waiting for firmware
 `audio_playback_load` progress. This is a transaction-progress gate over
 bounded events, not a service ACK per audio chunk.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC`, default `3.0`,
+controls the per-window progress wait before the bridge retries the same topic
+chunk. `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES`, default `3`,
+limits those bounded retries. Firmware treats duplicate loaded topic chunks for
+the same command as idempotent and does not decode them twice.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
 the bridge waits for the firmware's final `audio_playback_load` completion
 event before starting the playback action; it defaults to 20 s. This is a
@@ -966,6 +971,8 @@ Audio bring-up diagnostics may also use:
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC`
+- `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES`
 - `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY`
 - `STACKCHAN_TTS_LOADED_TRANSPORT`
 

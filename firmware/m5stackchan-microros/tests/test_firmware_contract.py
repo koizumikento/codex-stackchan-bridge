@@ -753,6 +753,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('\\"detail\\"', main)
         self.assertIn('"sequence_gap"', main)
         self.assertIn('strcmp(stage, "topic") == 0', main)
+        self.assertIn("is_duplicate_loaded_audio_topic_chunk", main)
+        self.assertIn("loaded audio topic duplicate chunk ignored", main)
         self.assertIn("audio_playback_load", main)
         self.assertIn('"loaded_playback_started"', main)
         self.assertIn('"loaded_playback_drained"', main)

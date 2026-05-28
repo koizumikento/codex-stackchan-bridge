@@ -14,6 +14,8 @@ from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV,
     AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV,
@@ -37,6 +39,8 @@ from stackchan_bridge.ros_node import (
     _audio_playback_pull_lookahead_chunks,
     _audio_playback_ack_first_chunk_retry_count,
     _audio_playback_loaded_topic_complete_timeout_sec,
+    _audio_playback_loaded_topic_progress_retries,
+    _audio_playback_loaded_topic_progress_timeout_sec,
     _audio_playback_loaded_topic_publish_interval_sec,
     _audio_playback_loaded_topic_settle_sec,
     _audio_playback_loaded_topic_window_chunks,
@@ -258,6 +262,44 @@ class RosNodeHelperTests(unittest.TestCase):
             {AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV: "99"},
         ):
             self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 8)
+
+    def test_audio_playback_loaded_topic_progress_timeout_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV: "2.5"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 2.5)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV: "0"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 0.25)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 10.0)
+
+    def test_audio_playback_loaded_topic_progress_retries_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV: "2"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 2)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV: "-1"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 8)
 
     def test_loaded_audio_topic_payload_helpers_support_progress_and_errors(self) -> None:
         self.assertEqual(
@@ -786,6 +828,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
             "TTS_SPEED_SCALE_DEFAULT = 1.6",
             "TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03",
             "TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03",

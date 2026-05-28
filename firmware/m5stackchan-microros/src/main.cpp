@@ -6878,6 +6878,17 @@ bool is_loaded_audio_topic_chunk(const stackchan_msgs__msg__AudioChunk* chunk) {
           chunk->end_of_stream);
 }
 
+bool is_duplicate_loaded_audio_topic_chunk(
+    const stackchan_msgs__msg__AudioChunk* chunk) {
+  if (chunk == nullptr || play_audio_loaded_expected_sequence == 0) {
+    return false;
+  }
+  const char* command_id =
+      chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  return strcmp(command_id, play_audio_loaded_command_id) == 0 &&
+         chunk->sequence < play_audio_loaded_expected_sequence;
+}
+
 stackchan::Result validate_loaded_audio_topic_chunk(
     const stackchan_msgs__msg__AudioChunk* chunk) {
   if (chunk == nullptr) {
@@ -6944,6 +6955,10 @@ stackchan::Result validate_loaded_audio_topic_chunk(
   }
   const char* command_id =
       chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  if (is_duplicate_loaded_audio_topic_chunk(chunk)) {
+    return stackchan::Result::accepted(
+        "loaded audio topic duplicate chunk ignored");
+  }
   if (!play_audio_loaded_complete &&
       strcmp(command_id, play_audio_loaded_command_id) != 0) {
     return stackchan::Result::rejected(
@@ -6973,6 +6988,21 @@ void handle_loaded_audio_topic_chunk(
   }
   const char* command_id =
       chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  if (is_duplicate_loaded_audio_topic_chunk(chunk)) {
+    const stackchan::Result result = stackchan::Result::accepted(
+        "loaded audio topic duplicate chunk ignored");
+    log_play_audio_load_diagnostic(
+        "topic",
+        command_id,
+        chunk->sequence,
+        chunk->pcm.size,
+        chunk->total_chunks,
+        play_audio_loaded_total_bytes,
+        play_audio_loaded_expected_sequence,
+        play_audio_loaded_complete,
+        result);
+    return;
+  }
   stackchan::Result result = validate_loaded_audio_topic_chunk(chunk);
   if (result.ok) {
     if (chunk->sequence == 0) {

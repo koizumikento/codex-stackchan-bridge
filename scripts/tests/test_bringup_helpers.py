@@ -123,6 +123,14 @@ class MicroRosAgentContainerTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
             microros_agent_container.ENV_PASSTHROUGH,
         )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
 
     def test_bridge_smoke_preserves_early_firmware_ready_observation(self) -> None:
         with mock.patch.object(
