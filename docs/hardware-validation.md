@@ -430,6 +430,12 @@ hardware bring-up issue complete.
   actions; a command during that window should return structured
   `FIRMWARE_BUSY` with the previous `command_id` instead of accepting a
   possibly contaminated media session.
+- For focused KOIZUMI-145 stale-media diagnostics, a playback-only smoke may
+  pass with `stackchanctl audio play --wait` returning `TIMEOUT` only when the
+  helper also observes the same `command_id` reaching a terminal
+  `audio_playback_action` event and reports
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=1`. This is a media
+  cleanup result, not audible playback proof.
 
 ## LED
 
@@ -1942,6 +1948,12 @@ KOIZUMI-112 diagnostic firmware update:
   Firmware now permits a new `sequence=0` loaded transaction to reset a stale
   incomplete load after the inter-chunk timeout, avoiding a reboot after a
   failed load-size experiment.
+- A follow-up KOIZUMI-145 playback-only 20 ms smoke on 2026-05-28 used
+  event-cursor walking after the pre-command event id and completed with
+  `STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_TERMINAL_SEEN=1` and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=1` for the current
+  `audio_playback_action` `command_id`. The focused smoke exited 0; this
+  validates stale-media cleanup/observation, not audible playback quality.
 - KOIZUMI-161 follow-up reduces standard-build static RAM pressure by treating
   loaded playback as the default speech path and shrinking the diagnostic
   topic/pull future-chunk jitter buffer from the earlier 24-slot bring-up

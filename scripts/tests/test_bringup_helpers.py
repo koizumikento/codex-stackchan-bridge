@@ -54,6 +54,30 @@ def bridge_smoke_args(
     )
 
 
+def sensor_sweep_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        image="test-image",
+        skip_build=True,
+        clean_ros_build=False,
+        allow_stale_install=False,
+        tcp_host="host.docker.internal",
+        tcp_port=11411,
+        pty="/tmp/stackchan-test-pty",
+        baud=921600,
+        verbose=4,
+        timeout=10,
+        stimulus_window_seconds=0,
+        media_audio_capture_seconds=0.02,
+        media_audio_playback_duration_ms=20.0,
+        media_audio_playback_frequency=440.0,
+        media_audio_playback_amplitude=1200,
+        media_audio_playback_wait=True,
+        media_camera_quality=50,
+        media_playback_only=True,
+        skip_media_smoke=False,
+    )
+
+
 class MicroRosAgentContainerTests(unittest.TestCase):
     def test_default_ros_smoke_build_is_incremental_symlink_install(self) -> None:
         script = microros_agent_container.ros_smoke_setup_script(smoke_args())
@@ -162,6 +186,26 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         self.assertIn("STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.03", command)
         self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-256", command)
         self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS:-30.0", command)
+
+    def test_sensor_sweep_walks_media_terminal_events_after_pre_command_cursor(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_sensor_sweep(sensor_sweep_args())
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("json_cursor()", command)
+        self.assertIn("audio_play_before_event_id=", command)
+        self.assertIn(
+            'wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" 10 "$audio_play_before_event_id"',
+            command,
+        )
+        self.assertIn('events next --after "$after_event_id" --json', command)
+        self.assertIn('after_event_id="$next_after_event_id"', command)
+        self.assertIn("STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=", command)
+        self.assertIn('[ "$audio_play_timeout_settled_result" -ne 0 ]', command)
 
 
 if __name__ == "__main__":

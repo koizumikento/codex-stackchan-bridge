@@ -764,6 +764,10 @@ json_command_id() {{
   python3 -c 'import json,sys; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); print(data.get("command_id") or (data.get("metadata") or dict()).get("command_id") or "")' 2>/dev/null
 }}
 
+json_cursor() {{
+  python3 -c 'import json,sys; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); print(data.get("cursor") or "")' 2>/dev/null
+}}
+
 media_action_terminal_seen() {{
   command_id="$1"
   event_name="$2"
@@ -774,6 +778,8 @@ wait_media_action_terminal() {{
   command_id="$1"
   event_name="$2"
   timeout_sec="$3"
+  after_event_id="${{4:-}}"
+  consumer_id="media-settle-$command_id"
   if [ -z "$command_id" ]; then
     echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_COMMAND_ID_PRESENT=0"
     return 1
@@ -781,14 +787,23 @@ wait_media_action_terminal() {{
   echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_COMMAND_ID_PRESENT=1"
   deadline=$(( $(date +%s) + timeout_sec ))
   while [ "$(date +%s)" -le "$deadline" ]; do
-    settle_events_output=$(python3 -m stackchanctl --backend bridge --timeout 5 events list --limit 50 --json 2>&1)
+    if [ -n "$after_event_id" ]; then
+      settle_events_output=$(python3 -m stackchanctl --backend bridge --timeout 5 --source "$consumer_id" events next --after "$after_event_id" --json 2>&1)
+    else
+      settle_events_output=$(python3 -m stackchanctl --backend bridge --timeout 5 --source "$consumer_id" events next --json 2>&1)
+    fi
     printf '%s\n' "$settle_events_output" | media_action_terminal_seen "$command_id" "$event_name"
     settle_seen=$?
     if [ "$settle_seen" -eq 0 ]; then
       echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_TERMINAL_SEEN=1"
       return 0
     fi
-    sleep 1
+    next_after_event_id=$(printf '%s\n' "$settle_events_output" | json_cursor)
+    if [ -n "$next_after_event_id" ]; then
+      after_event_id="$next_after_event_id"
+    else
+      sleep 1
+    fi
   done
   echo "STACKCHAN_SENSOR_SWEEP_MEDIA_SETTLE_TERMINAL_SEEN=0"
   return 1
@@ -824,6 +839,8 @@ PY
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_FREQUENCY={playback_frequency}"
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_PROMPT_AMPLITUDE={playback_amplitude}"
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_WAIT=$([ -n "{audio_play_wait_arg}" ] && echo 1 || echo 0)"
+  audio_play_before_events=$(python3 -m stackchanctl --backend bridge --timeout 5 events list --limit 1 --json 2>&1)
+  audio_play_before_event_id=$(printf '%s\n' "$audio_play_before_events" | json_cursor)
   audio_play_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play {audio_play_wait_arg} "$prompt_wav" --json 2>&1)
   audio_play_result=$?
   rm -f "$prompt_wav"
@@ -840,18 +857,23 @@ PY
   printf '%s\n' "$audio_play_output" | grep -Eqi '"result_state": *"timeout"|"code": *"TIMEOUT"'
   audio_play_timeout_result=$?
   echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SEEN=$([ "$audio_play_timeout_result" -eq 0 ] && echo 1 || echo 0)"
+  audio_play_timeout_settled_result=1
   if [ "$audio_play_timeout_result" -eq 0 ]; then
-    wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" {max(10, int(args.timeout))}
+    wait_media_action_terminal "$audio_play_command_id" "audio_playback_action" {max(10, int(args.timeout))} "$audio_play_before_event_id"
     audio_play_settle_result=$?
+    [ "$audio_play_settle_result" -eq 0 ] && audio_play_timeout_settled_result=0
     echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=$audio_play_settle_result"
     [ "$audio_play_settle_result" -eq 0 ] || result=1
   else
     echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLE_EXIT=0"
   fi
+  echo "STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=$([ "$audio_play_timeout_settled_result" -eq 0 ] && echo 1 || echo 0)"
   if [ "{media_playback_only}" = "1" ]; then
     rm -f "$mic_wav" "$frame_jpg"
     echo "STACKCHAN_SENSOR_SWEEP_MEDIA_PLAYBACK_ONLY=1"
-    if [ "$audio_play_unsupported_result" -ne 0 ] && [ "$audio_play_ok_result" -ne 0 ]; then
+    if [ "$audio_play_unsupported_result" -ne 0 ] &&
+       [ "$audio_play_ok_result" -ne 0 ] &&
+       [ "$audio_play_timeout_settled_result" -ne 0 ]; then
       result=1
     fi
     return
