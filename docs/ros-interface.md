@@ -1203,7 +1203,16 @@ Response fields:
 Rules:
 
 - Unsupported firmware or missing pose capability returns `UNSUPPORTED_FEATURE`.
-- Previously observed pose older than the stale threshold returns `STALE_TELEMETRY` with `recoverable=true` and is not a successful result.
+- Previously observed pose older than the bridge stale threshold returns
+  `STALE_TELEMETRY` with `recoverable=true` and is not a successful result.
+  The default threshold is 15 seconds so a successful `motion pose` or
+  `motion home` response remains fresh for the immediate follow-up
+  `motion status` check even when serial/micro-ROS scheduling is slow.
+- A successful firmware response to `motion pose` or `motion home` refreshes
+  the bridge-owned latest pose snapshot and republishes
+  `/stackchan/<device_id>/motion/pose`; firmware-origin
+  `/stackchan/<device_id>/device/motion/pose` telemetry may also refresh the
+  same snapshot.
 - Servo read failure returns `SERVO_READ_FAILED` with `recoverable=true`.
 - Invalid calibration or corrupted home basis returns `CALIBRATION_INVALID` with `recoverable=true`.
 

@@ -61,6 +61,18 @@ class TelemetryTests(unittest.TestCase):
         clock.now = 102.0
         self.assertEqual(store.get("default"), (snapshot, True))
 
+    def test_head_pose_store_default_allows_immediate_post_command_status(self) -> None:
+        clock = MutableClock(100.0)
+        store = HeadPoseTelemetryStore(clock=clock)
+        snapshot = HeadPoseSnapshot("default", pan_deg=0.0, tilt_deg=0.0, stamp=12.0)
+
+        store.update(snapshot)
+        clock.now = 103.0
+        self.assertEqual(store.get("default"), (snapshot, False))
+
+        clock.now = 116.0
+        self.assertEqual(store.get("default"), (snapshot, True))
+
     def test_power_source_names_are_stable(self) -> None:
         self.assertEqual(PowerStatusSnapshot("default", power_source=1).power_source_name, "battery")
         self.assertEqual(PowerStatusSnapshot("default", power_source=2).power_source_name, "usb")

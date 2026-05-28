@@ -64,7 +64,7 @@ class PowerTelemetryStore:
 
 
 class HeadPoseTelemetryStore:
-    def __init__(self, *, stale_after_seconds: float = 2.0, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, *, stale_after_seconds: float = 15.0, clock: Callable[[], float] = time.time) -> None:
         self.stale_after_seconds = stale_after_seconds
         self._clock = clock
         self._latest: dict[str, tuple[HeadPoseSnapshot, float]] = {}

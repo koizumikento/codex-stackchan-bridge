@@ -19,7 +19,6 @@ from stackchan_bridge.event_buffer import EventBuffer, EventRecord
 from stackchan_bridge.facade import StackChanBridgeFacade
 from stackchan_bridge.models import CapabilitySnapshot, CommandMeta, Result, StatusSnapshot
 from stackchan_bridge.models import PRIORITY_SAFETY
-from stackchan_bridge.models import STATE_COMPLETED
 from stackchan_bridge.models import STATE_TIMEOUT
 from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
 from stackchan_bridge.speech_node import SpeechEvent, SpeechSessionProcessor
@@ -3079,13 +3078,12 @@ def main(args: list[str] | None = None) -> None:
                     )
                     goal_handle.abort()
                     return result
-                if int(command_response.result.state) == STATE_COMPLETED:
-                    self.head_pose_store.update(snapshot)
-                    publisher = self._telemetry_publishers.get((device_id, "motion/pose"))
-                    if publisher is not None:
-                        message = self._head_pose_type()
-                        _copy_head_pose(message, snapshot)
-                        publisher.publish(message)
+                self.head_pose_store.update(snapshot)
+                publisher = self._telemetry_publishers.get((device_id, "motion/pose"))
+                if publisher is not None:
+                    message = self._head_pose_type()
+                    _copy_head_pose(message, snapshot)
+                    publisher.publish(message)
                 _copy_head_pose(result.pose, snapshot)
                 goal_handle.succeed()
             else:

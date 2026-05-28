@@ -353,6 +353,11 @@ hardware bring-up issue complete.
   `/stackchan/<device_id>/device/motion/pose/set` validation and do not publish
   synthetic pose telemetry as real actuation. Confirm `motion home` uses
   firmware home behavior and is not implemented as a public `pose(0,0)` alias.
+- After a successful `motion pose --wait` or `motion home --wait`, confirm the
+  immediate `motion status --json` check reports the returned firmware pose as
+  non-stale. The bridge default head-pose stale threshold is 15 seconds; stale
+  status is still a valid failure for older telemetry, but it should not trip
+  the same smoke that just received a successful firmware pose response.
 - Confirm servo read failure or unplugged servo paths return `SERVO_READ_FAILED`
   or a recoverable motion error and enter a safe fault/neutral behavior.
 - Before marking real-servo calibration validation complete, reset or erase the
@@ -1954,6 +1959,12 @@ KOIZUMI-112 diagnostic firmware update:
   `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SETTLED_SEEN=1` for the current
   `audio_playback_action` `command_id`. The focused smoke exited 0; this
   validates stale-media cleanup/observation, not audible playback quality.
+- KOIZUMI-171 raised the bridge default head-pose stale threshold to 15 seconds
+  and refreshes the latest pose snapshot from successful firmware
+  `motion pose` / `motion home` responses. A 2026-05-28
+  `tcp-pty-bridge-smoke --home-check` rebuilt `stackchan_bridge` and passed
+  with `STACKCHAN_BRIDGE_HOME_COMPLETED=1`, `STACKCHAN_BRIDGE_HOME_STATUS_EXIT=0`,
+  `pan_deg=0.0`, `tilt_deg=0.0`, and `stale=false`.
 - KOIZUMI-161 follow-up reduces standard-build static RAM pressure by treating
   loaded playback as the default speech path and shrinking the diagnostic
   topic/pull future-chunk jitter buffer from the earlier 24-slot bring-up
