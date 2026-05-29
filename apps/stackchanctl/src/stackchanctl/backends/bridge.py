@@ -643,8 +643,8 @@ class RclpyBridgeClient:
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
         self._audio_chunk_publishers = {}
-        self._audio_chunk_qos = QoSProfile(depth=8)
-        self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self._audio_chunk_qos = QoSProfile(depth=64)
+        self._audio_chunk_qos.reliability = ReliabilityPolicy.RELIABLE
         self._audio_chunk_qos.durability = DurabilityPolicy.VOLATILE
         self._camera_chunk_qos = QoSProfile(depth=64)
         self._camera_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -828,18 +828,19 @@ class RclpyBridgeClient:
         goal.first_chunk_pcm = first_chunk
         goal.face_hint = ""
         goal.motion_hint = ""
+        self._publish_audio_playback_chunks(
+            meta,
+            pcm[first_goal_bytes:],
+            timeout,
+            start_sequence=1 if first_chunk else 0,
+            total_bytes=len(pcm),
+        )
         return self._send_action_goal(
             self._play_audio_type,
             f"/stackchan/{meta.device_id}/cmd/audio/play",
             goal,
             wait=wait,
             timeout=timeout,
-            on_accepted=lambda: self._publish_audio_playback_chunks(
-                meta,
-                pcm[first_goal_bytes:],
-                timeout,
-                start_sequence=1 if first_chunk else 0,
-            ),
             return_on_accept=True,
         )
 
@@ -1108,24 +1109,29 @@ class RclpyBridgeClient:
         timeout: float,
         *,
         start_sequence: int = 0,
+        total_bytes: int | None = None,
     ) -> None:
         if not pcm:
             return
         publisher = self._audio_chunk_publisher(meta.device_id)
         self._wait_for_audio_playback_subscriber(publisher, timeout)
         chunk_bytes = _audio_playback_chunk_bytes()
-        for sequence, offset in enumerate(
-            range(0, len(pcm), chunk_bytes),
-            start=start_sequence,
-        ):
+        offsets = list(range(0, len(pcm), chunk_bytes))
+        total_chunks = start_sequence + len(offsets)
+        total_payload_bytes = len(pcm) if total_bytes is None else int(total_bytes)
+        for index, offset in enumerate(offsets):
+            sequence = start_sequence + index
             message = self._audio_chunk_type()
             message.device_id = meta.device_id
             message.command_id = meta.command_id
             message.direction = AUDIO_PLAYBACK_DIRECTION
             message.sequence = sequence
+            message.total_chunks = total_chunks
+            message.total_bytes = total_payload_bytes
             message.format = AUDIO_PCM_S16LE_FORMAT
             message.sample_rate = AUDIO_SAMPLE_RATE
             message.channels = AUDIO_CHANNELS
+            message.end_of_stream = index + 1 >= len(offsets)
             message.pcm = pcm[offset : offset + chunk_bytes]
             publisher.publish(message)
             self._pace_audio_playback_chunk()

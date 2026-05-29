@@ -664,9 +664,13 @@ Fields and bounds are the same as
 `/stackchan/<device_id>/device/audio/playback/chunks`.
 This ingress accepts `direction=PLAYBACK` only. Capture chunks are firmware
 observations and must not be published on this command topic.
-For normal streaming playback, `total_chunks=0`, `total_bytes=0`, and
-`end_of_stream=false`; those fields are reserved for preloaded media payloads.
-QoS is best effort, volatile, keep last 8.
+CLI-origin playback chunks include `total_chunks`, decoded `total_bytes`, and
+`end_of_stream=true` on the final chunk. When the complete payload fits the
+bounded command preload threshold, the bridge may preload it through the
+firmware loaded-playback transaction before starting the firmware action.
+Larger or incomplete payloads remain on the streaming relay path.
+QoS is reliable, volatile, keep last 64. This is local command ingress between
+`stackchanctl` and the bridge, not the serial micro-ROS firmware topic.
 
 ### `/stackchan/<device_id>/device/audio/playback/chunks`
 
@@ -1414,13 +1418,28 @@ Implementations must keep actual PCM chunks on the bounded audio chunk path and
 must not inline bytes in action results, MCP output, events, or normal logs.
 The CLI/bridge playback path may validate the action/capability before opening
 the local audio file, so unsupported hardware smokes can remain metadata-only.
-Once `audio_playback` is available, CLI-origin playback chunks use the accepted
-`command_id` and monotonic `sequence` values on
+Once `audio_playback` is available, CLI-origin playback chunks use the pending
+command's `command_id` and monotonic `sequence` values on
 `/stackchan/<device_id>/cmd/audio/chunks`. When the diagnostic first-goal
 payload path is enabled, topic chunks start at the next sequence instead. The
-bridge may buffer bounded chunks for a pending command, but it must forward
-them to `/stackchan/<device_id>/device/audio/playback/chunks` only while the
-matching firmware-owned playback session is active.
+CLI marks the final topic chunk with `end_of_stream=true` and includes
+`total_chunks` plus decoded `total_bytes` so the bridge can distinguish a
+complete payload from an open streaming relay. The bridge may buffer a
+complete payload and load it into the firmware-owned playback buffer before
+starting `/stackchan/<device_id>/device/audio/play`. Payloads that exceed the
+preload limit, incomplete payloads, or diagnostic first-goal-only transport
+fall back to the streaming relay. On that fallback, the bridge must forward
+buffered chunks to
+`/stackchan/<device_id>/device/audio/playback/chunks` only while the matching
+firmware-owned playback session is active.
+If the loaded playback transaction reaches the firmware
+`loaded_playback_drained` event before the action result response returns, the
+bridge may complete the public action from that same-command drain observation
+to avoid reporting a local timeout after firmware playback already completed.
+The CLI preload decoded-byte threshold defaults to the firmware loaded buffer
+limit and can be lowered with
+`STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES` during streaming
+relay experiments.
 Firmware may alternatively pull the next buffered chunk through the
 bridge-owned `/stackchan/<device_id>/audio/playback/next_chunk` helper after
 action acceptance. This helper keeps PCM out of action goals while avoiding
@@ -1759,7 +1778,7 @@ Baseline QoS:
 - `/stackchan/<device_id>/device/power/status`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/motion/pose`: reliable, transient local, keep last 1.
 - `/stackchan/<device_id>/device/motion/pose`: reliable, volatile, keep last 2.
-- `/stackchan/<device_id>/cmd/audio/chunks`: best effort, volatile, keep last 8.
+- `/stackchan/<device_id>/cmd/audio/chunks`: reliable, volatile, keep last 64.
 - `/stackchan/<device_id>/device/audio/playback/chunks`: reliable, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/playback/acks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.

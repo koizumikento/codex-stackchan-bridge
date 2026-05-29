@@ -908,6 +908,12 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(len(publisher.messages), 3)
         self.assertEqual(b"".join(message.pcm for message in publisher.messages), pcm)
         self.assertEqual([message.sequence for message in publisher.messages], [0, 1, 2])
+        self.assertEqual([message.total_chunks for message in publisher.messages], [3, 3, 3])
+        self.assertEqual([message.total_bytes for message in publisher.messages], [len(pcm)] * 3)
+        self.assertEqual(
+            [message.end_of_stream for message in publisher.messages],
+            [False, False, True],
+        )
         self.assertTrue(all(message.direction == 1 for message in publisher.messages))
 
     def test_play_audio_can_put_first_chunk_in_goal_for_diagnostics(self) -> None:
@@ -967,6 +973,12 @@ class BridgeBackendTests(unittest.TestCase):
             pcm[320:],
         )
         self.assertEqual([message.sequence for message in publisher.messages], [1, 2])
+        self.assertEqual([message.total_chunks for message in publisher.messages], [3, 3])
+        self.assertEqual([message.total_bytes for message in publisher.messages], [len(pcm)] * 2)
+        self.assertEqual(
+            [message.end_of_stream for message in publisher.messages],
+            [False, True],
+        )
 
     def test_play_audio_can_use_smaller_transport_chunks_for_diagnostics(self) -> None:
         action = FakeActionClient()
@@ -1028,7 +1040,7 @@ class BridgeBackendTests(unittest.TestCase):
             pcm[64:],
         )
 
-    def test_bridge_backend_audio_chunk_qos_is_best_effort(self) -> None:
+    def test_bridge_backend_audio_chunk_qos_is_reliable_for_command_payloads(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "src"
@@ -1037,9 +1049,9 @@ class BridgeBackendTests(unittest.TestCase):
             / "bridge.py"
         ).read_text()
 
-        self.assertIn("self._audio_chunk_qos = QoSProfile(depth=8)", source)
+        self.assertIn("self._audio_chunk_qos = QoSProfile(depth=64)", source)
         self.assertIn(
-            "self._audio_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT",
+            "self._audio_chunk_qos.reliability = ReliabilityPolicy.RELIABLE",
             source,
         )
 

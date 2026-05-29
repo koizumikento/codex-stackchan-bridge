@@ -120,6 +120,8 @@ hardware bring-up issue complete.
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='3'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
+  # Optional CLI audio-play experiment only:
+  # $env:STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES='32768'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
@@ -434,6 +436,12 @@ hardware bring-up issue complete.
   structured accepted or completed results, microphone capture publishes bounded
   16 kHz mono PCM chunks, and overrun/underrun events are visible through
   `stackchanctl events`.
+- For short `stackchanctl audio play` fixtures that fit the firmware loaded
+  playback buffer, expect the CLI-origin chunks to carry final
+  `end_of_stream=true` metadata and the bridge to attempt loaded playback
+  before starting the firmware action. If the payload is larger than the loaded
+  buffer or the final chunk never arrives, the bridge may fall back to the
+  streaming relay and should log only metadata, never PCM bytes.
 - Confirm malformed format, sequence gaps, disconnect, and timeout cases produce
   structured recoverable errors.
 - After a timed-out playback smoke, do not treat the next media smoke as clean

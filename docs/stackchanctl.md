@@ -578,12 +578,23 @@ The bridge backend accepts audio play/capture only after firmware status reports
 firmware-confirmed audio transport still return `UNSUPPORTED_FEATURE`. CLI JSON
 reports the baseline metadata contract and never includes PCM bytes. The mock
 backend keeps deterministic responses for CLI development.
-When `audio_playback` is available, the bridge backend sends the public
-`PlayAudio` action, then publishes playback chunks with the same `command_id`
-on `/stackchan/<device_id>/cmd/audio/chunks` starting at sequence `0`. The
-bridge buffers those command-ingress chunks and relays them to
-`/stackchan/<device_id>/device/audio/playback/chunks` only after it observes
-the firmware-owned `/stackchan/<device_id>/device/audio/play` goal acceptance.
+When `audio_playback` is available, the bridge backend publishes bounded
+playback chunks with the command's `command_id` on
+`/stackchan/<device_id>/cmd/audio/chunks` starting at sequence `0`, then sends
+the public `PlayAudio` action. The final chunk carries `end_of_stream=true`
+plus decoded size metadata so the bridge can preload complete payloads up to
+the bounded command preload threshold into the firmware-owned loaded playback
+buffer before `/stackchan/<device_id>/device/audio/play` starts. Larger or
+incomplete payloads fall back to the streaming relay, where the bridge relays
+buffered chunks to `/stackchan/<device_id>/device/audio/playback/chunks` only
+after it observes the firmware-owned action goal acceptance.
+For loaded playback, the firmware action result remains the normal completion
+path, but the bridge may also complete the CLI action from the same
+`command_id`'s `loaded_playback_drained` firmware event when the drain event
+arrives before the action result response.
+`STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES` can lower the CLI
+preload threshold for streaming-relay experiments; keep it at the default
+unless the relay path is being measured on the current serial link.
 The bridge also serves the same buffered chunks through
 `/stackchan/<device_id>/audio/playback/next_chunk`; firmware can pull from that
 helper after action acceptance and still validates sequence, format, and payload
@@ -633,7 +644,15 @@ firmware-owned, device-scoped playback buffer through
 firmware playback action for the same `command_id`. The loaded topic payload
 uses `total_chunks`, decoded `total_bytes`, and final `end_of_stream=true`
 metadata; it does not wait for a service response per chunk. The bridge uses
-this path for TTS by default when loaded playback is enabled. Set
+this path for TTS by default when loaded playback is enabled. Short
+`stackchanctl audio play` inputs use the same metadata on the command chunk
+topic, allowing the bridge to preload a complete payload that fits the
+firmware's bounded loaded-playback buffer before it starts the device playback
+action. The CLI may publish those command chunks before sending the facade
+action goal so the bridge can prebuffer them by `command_id`; the chunks are
+payload observations, while the action remains the command. Longer or
+incomplete inputs remain on the streaming diagnostic relay.
+Set
 `STACKCHAN_TTS_LOADED_PLAYBACK=0` to force the older topic-first relay for
 diagnostics, or `STACKCHAN_TTS_LOADED_TRANSPORT=service` to use the older
 `/stackchan/<device_id>/device/audio/playback/load` service fallback. This load
@@ -977,6 +996,7 @@ Audio bring-up diagnostics may also use:
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC`
 - `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES`
+- `STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES`
 - `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY`
 - `STACKCHAN_TTS_LOADED_TRANSPORT`
 

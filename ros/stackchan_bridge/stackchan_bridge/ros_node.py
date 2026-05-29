@@ -6,8 +6,8 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable, Iterable
 from types import SimpleNamespace
-from typing import Iterable
 
 from stackchan_bridge.audio_codec import (
     AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT,
@@ -70,6 +70,11 @@ AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS = 1
 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 3.0
 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES = 3
+AUDIO_PLAYBACK_COMMAND_PRELOAD_WAIT_SEC = 2.5
+AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES = 32 * 1024
+AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES"
+)
 MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.0
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
@@ -239,6 +244,12 @@ class MediaActionGate:
                 capability=capability_name,
                 age_sec=age,
             )
+
+    def mark_busy_seen(self, device_id: str, command_id: str) -> None:
+        with self._lock:
+            active = self._active.get(device_id)
+            if active is not None and active.command_id == command_id:
+                active.busy_seen = True
 
     def settling_command_id(self, device_id: str) -> str | None:
         now = self._clock()
@@ -521,6 +532,19 @@ def _audio_playback_loaded_topic_progress_retries() -> int:
     )
 
 
+def _audio_playback_command_loaded_max_decoded_bytes() -> int:
+    return min(
+        max(
+            _env_int(
+                AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV,
+                AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES,
+            ),
+            0,
+        ),
+        32 * 1024,
+    )
+
+
 def _loaded_audio_topic_buffered_chunks(payload: dict[str, object]) -> int:
     for key in ("expected_seq", "buf_chunks"):
         if key not in payload:
@@ -611,6 +635,90 @@ def _select_playback_chunks_for_topic_window(
         if len(chunks) >= count:
             break
     return chunks
+
+
+def _command_playback_audio_from_complete_chunks(
+    request: object,
+    chunks: Iterable[object],
+    *,
+    max_decoded_bytes: int = AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES,
+) -> tuple[TtsAudio | None, str]:
+    if getattr(request, "format", "") != AUDIO_FORMAT:
+        return None, "unsupported_format"
+    sample_rate = int(getattr(request, "sample_rate", 0))
+    channels = int(getattr(request, "channels", 0))
+    if sample_rate != AUDIO_SAMPLE_RATE or channels != AUDIO_CHANNELS:
+        return None, "unsupported_format"
+
+    by_sequence: dict[int, bytes] = {}
+    total_bytes = 0
+    eos_sequence: int | None = None
+    if bool(getattr(request, "first_chunk_present", False)):
+        first_sequence = int(getattr(request, "first_chunk_sequence", 0))
+        first_pcm = bytes(getattr(request, "first_chunk_pcm", b""))
+        if first_sequence < 0 or not first_pcm:
+            return None, "malformed"
+        by_sequence[first_sequence] = first_pcm
+        total_bytes += len(first_pcm)
+
+    for chunk in chunks:
+        if int(getattr(chunk, "direction", 0)) != AUDIO_PLAYBACK_DIRECTION:
+            return None, "malformed"
+        if int(getattr(chunk, "format", 0)) != AUDIO_CHUNK_FORMAT_ID:
+            return None, "unsupported_format"
+        if int(getattr(chunk, "sample_rate", 0)) != sample_rate:
+            return None, "unsupported_format"
+        if int(getattr(chunk, "channels", 0)) != channels:
+            return None, "unsupported_format"
+        sequence = int(getattr(chunk, "sequence", 0))
+        pcm = bytes(getattr(chunk, "pcm", b""))
+        if sequence < 0 or not pcm:
+            return None, "malformed"
+        existing = by_sequence.get(sequence)
+        if existing is not None and existing != pcm:
+            return None, "malformed"
+        if existing is None:
+            by_sequence[sequence] = pcm
+            total_bytes += len(pcm)
+        declared_total = int(getattr(chunk, "total_bytes", 0))
+        if declared_total > max_decoded_bytes:
+            return None, "too_large"
+        if bool(getattr(chunk, "end_of_stream", False)):
+            eos_sequence = sequence
+
+    if total_bytes > max_decoded_bytes:
+        return None, "too_large"
+    if eos_sequence is None:
+        return None, "incomplete"
+    if not by_sequence:
+        return None, "incomplete"
+    for sequence in range(0, eos_sequence + 1):
+        if sequence not in by_sequence:
+            return None, "incomplete"
+    pcm = b"".join(by_sequence[sequence] for sequence in range(0, eos_sequence + 1))
+    if not pcm:
+        return None, "incomplete"
+    return TtsAudio(pcm=pcm, sample_rate=sample_rate, channels=channels), "complete"
+
+
+def _loaded_playback_completion_from_events(
+    records: Iterable[EventRecord],
+    command_id: str,
+) -> Result | None:
+    if not command_id:
+        return None
+    for record in reversed(tuple(records)):
+        if record.command_id != command_id:
+            continue
+        if record.event_name != "audio_playback_chunk":
+            continue
+        payload = dict(record.payload)
+        if (
+            payload.get("stage") == "loaded_playback_drained"
+            and payload.get("result") == "OK"
+        ):
+            return Result.completed("audio playback completed from loaded playback drain")
+    return None
 
 
 def _next_audio_chunk_transport_control(request: object) -> tuple[int, int]:
@@ -1080,6 +1188,7 @@ def main(args: list[str] | None = None) -> None:
     reliable_depth_2 = QoSProfile(depth=2)
     reliable_depth_4 = QoSProfile(depth=4)
     reliable_depth_8 = QoSProfile(depth=8)
+    reliable_depth_64 = QoSProfile(depth=64)
     best_effort_depth_5 = QoSProfile(depth=5)
     best_effort_depth_5.reliability = ReliabilityPolicy.BEST_EFFORT
     best_effort_depth_8 = QoSProfile(depth=8)
@@ -1515,7 +1624,7 @@ def main(args: list[str] | None = None) -> None:
                         device_id,
                         message,
                     ),
-                    best_effort_depth_8,
+                    reliable_depth_64,
                 )
             )
             self._device_audio_playback_ack_subscriptions.append(
@@ -2100,6 +2209,24 @@ def main(args: list[str] | None = None) -> None:
                         self._publish_device_audio_chunk(device_id, message)
                 if index < len(publish_window) - 1:
                     time.sleep(AUDIO_PLAYBACK_BUFFERED_PUBLISH_INTERVAL_SEC)
+
+        def _prepare_playback_chunk_relay(self, device_id: str, command_id: str) -> None:
+            key = (device_id, command_id)
+            with self._playback_chunk_lock:
+                self._closed_playback_sessions.discard(key)
+                self._active_playback_sessions.add(key)
+                stats = self._playback_relay_stats.setdefault(
+                    key,
+                    {"received": 0, "buffered": 0, "published": 0, "dropped": 0},
+                )
+                stats["activated_monotonic"] = time.monotonic()
+                buffered = len(self._pending_playback_chunks.get(key, []))
+            self.get_logger().info(
+                "audio playback relay prepared "
+                f"device_id={device_id!r} command_id={command_id!r} "
+                f"buffered={buffered}"
+            )
+
         def _handle_next_audio_chunk(
             self,
             device_id: str,
@@ -2366,6 +2493,81 @@ def main(args: list[str] | None = None) -> None:
                 motion_hint=getattr(request, "motion_hint", ""),
                 next_chunk_offset=0,
                 next_chunk_sequence=0,
+                loaded_playback=True,
+            )
+
+        def _try_load_command_audio_playback(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> tuple[object, Result | None]:
+            key = (device_id, meta.command_id)
+            deadline = time.monotonic() + AUDIO_PLAYBACK_COMMAND_PRELOAD_WAIT_SEC
+            last_state = "incomplete"
+            while True:
+                with self._playback_chunk_lock:
+                    chunks = list(self._pending_playback_chunks.get(key, []))
+                audio, state = _command_playback_audio_from_complete_chunks(
+                    request,
+                    chunks,
+                    max_decoded_bytes=_audio_playback_command_loaded_max_decoded_bytes(),
+                )
+                last_state = state
+                if state == "too_large":
+                    self.get_logger().info(
+                        "audio playback command payload too large for loaded playback; "
+                        "using streaming relay "
+                        f"device_id={device_id!r} command_id={meta.command_id!r}"
+                    )
+                    return request, None
+                if audio is not None:
+                    loaded_result = self._load_device_audio_playback(
+                        device_id,
+                        meta,
+                        request.meta,
+                        audio,
+                    )
+                    if loaded_result is not None and loaded_result.ok:
+                        self._finish_playback_chunk_relay(device_id, meta.command_id)
+                        self.get_logger().info(
+                            "audio playback command loaded before play action "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"bytes={len(audio.pcm)}"
+                        )
+                        return self._loaded_tts_playback_request(request.meta, request), None
+                    if (
+                        loaded_result is not None
+                        and not loaded_result.ok
+                        and loaded_result.error_code != "UNSUPPORTED_FEATURE"
+                    ):
+                        return request, loaded_result
+                    self.get_logger().info(
+                        "audio playback command loaded path unavailable; "
+                        "using streaming relay "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"state={state!r}"
+                    )
+                    return request, None
+                if time.monotonic() >= deadline:
+                    if chunks:
+                        self.get_logger().info(
+                            "audio playback command preload window expired; "
+                            "using streaming relay "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"chunks={len(chunks)} state={last_state!r}"
+                        )
+                    return request, None
+                time.sleep(0.02)
+
+        def _loaded_playback_completion_result(
+            self,
+            device_id: str,
+            command_id: str,
+        ) -> Result | None:
+            return _loaded_playback_completion_from_events(
+                self.event_buffer.records(device_id),
+                command_id,
             )
 
         def _load_device_audio_playback(
@@ -3536,6 +3738,29 @@ def main(args: list[str] | None = None) -> None:
                 return _make_transport_result(
                     f"firmware audio playback action for '{device_id}' is not configured"
                 )
+            label = "audio playback"
+            gate_result = self._begin_device_media_action(
+                device_id,
+                meta.command_id,
+                label,
+            )
+            if gate_result is not None:
+                return gate_result
+            if not bool(getattr(request, "loaded_playback", False)):
+                request, preload_result = self._try_load_command_audio_playback(
+                    device_id,
+                    request,
+                    meta,
+                )
+                if preload_result is not None:
+                    self._finish_device_media_action(
+                        device_id,
+                        meta.command_id,
+                        label,
+                        preload_result,
+                    )
+                    return preload_result
+            loaded_playback = bool(getattr(request, "loaded_playback", False))
             goal = PlayAudio.Goal()
             _copy_command_meta(
                 goal.meta,
@@ -3554,18 +3779,32 @@ def main(args: list[str] | None = None) -> None:
             goal.first_chunk_pcm = bytes(getattr(request, "first_chunk_pcm", b""))
             goal.face_hint = getattr(request, "face_hint", "")
             goal.motion_hint = getattr(request, "motion_hint", "")
-            label = "audio playback"
-            gate_result = self._begin_device_media_action(
-                device_id,
-                meta.command_id,
-                label,
-            )
-            if gate_result is not None:
-                return gate_result
             device_result = _make_transport_result(
                 f"firmware audio playback action for '{device_id}' did not complete"
             )
             try:
+                if not loaded_playback:
+                    self._prepare_playback_chunk_relay(device_id, meta.command_id)
+                if loaded_playback:
+                    accepted_callback = lambda: self._media_action_gate.mark_busy_seen(
+                        device_id,
+                        meta.command_id,
+                    )
+                    finished_callback = None
+                    completion_result = lambda: self._loaded_playback_completion_result(
+                        device_id,
+                        meta.command_id,
+                    )
+                else:
+                    accepted_callback = lambda: self._activate_playback_chunk_relay(
+                        device_id,
+                        meta.command_id,
+                    )
+                    finished_callback = lambda: self._finish_playback_chunk_relay(
+                        device_id,
+                        meta.command_id,
+                    )
+                    completion_result = None
                 device_result = self._send_device_action_goal(
                     client,
                     goal,
@@ -3573,16 +3812,17 @@ def main(args: list[str] | None = None) -> None:
                     timeout_sec=self._device_media_action_timeout_sec,
                     device_id=device_id,
                     command_id=meta.command_id,
-                    on_accepted=lambda: self._activate_playback_chunk_relay(
-                        device_id,
-                        meta.command_id,
-                    ),
-                    on_finished=lambda: self._finish_playback_chunk_relay(
-                        device_id,
-                        meta.command_id,
-                    ),
+                    on_accepted=accepted_callback,
+                    on_finished=finished_callback,
+                    completion_result=completion_result,
                 )
-                if device_result.state == STATE_TIMEOUT:
+                if (
+                    not loaded_playback
+                    and (
+                        device_result.state == STATE_TIMEOUT
+                        or device_result.error_code == "UNKNOWN_COMMAND"
+                    )
+                ):
                     self._finish_playback_chunk_relay(device_id, meta.command_id)
                 return device_result
             finally:
@@ -3723,6 +3963,7 @@ def main(args: list[str] | None = None) -> None:
             command_id: str = "",
             on_accepted=None,
             on_finished=None,
+            completion_result: Callable[[], Result | None] | None = None,
         ) -> Result:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable")
@@ -3763,15 +4004,17 @@ def main(args: list[str] | None = None) -> None:
                     label,
                     timeout_sec=timeout_sec,
                     cancel_on_timeout=False,
+                    completion_result=completion_result,
                 )
                 if wait_result is not None:
-                    self._log_late_device_action_future(
-                        result_future,
-                        device_id=device_id,
-                        command_id=command_id,
-                        label=label,
-                        phase="result_response",
-                    )
+                    if not wait_result.ok:
+                        self._log_late_device_action_future(
+                            result_future,
+                            device_id=device_id,
+                            command_id=command_id,
+                            label=label,
+                            phase="result_response",
+                        )
                     return wait_result
                 try:
                     result_response = result_future.result()
@@ -3789,11 +4032,16 @@ def main(args: list[str] | None = None) -> None:
             *,
             timeout_sec: float | None = None,
             cancel_on_timeout: bool = True,
+            completion_result: Callable[[], Result | None] | None = None,
         ) -> Result | None:
             deadline = time.monotonic() + (
                 self._device_command_timeout_sec if timeout_sec is None else timeout_sec
             )
             while not future.done() and time.monotonic() < deadline:
+                if completion_result is not None:
+                    early_result = completion_result()
+                    if early_result is not None:
+                        return early_result
                 time.sleep(0.01)
             if future.done():
                 return None

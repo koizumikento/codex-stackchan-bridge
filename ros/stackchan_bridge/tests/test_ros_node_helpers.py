@@ -19,6 +19,7 @@ from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV,
+    AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV,
     AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
@@ -44,10 +45,13 @@ from stackchan_bridge.ros_node import (
     _audio_playback_loaded_topic_publish_interval_sec,
     _audio_playback_loaded_topic_settle_sec,
     _audio_playback_loaded_topic_window_chunks,
+    _audio_playback_command_loaded_max_decoded_bytes,
     _media_action_settle_sec,
     _audio_playback_load_chunk_bytes,
     _audio_playback_load_chunk_bytes_for_format,
     _audio_playback_topic_initial_window_chunks,
+    _command_playback_audio_from_complete_chunks,
+    _loaded_playback_completion_from_events,
     _loaded_audio_transfer_candidates,
     _loaded_audio_topic_buffered_chunks,
     _loaded_audio_topic_error_code,
@@ -138,6 +142,157 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertEqual(window, [])
         self.assertEqual([chunk.sequence for chunk in queue], [2, 3, 4])
+
+    def test_command_playback_audio_from_complete_chunks_builds_loaded_audio(self) -> None:
+        request = SimpleNamespace(
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+            first_chunk_present=False,
+            first_chunk_sequence=0,
+            first_chunk_pcm=b"",
+        )
+        chunks = [
+            SimpleNamespace(
+                direction=1,
+                sequence=0,
+                total_bytes=6,
+                format=AUDIO_CHUNK_FORMAT_ID,
+                sample_rate=16000,
+                channels=1,
+                end_of_stream=False,
+                pcm=b"aa",
+            ),
+            SimpleNamespace(
+                direction=1,
+                sequence=1,
+                total_bytes=6,
+                format=AUDIO_CHUNK_FORMAT_ID,
+                sample_rate=16000,
+                channels=1,
+                end_of_stream=False,
+                pcm=b"bb",
+            ),
+            SimpleNamespace(
+                direction=1,
+                sequence=2,
+                total_bytes=6,
+                format=AUDIO_CHUNK_FORMAT_ID,
+                sample_rate=16000,
+                channels=1,
+                end_of_stream=True,
+                pcm=b"cc",
+            ),
+        ]
+
+        audio, state = _command_playback_audio_from_complete_chunks(request, chunks)
+
+        self.assertEqual(state, "complete")
+        self.assertIsNotNone(audio)
+        self.assertEqual(audio.pcm, b"aabbcc")
+
+    def test_command_playback_audio_waits_for_eos_and_contiguous_chunks(self) -> None:
+        request = SimpleNamespace(
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+            first_chunk_present=True,
+            first_chunk_sequence=0,
+            first_chunk_pcm=b"aa",
+        )
+        incomplete_chunks = [
+            SimpleNamespace(
+                direction=1,
+                sequence=2,
+                total_bytes=6,
+                format=AUDIO_CHUNK_FORMAT_ID,
+                sample_rate=16000,
+                channels=1,
+                end_of_stream=True,
+                pcm=b"cc",
+            ),
+        ]
+
+        audio, state = _command_playback_audio_from_complete_chunks(
+            request,
+            incomplete_chunks,
+        )
+
+        self.assertIsNone(audio)
+        self.assertEqual(state, "incomplete")
+
+    def test_command_playback_audio_skips_payload_above_loaded_buffer(self) -> None:
+        request = SimpleNamespace(
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+            first_chunk_present=False,
+            first_chunk_sequence=0,
+            first_chunk_pcm=b"",
+        )
+        chunks = [
+            SimpleNamespace(
+                direction=1,
+                sequence=0,
+                total_bytes=40000,
+                format=AUDIO_CHUNK_FORMAT_ID,
+                sample_rate=16000,
+                channels=1,
+                end_of_stream=True,
+                pcm=b"aa",
+            )
+        ]
+
+        audio, state = _command_playback_audio_from_complete_chunks(request, chunks)
+
+        self.assertIsNone(audio)
+        self.assertEqual(state, "too_large")
+
+    def test_loaded_playback_completion_from_events_accepts_drain_marker(self) -> None:
+        records = [
+            EventRecord(
+                sequence=1,
+                event_id="evt-1",
+                device_id="default",
+                event_name="audio_playback_chunk",
+                stamp=1.0,
+                command_id="other",
+                source="firmware",
+                payload={"stage": "loaded_playback_drained", "result": "OK"},
+            ),
+            EventRecord(
+                sequence=2,
+                event_id="evt-2",
+                device_id="default",
+                event_name="audio_playback_chunk",
+                stamp=2.0,
+                command_id="cmd-1",
+                source="firmware",
+                payload={"stage": "loaded_playback_drained", "result": "OK"},
+            ),
+        ]
+
+        result = _loaded_playback_completion_from_events(records, "cmd-1")
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "audio playback completed from loaded playback drain")
+
+    def test_loaded_playback_completion_from_events_ignores_non_ok_marker(self) -> None:
+        records = [
+            EventRecord(
+                sequence=1,
+                event_id="evt-1",
+                device_id="default",
+                event_name="audio_playback_chunk",
+                stamp=1.0,
+                command_id="cmd-1",
+                source="firmware",
+                payload={"stage": "loaded_playback_drained", "result": "TIMEOUT"},
+            )
+        ]
+
+        self.assertIsNone(_loaded_playback_completion_from_events(records, "cmd-1"))
 
     def test_audio_playback_topic_window_env_is_bounded(self) -> None:
         with mock.patch.dict(
@@ -301,6 +456,28 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 8)
 
+    def test_audio_playback_command_loaded_limit_env_is_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV: "16000"},
+        ):
+            self.assertEqual(_audio_playback_command_loaded_max_decoded_bytes(), 16000)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV: "-1"},
+        ):
+            self.assertEqual(_audio_playback_command_loaded_max_decoded_bytes(), 0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV: "999999"},
+        ):
+            self.assertEqual(
+                _audio_playback_command_loaded_max_decoded_bytes(),
+                32 * 1024,
+            )
+
     def test_loaded_audio_topic_payload_helpers_support_progress_and_errors(self) -> None:
         self.assertEqual(
             _loaded_audio_topic_buffered_chunks({"expected_seq": 3, "buf_chunks": 2}),
@@ -406,6 +583,19 @@ class RosNodeHelperTests(unittest.TestCase):
         blocked = gate.begin("default", "cmd-2", "audio playback")
         self.assertIsNotNone(blocked)
         self.assertEqual(blocked.error_code, "FIRMWARE_BUSY")
+
+    def test_media_action_gate_can_release_after_action_accept_without_active_sample(self) -> None:
+        gate = MediaActionGate(3.0, clock=lambda: 35.0, idle_release_grace_sec=0.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        gate.mark_busy_seen("default", "cmd-1")
+        released = gate.release_if_capability_idle(
+            "default",
+            [CapabilitySnapshot("audio_playback", "available", active=False)],
+        )
+
+        self.assertIsNotNone(released)
+        self.assertEqual(released.command_id, "cmd-1")
 
     def test_media_action_gate_ignores_late_timeout_after_status_release(self) -> None:
         now = 50.0
@@ -895,6 +1085,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "ActionClient",
             "reliable_depth_4 = QoSProfile(depth=4)",
             "reliable_depth_8 = QoSProfile(depth=8)",
+            "reliable_depth_64 = QoSProfile(depth=64)",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03",
             "AUDIO_PLAYBACK_SUBSCRIPTION_MATCH_TIMEOUT_SEC = 1.5",
@@ -918,6 +1109,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
+            "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES",
             "TTS_SPEED_SCALE_DEFAULT = 1.0",
             "TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03",
             "TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03",
@@ -945,6 +1137,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "_loaded_audio_transfer_candidates",
             "_publish_loaded_audio_playback",
             "audio playback compressed load unsupported; falling back to PCM",
+            "_loaded_playback_completion_from_events",
             "_audio_playback_load_chunk_bytes",
             "_audio_playback_load_chunk_bytes_for_format",
             "_audio_playback_pull_service_fallback_after_nacks",
