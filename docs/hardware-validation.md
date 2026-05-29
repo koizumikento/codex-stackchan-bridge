@@ -115,8 +115,8 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='30.0'
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
   $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
-  $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.02'
+  $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='128'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.9'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='0'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
@@ -137,10 +137,12 @@ hardware bring-up issue complete.
   chunk topic and uses the final playback action result, not per-chunk service
   ACKs. Use `STACKCHAN_TTS_LOADED_TRANSPORT=service` only when comparing
   against the older synchronous load service. Keep
-  `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES=96` on the current COM3 host
-  serial TCP bridge; the previous service-load path completed short ADPCM TTS
-  at 96 bytes while 128, 256, and 512 byte compressed load requests timed out
-  before the first firmware callback response.
+  `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES=128` on the current COM3
+  host serial TCP bridge when using the loaded topic path. The previous
+  service-load path completed short ADPCM TTS at 96 bytes while 128, 256, and
+  512 byte synchronous compressed service-load requests timed out before the
+  first firmware callback response; use 96 bytes only when specifically
+  diagnosing the synchronous service-load path.
   Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
   host-serial TCP path, but leave
   `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=0` for normal
@@ -2179,9 +2181,15 @@ KOIZUMI-112 diagnostic firmware update:
   The firmware therefore keeps the micro-ROS input stream history at 8 and only
   raises the playback loaded-topic subscription depth to 16. On the flashed
   full firmware, 96 byte ADPCM topic chunks still failed at 0.5 s and 0.75 s
-  pacing, but completed at 1.0 s with 32 chunks / 12178 decoded bytes. Keep
-  1.0 s as the conservative default until a smaller reliable pacing or a
-  different bounded transfer shape is validated.
+  pacing, but completed at 1.0 s with 32 chunks / 12178 decoded bytes. A 0.9 s
+  run with the previous 20 s final completion wait timed out after publish, but
+  0.9 s plus a 30 s final completion wait completed three consecutive short
+  local TTS smokes with `STACKCHAN_BRIDGE_SAY_COMPLETED=1` and
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. A follow-up 128 byte ADPCM topic
+  run reduced the transaction from 32 chunks to 24 chunks and also completed
+  three consecutive smokes at 0.9 s / 30 s. Keep 128 byte chunks, 0.9 s pacing,
+  and 30 s final completion wait as the conservative defaults until a smaller
+  reliable pacing or a different bounded transfer shape is validated.
 
 ## Cleanup
 

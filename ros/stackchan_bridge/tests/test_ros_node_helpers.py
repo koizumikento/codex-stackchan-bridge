@@ -372,7 +372,7 @@ class RosNodeHelperTests(unittest.TestCase):
 
     def test_audio_playback_loaded_topic_publish_interval_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 1.0)
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.9)
 
         with mock.patch.dict(
             os.environ,
@@ -387,6 +387,9 @@ class RosNodeHelperTests(unittest.TestCase):
             self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 2.0)
 
     def test_audio_playback_loaded_topic_complete_timeout_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 30.0)
+
         with mock.patch.dict(
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV: "12"},
@@ -650,7 +653,7 @@ class RosNodeHelperTests(unittest.TestCase):
                 _audio_playback_load_chunk_bytes_for_format(
                     AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT
                 ),
-                96,
+                128,
             )
 
     def test_audio_playback_load_chunk_envs_are_bounded_for_loaded_service(self) -> None:
@@ -1125,7 +1128,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "AUDIO_PLAYBACK_FIRST_GOAL_BYTES_DEFAULT = 64",
             "AUDIO_PLAYBACK_CHUNK_BYTES_DEFAULT = 160",
             "AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64",
-            "AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 96",
+            "AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 128",
             "AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280",
             "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",

@@ -916,11 +916,12 @@ Rules:
 - `pcm` is bounded by the same `uint8[<=1280]` IDL limit as `AudioChunk`.
   On the current serial micro-ROS path, PCM bridge load chunks should stay much
   smaller than that limit; 640 byte synchronous PCM service requests timed out
-  during K151 host-serial validation. Compressed ADPCM loaded TTS defaults to
-  96 byte service requests on the COM3 host-serial validation path because that
-  size completed short loaded TTS while 128, 256, and 512 byte compressed load
-  requests timed out before the first firmware callback response. Use 64 bytes
-  as the conservative fallback; larger values remain diagnostic-only until the
+  during K151 host-serial validation. Synchronous compressed ADPCM service-load
+  requests completed at 96 bytes while 128 bytes and above timed out before the
+  first firmware callback response, but the default loaded topic path completed
+  three consecutive short local TTS smokes with 128 byte ADPCM chunks at 0.9 s
+  pacing and a 30 s final completion wait. Use 64 or 96 bytes as conservative
+  service-load fallbacks; larger topic values remain diagnostic-only until the
   serial micro-ROS MTU/resource path is revalidated.
 - `end_of_stream=true` marks the final chunk. The bridge may start
   `/stackchan/<device_id>/device/audio/play` only after `complete=true`.

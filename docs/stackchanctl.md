@@ -676,17 +676,22 @@ decoded PCM byte counts; set it to `0` to force PCM loaded-transfer
 diagnostics.
 ADPCM loaded TTS also has a separate
 `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES` diagnostic knob. It currently
-defaults to 96 byte payload chunks because COM3 host-serial validation
-completed short loaded ADPCM TTS at 96 bytes while 128, 256, and 512 byte
-compressed service-load requests timed out before the first firmware callback
-response. `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC` controls the
-small post-publish delay before the playback action goal; it defaults to 0.15 s
-and is a local serial bring-up guard, not a media ACK.
+defaults to 128 byte payload chunks because COM3 host-serial topic validation
+completed short loaded ADPCM TTS three consecutive times at 128 bytes, reducing
+the same short prompt from 32 chunks to 24 chunks. Older synchronous
+service-load validation timed out at 128 bytes and above, so use the loaded
+topic path for this default.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC` controls the small
+post-publish delay before the playback action goal; it defaults to 0.15 s and
+is a local serial bring-up guard, not a media ACK.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC` controls the
-inter-chunk pacing for the topic payload path; it defaults to 1.0 s because
-the current full bring-up firmware reliably completed short local TTS at 1.0 s
-while 0.75 s and lower still dropped or reordered loaded chunks on the Windows
-host serial bridge. Values above 2 s are bounded to 2 s. The topic payload path
+inter-chunk pacing for the topic payload path; it defaults to 0.9 s because
+the current full bring-up firmware completed short local TTS three consecutive
+times at 0.9 s when paired with 128 byte ADPCM chunks and a 30 s final
+completion wait. A 0.9 s run with 96 byte ADPCM chunks and
+the older 20 s completion wait timed out after payload publish, and 0.75 s and
+lower still dropped or reordered loaded chunks on the Windows host serial
+bridge. Values above 2 s are bounded to 2 s. The topic payload path
 also uses
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to define
 the optional diagnostic progress window. By default
@@ -708,7 +713,7 @@ requires hardware validation because larger serialized messages can time out or
 miss the firmware callback on the Windows host serial bridge.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
 the bridge waits for the firmware's final `audio_playback_load` completion
-event before starting the playback action; it defaults to 20 s. This is a
+event before starting the playback action; it defaults to 30 s. This is a
 single transaction-level readiness check, not per-chunk ACK.
 The TTS path can be forced back to pull-only diagnostics with
 `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`, but that is not the recommended speech
