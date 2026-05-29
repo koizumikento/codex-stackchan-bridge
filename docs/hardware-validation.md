@@ -558,6 +558,15 @@ hardware bring-up issue complete.
   remain fallback diagnostics only when the standard/full firmware cannot keep
   the connected media capabilities available.
 
+  For audio playback and capture, bridge-side gate release may also be driven by
+  firmware status after the relevant capability has been observed active or
+  queued and later becomes idle. This prevents a delayed action-result future
+  from holding `FIRMWARE_BUSY` forever, and audio playback idle release also
+  closes the bridge chunk relay to stop stale republish traffic. It does not
+  make raw PCM topic playback a healthy serial transport by itself; if
+  `audio play --wait` still times out with large pending relay counts, treat
+  that as a playback transfer-shape issue rather than a media gate issue.
+
   During the printed stimulus window:
 
   | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |

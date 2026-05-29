@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from types import SimpleNamespace
+from typing import Iterable
 
 from stackchan_bridge.audio_codec import (
     AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT,
@@ -118,8 +119,20 @@ MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
 
 
 class MediaActionGate:
-    def __init__(self, settle_sec: float, *, clock=time.monotonic) -> None:
+    _IDLE_STATUS_CAPABILITIES = {
+        "audio playback": "audio_playback",
+        "audio capture": "audio_capture",
+    }
+
+    def __init__(
+        self,
+        settle_sec: float,
+        *,
+        clock=time.monotonic,
+        idle_release_grace_sec: float = 0.5,
+    ) -> None:
         self._settle_sec = max(0.0, float(settle_sec))
+        self._idle_release_grace_sec = max(0.0, float(idle_release_grace_sec))
         self._clock = clock
         self._lock = threading.Lock()
         self._active: dict[str, SimpleNamespace] = {}
@@ -159,6 +172,7 @@ class MediaActionGate:
                 command_id=command_id,
                 label=label,
                 started_monotonic=now,
+                busy_seen=False,
             )
             return None
 
@@ -170,10 +184,12 @@ class MediaActionGate:
             or "timed out" in result.message.lower()
         )
         with self._lock:
+            finished_active = False
             active = self._active.get(device_id)
             if active is not None and active.command_id == command_id:
                 self._active.pop(device_id, None)
-            if timed_out and self._settle_sec > 0:
+                finished_active = True
+            if finished_active and timed_out and self._settle_sec > 0:
                 until = now + self._settle_sec
                 self._settling[device_id] = SimpleNamespace(
                     command_id=command_id,
@@ -185,6 +201,44 @@ class MediaActionGate:
             if settling is not None and settling.command_id == command_id:
                 self._settling.pop(device_id, None)
             return 0.0
+
+    def release_if_capability_idle(
+        self,
+        device_id: str,
+        capabilities: Iterable[CapabilitySnapshot],
+    ) -> SimpleNamespace | None:
+        now = self._clock()
+        capability_by_name = {
+            getattr(capability, "name", ""): capability for capability in capabilities
+        }
+        with self._lock:
+            active = self._active.get(device_id)
+            if active is None:
+                return None
+            capability_name = self._IDLE_STATUS_CAPABILITIES.get(str(active.label))
+            if capability_name is None:
+                return None
+            age = now - float(active.started_monotonic)
+            if age < self._idle_release_grace_sec:
+                return None
+            capability = capability_by_name.get(capability_name)
+            if capability is None:
+                return None
+            active_or_queued = bool(getattr(capability, "active", False)) or int(
+                getattr(capability, "queued", 0)
+            ) > 0
+            if active_or_queued:
+                active.busy_seen = True
+                return None
+            if not bool(getattr(active, "busy_seen", False)):
+                return None
+            self._active.pop(device_id, None)
+            return SimpleNamespace(
+                command_id=active.command_id,
+                label=active.label,
+                capability=capability_name,
+                age_sec=age,
+            )
 
     def settling_command_id(self, device_id: str) -> str | None:
         now = self._clock()
@@ -2814,6 +2868,24 @@ def main(args: list[str] | None = None) -> None:
                 status,
                 fallback_device_id=device_id,
             )
+            released_media_action = self._media_action_gate.release_if_capability_idle(
+                device_id,
+                snapshot.capabilities,
+            )
+            if released_media_action is not None:
+                self.get_logger().info(
+                    "firmware media action gate released from idle status "
+                    f"device_id={device_id!r} "
+                    f"command_id={released_media_action.command_id!r} "
+                    f"label={released_media_action.label!r} "
+                    f"capability={released_media_action.capability!r} "
+                    f"age_ms={int(released_media_action.age_sec * 1000)}"
+                )
+                if released_media_action.label == "audio playback":
+                    self._finish_playback_chunk_relay(
+                        device_id,
+                        released_media_action.command_id,
+                    )
             self.facade.update_status(snapshot)
             if became_available:
                 self._handle_speech_event(

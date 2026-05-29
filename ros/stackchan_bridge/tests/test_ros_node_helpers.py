@@ -358,6 +358,94 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
 
+    def test_media_action_gate_releases_audio_when_status_reports_idle(self) -> None:
+        now = 20.0
+        gate = MediaActionGate(3.0, clock=lambda: now, idle_release_grace_sec=0.5)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        now = 20.4
+        self.assertIsNone(
+            gate.release_if_capability_idle(
+                "default",
+                [CapabilitySnapshot("audio_playback", "available", active=False)],
+            )
+        )
+        self.assertIsNotNone(gate.begin("default", "cmd-2", "audio capture"))
+
+        now = 20.5
+        self.assertIsNone(
+            gate.release_if_capability_idle(
+                "default",
+                [CapabilitySnapshot("audio_playback", "available", active=True)],
+            )
+        )
+
+        now = 20.6
+        released = gate.release_if_capability_idle(
+            "default",
+            [CapabilitySnapshot("audio_playback", "available", active=False)],
+        )
+
+        self.assertIsNotNone(released)
+        self.assertEqual(released.command_id, "cmd-1")
+        self.assertEqual(released.capability, "audio_playback")
+        self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
+
+    def test_media_action_gate_keeps_audio_when_status_reports_active(self) -> None:
+        now = 30.0
+        gate = MediaActionGate(3.0, clock=lambda: now, idle_release_grace_sec=0.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio capture"))
+        now = 31.0
+        released = gate.release_if_capability_idle(
+            "default",
+            [CapabilitySnapshot("audio_capture", "available", active=True)],
+        )
+
+        self.assertIsNone(released)
+        blocked = gate.begin("default", "cmd-2", "audio playback")
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked.error_code, "FIRMWARE_BUSY")
+
+    def test_media_action_gate_ignores_late_timeout_after_status_release(self) -> None:
+        now = 50.0
+        gate = MediaActionGate(3.0, clock=lambda: now, idle_release_grace_sec=0.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        self.assertIsNone(
+            gate.release_if_capability_idle(
+                "default",
+                [CapabilitySnapshot("audio_playback", "available", active=True)],
+            )
+        )
+        released = gate.release_if_capability_idle(
+            "default",
+            [CapabilitySnapshot("audio_playback", "available", active=False)],
+        )
+        self.assertIsNotNone(released)
+        gate.finish(
+            "default",
+            "cmd-1",
+            "audio playback",
+            Result(False, 4, "TIMEOUT", "late firmware audio playback timed out", True),
+        )
+
+        self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
+
+    def test_media_action_gate_does_not_release_camera_from_status_idle(self) -> None:
+        gate = MediaActionGate(3.0, clock=lambda: 40.0, idle_release_grace_sec=0.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "camera capture"))
+        released = gate.release_if_capability_idle(
+            "default",
+            [CapabilitySnapshot("camera_snapshot", "available", active=False)],
+        )
+
+        self.assertIsNone(released)
+        blocked = gate.begin("default", "cmd-2", "audio playback")
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked.error_code, "FIRMWARE_BUSY")
+
     def test_audio_playback_load_chunk_defaults_keep_pcm_small_and_adpcm_validated(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(_audio_playback_load_chunk_bytes(), 64)
