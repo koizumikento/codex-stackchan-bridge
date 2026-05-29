@@ -2212,6 +2212,20 @@ KOIZUMI-112 diagnostic firmware update:
   about 0.32 s after bridge publish completion. Keep 128 byte ADPCM chunks and
   30 s final completion wait, and lower the loaded-topic publish interval
   default to 0.6 s.
+- KOIZUMI-178 focused playback follow-up on 2026-05-29 found that the current
+  bridge can convert a 500 ms `stackchanctl audio play --wait` tone into the
+  loaded playback transaction before starting firmware playback. The run used
+  32 loaded topic chunks / 16000 decoded bytes, completed with
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_TIMEOUT_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_PLAY_SETTLED_SEEN=1`. Bridge normal logs now
+  report loaded audio `format_id` instead of codec names so the redaction scan
+  does not match `pcm` inside a codec label; the same playback-only validation
+  ended with `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. Follow-up
+  camera and audio-capture-only checks after playback did not report
+  `FIRMWARE_BUSY`; camera reported a capture failure and audio capture reported
+  a QoS mismatch / no-PCM-chunks failure, which should be tracked separately
+  from playback relay gate release.
 
 ## Cleanup
 

@@ -2606,7 +2606,7 @@ def main(args: list[str] | None = None) -> None:
                     self.get_logger().info(
                         "audio playback compressed load unsupported; falling back to PCM "
                         f"device_id={device_id!r} command_id={meta.command_id!r} "
-                        f"encoding={candidate.encoding!r} error_code={result.error_code!r}"
+                        f"format_id={candidate.format_id} error_code={result.error_code!r}"
                     )
             return Result.rejected(
                 "UNSUPPORTED_FEATURE",
@@ -2686,7 +2686,7 @@ def main(args: list[str] | None = None) -> None:
             self.get_logger().info(
                 "audio playback loaded topic publish complete "
                 f"device_id={device_id!r} command_id={meta.command_id!r} "
-                f"encoding={candidate.encoding!r} chunks={total_chunks} "
+                f"format_id={candidate.format_id} chunks={total_chunks} "
                 f"encoded_bytes={len(candidate.payload)} "
                 f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
                 f"publish_elapsed_ms={int((publish_finished_at - publish_started_at) * 1000)} "
@@ -2705,7 +2705,7 @@ def main(args: list[str] | None = None) -> None:
             self.get_logger().info(
                 "audio playback loaded over topic before play action "
                 f"device_id={device_id!r} command_id={meta.command_id!r} "
-                f"encoding={candidate.encoding!r} chunks={total_chunks} "
+                f"format_id={candidate.format_id} chunks={total_chunks} "
                 f"encoded_bytes={len(candidate.payload)} "
                 f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
                 f"window_chunks={window_chunks} "
@@ -2832,7 +2832,7 @@ def main(args: list[str] | None = None) -> None:
                 self.get_logger().info(
                     "audio playback load chunk request "
                     f"device_id={device_id!r} command_id={meta.command_id!r} "
-                    f"encoding={candidate.encoding!r} format={candidate.format_id} "
+                    f"format_id={candidate.format_id} "
                     f"sequence={sequence} total_chunks={total_chunks} "
                     f"bytes={len(chunk)} encoded_bytes={len(candidate.payload)} "
                     f"decoded_bytes={candidate.decoded_bytes} "
@@ -2848,7 +2848,7 @@ def main(args: list[str] | None = None) -> None:
                     self.get_logger().warning(
                         "audio playback load chunk timeout "
                         f"device_id={device_id!r} command_id={meta.command_id!r} "
-                        f"encoding={candidate.encoding!r} "
+                        f"format_id={candidate.format_id} "
                         f"sequence={sequence} total_chunks={total_chunks} "
                         f"bytes={len(chunk)} elapsed_ms="
                         f"{int((time.monotonic() - started) * 1000)} "
@@ -2865,7 +2865,7 @@ def main(args: list[str] | None = None) -> None:
                 self.get_logger().info(
                     "audio playback load chunk response "
                     f"device_id={device_id!r} command_id={meta.command_id!r} "
-                    f"encoding={candidate.encoding!r} "
+                    f"format_id={candidate.format_id} "
                     f"sequence={sequence} accepted_sequence={response.accepted_sequence} "
                     f"buffered_chunks={response.buffered_chunks} "
                     f"buffered_bytes={response.buffered_bytes} "
@@ -2878,7 +2878,7 @@ def main(args: list[str] | None = None) -> None:
             self.get_logger().info(
                 "audio playback loaded before play action "
                 f"device_id={device_id!r} command_id={meta.command_id!r} "
-                f"encoding={candidate.encoding!r} chunks={total_chunks} "
+                f"format_id={candidate.format_id} chunks={total_chunks} "
                 f"encoded_bytes={len(candidate.payload)} "
                 f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes}"
             )
