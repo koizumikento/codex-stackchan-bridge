@@ -536,6 +536,28 @@ hardware bring-up issue complete.
   instead of misclassifying later `FIRMWARE_BUSY` results as capture or camera
   regressions.
 
+  After single-feature bring-up is complete, do not switch back to individual
+  media diagnostic firmware profiles just to investigate routine
+  `FIRMWARE_BUSY`. Use the standard/full firmware and first confirm
+  `stackchanctl --backend bridge observe --json` reports `/stackchan/default`
+  connected with `audio_playback`, `audio_capture`, and `camera_snapshot` all
+  available. Then run the intentional overlap matrix:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-media-overlap-matrix --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 45 --media-camera-quality 50 --media-audio-capture-seconds 2.0
+  ```
+
+  This helper deliberately overlaps camera capture, audio capture, and audio
+  playback commands so bridge-side `MediaActionGate` and firmware-side media
+  guards can be classified. It is not a normal smoke pass/fail helper: expected
+  `FIRMWARE_BUSY` rows prove resource arbitration, while `UNSUPPORTED_FEATURE`
+  means the standard firmware capability precondition was not met. The helper
+  prints command ids, result codes, event/log markers, and output byte counts
+  only; do not paste JPEG bytes, PCM, speech text, or base64 payloads into
+  Linear. Individual profiles such as `--microros-core-capture-camera-bringup`
+  remain fallback diagnostics only when the standard/full firmware cannot keep
+  the connected media capabilities available.
+
   During the printed stimulus window:
 
   | Stimulus group | Manual action | Expected event names | Normal-output redaction rule |

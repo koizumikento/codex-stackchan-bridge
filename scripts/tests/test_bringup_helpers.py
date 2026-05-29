@@ -79,6 +79,27 @@ def sensor_sweep_args() -> argparse.Namespace:
     )
 
 
+def media_overlap_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        image="test-image",
+        skip_build=True,
+        clean_ros_build=False,
+        allow_stale_install=False,
+        tcp_host="host.docker.internal",
+        tcp_port=11411,
+        pty="/tmp/stackchan-test-pty",
+        baud=921600,
+        verbose=4,
+        timeout=45,
+        media_camera_quality=50,
+        media_audio_capture_seconds=2.0,
+        media_audio_playback_duration_ms=250.0,
+        media_audio_playback_frequency=440.0,
+        media_audio_playback_amplitude=1200,
+        say_text="",
+    )
+
+
 class MicroRosAgentContainerTests(unittest.TestCase):
     def test_default_ros_smoke_build_is_incremental_symlink_install(self) -> None:
         script = microros_agent_container.ros_smoke_setup_script(smoke_args())
@@ -271,6 +292,47 @@ class MicroRosAgentContainerTests(unittest.TestCase):
 
         command = docker_run.call_args.args[1]
         self.assertIn('media_mode="playback-only"', command)
+
+    def test_media_overlap_matrix_requires_standard_capabilities(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_media_overlap_matrix(
+                media_overlap_args()
+            )
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("STACKCHAN_MEDIA_OVERLAP_STANDARD_READY=", command)
+        self.assertIn('"audio_playback","audio_capture","camera_snapshot"', command)
+        self.assertIn("STACKCHAN_MEDIA_OVERLAP_ABORTED_PROFILE_OR_CONNECTION=1", command)
+        self.assertNotIn("STACKCHAN_SENSOR_SWEEP_MEDIA_MODE", command)
+
+    def test_media_overlap_matrix_runs_intentional_overlap_cases(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_media_overlap_matrix(
+                media_overlap_args()
+            )
+
+        command = docker_run.call_args.args[1]
+        camera_index = command.index("=== camera-overlap ===")
+        playback_index = command.index("=== audio-playback-overlap non-wait ===")
+        playback_wait_index = command.index("=== audio-playback wait baseline ===")
+        capture_index = command.index("=== audio-capture-overlap ===")
+        self.assertLess(camera_index, playback_index)
+        self.assertLess(playback_index, playback_wait_index)
+        self.assertLess(playback_wait_index, capture_index)
+        self.assertIn(
+            "classify_json CAMERA_OVERLAP_SECOND",
+            command,
+        )
+        self.assertIn("classify_json CAMERA_DURING_AUDIO_CAPTURE", command)
+        self.assertIn("classify_json CAMERA_AFTER_AUDIO_PLAY_NOWAIT", command)
 
 
 if __name__ == "__main__":

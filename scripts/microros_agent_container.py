@@ -72,6 +72,8 @@ def main() -> int:
         return run_tcp_pty_event_echo(args)
     if args.command == "tcp-pty-sensor-sweep":
         return run_tcp_pty_sensor_sweep(args)
+    if args.command == "tcp-pty-media-overlap-matrix":
+        return run_tcp_pty_media_overlap_matrix(args)
     if args.command == "tcp-pty-loaded-audio-probe":
         return run_tcp_pty_loaded_audio_probe(args)
     if args.command == "tcp-pty-bridge-smoke":
@@ -222,6 +224,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the existing install/ workspace instead of rebuilding ROS packages.",
     )
     add_ros_smoke_build_arguments(tcp_pty_sweep)
+
+    tcp_pty_overlap = subparsers.add_parser(
+        "tcp-pty-media-overlap-matrix",
+        help=(
+            "Run intentional media overlap checks against the standard/full "
+            "firmware. This validates FIRMWARE_BUSY classification and is not "
+            "a focused bring-up smoke."
+        ),
+    )
+    tcp_pty_overlap.add_argument("--tcp-host", default=DEFAULT_TCP_HOST)
+    tcp_pty_overlap.add_argument("--tcp-port", type=int, default=DEFAULT_TCP_PORT)
+    tcp_pty_overlap.add_argument("--pty", default=DEFAULT_PTY)
+    tcp_pty_overlap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    tcp_pty_overlap.add_argument("--verbose", type=int, default=4)
+    tcp_pty_overlap.add_argument("--timeout", type=int, default=45)
+    tcp_pty_overlap.add_argument("--media-camera-quality", type=int, default=50)
+    tcp_pty_overlap.add_argument(
+        "--media-audio-capture-seconds",
+        type=float,
+        default=2.0,
+        help="Audio capture duration used for intentional overlap checks.",
+    )
+    tcp_pty_overlap.add_argument(
+        "--media-audio-playback-duration-ms",
+        type=float,
+        default=250.0,
+        help="Playback sine duration used for intentional overlap checks.",
+    )
+    tcp_pty_overlap.add_argument(
+        "--media-audio-playback-frequency",
+        type=float,
+        default=440.0,
+    )
+    tcp_pty_overlap.add_argument(
+        "--media-audio-playback-amplitude",
+        type=int,
+        default=1200,
+    )
+    tcp_pty_overlap.add_argument(
+        "--say-text",
+        default="",
+        help="Optional short text for a say-overlap check. Leave empty to skip TTS.",
+    )
+    tcp_pty_overlap.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Use the existing install/ workspace instead of rebuilding ROS packages.",
+    )
+    add_ros_smoke_build_arguments(tcp_pty_overlap)
 
     tcp_pty_audio_probe = subparsers.add_parser(
         "tcp-pty-loaded-audio-probe",
@@ -1104,6 +1155,220 @@ echo "--- socat tail ---"
 tail -n 60 /tmp/stackchan-socat.log || true
 phase_end "$result"
 exit $result
+"""
+    return docker_run(
+        args.image,
+        command,
+        mount_workspace=True,
+        workdir=WORKSPACE,
+    )
+
+
+def run_tcp_pty_media_overlap_matrix(args: argparse.Namespace) -> int:
+    setup_script = ros_smoke_setup_script(args)
+    capture_seconds = max(0.25, float(args.media_audio_capture_seconds))
+    playback_duration_ms = max(20.0, float(args.media_audio_playback_duration_ms))
+    playback_frequency = max(1.0, float(args.media_audio_playback_frequency))
+    playback_amplitude = min(30000, max(1, int(args.media_audio_playback_amplitude)))
+    camera_quality = min(95, max(1, int(args.media_camera_quality)))
+    say_text = shlex.quote(str(args.say_text).strip())
+    say_enabled = "1" if str(args.say_text).strip() else "0"
+    command = f"""
+set +e
+{setup_script}
+export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:$PYTHONPATH
+bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
+result=0
+socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2>/tmp/stackchan-overlap-socat.log &
+socat_pid=$!
+agent_pid=
+bridge_pid=
+cleanup() {{
+  cleanup_start=$(date +%s)
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  cleanup_end=$(date +%s)
+  echo "STACKCHAN_MEDIA_OVERLAP_PHASE_TEARDOWN_SECONDS=$((cleanup_end - cleanup_start))" | tee -a "$phase_times_file"
+  echo "--- media action gate lines ---"
+  grep -E "firmware media action|FIRMWARE_BUSY|camera capture|audio playback|audio capture" /tmp/stackchan-overlap-bridge.log 2>/dev/null || true
+  echo "--- micro-ROS Agent session lines ---"
+  grep -E "session established|create_client|server stopped" /tmp/stackchan-overlap-agent.log 2>/dev/null || true
+  echo "--- bridge tail ---"
+  tail -n 160 /tmp/stackchan-overlap-bridge.log 2>/dev/null || true
+  echo "--- micro-ROS Agent tail ---"
+  tail -n 100 /tmp/stackchan-overlap-agent.log 2>/dev/null || true
+  echo "--- socat tail ---"
+  tail -n 60 /tmp/stackchan-overlap-socat.log 2>/dev/null || true
+  print_phase_summary
+}}
+trap cleanup EXIT
+
+phase_start "serial PTY setup" PTY_SETUP
+for i in $(seq 1 50); do
+  [ -e {args.pty} ] && break
+  sleep 0.1
+done
+phase_end 0
+
+phase_start "bridge startup" BRIDGE_STARTUP
+"$bridge_node" >/tmp/stackchan-overlap-bridge.log 2>&1 &
+bridge_pid=$!
+for i in $(seq 1 80); do
+  ros2 service list | grep -q '^/stackchan/default/cmd/get_status$' && break
+  sleep 0.25
+done
+phase_end 0
+
+phase_start "micro-ROS Agent startup" AGENT_STARTUP
+ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-overlap-agent.log 2>&1 &
+agent_pid=$!
+sleep 6
+phase_end 0
+
+phase_start "media overlap matrix" MEDIA_OVERLAP
+
+json_command_id() {{
+  python3 -c 'import json,sys; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); print(data.get("command_id") or (data.get("metadata") or dict()).get("command_id") or "")' 2>/dev/null
+}}
+
+classify_json() {{
+  slug="$1"
+  file="$2"
+  grep -Eq '"ok": *true' "$file"
+  ok_result=$?
+  grep -Eq '"code": *"FIRMWARE_BUSY"' "$file"
+  busy_result=$?
+  grep -Eq '"code": *"UNSUPPORTED_FEATURE"' "$file"
+  unsupported_result=$?
+  grep -Eqi '"result_state": *"timeout"|"code": *"TIMEOUT"' "$file"
+  timeout_result=$?
+  command_id=$(cat "$file" | json_command_id)
+  echo "STACKCHAN_MEDIA_OVERLAP_${{slug}}_OK=$([ "$ok_result" -eq 0 ] && echo 1 || echo 0)"
+  echo "STACKCHAN_MEDIA_OVERLAP_${{slug}}_FIRMWARE_BUSY=$([ "$busy_result" -eq 0 ] && echo 1 || echo 0)"
+  echo "STACKCHAN_MEDIA_OVERLAP_${{slug}}_UNSUPPORTED=$([ "$unsupported_result" -eq 0 ] && echo 1 || echo 0)"
+  echo "STACKCHAN_MEDIA_OVERLAP_${{slug}}_TIMEOUT=$([ "$timeout_result" -eq 0 ] && echo 1 || echo 0)"
+  echo "STACKCHAN_MEDIA_OVERLAP_${{slug}}_COMMAND_ID_PRESENT=$([ -n "$command_id" ] && echo 1 || echo 0)"
+}}
+
+echo "=== standard/full firmware readiness ==="
+observe_output=""
+observe_ready=1
+for i in $(seq 1 30); do
+  observe_output=$(python3 -m stackchanctl --backend bridge --timeout 5 observe --json 2>&1)
+  printf '%s\n' "$observe_output" > /tmp/stackchan-overlap-observe.json
+  printf '%s\n' "$observe_output" | python3 -c 'import json,sys; raw=sys.stdin.read(); start=raw.find("{{"); end=raw.rfind("}}"); data=json.loads(raw[start:end+1]) if start >= 0 and end >= start else dict(); caps=dict((c.get("name"), c.get("state")) for c in data.get("capabilities", [])); names=("audio_playback","audio_capture","camera_snapshot"); missing=[n for n in names if caps.get(n)!="available"]; print("STACKCHAN_MEDIA_OVERLAP_CONNECTED=" + ("1" if data.get("connected") else "0")); print("STACKCHAN_MEDIA_OVERLAP_CAPABILITY_MISSING=" + (",".join(missing) if missing else "")); sys.exit(0 if data.get("connected") and not missing else 1)'
+  observe_ready=$?
+  [ "$observe_ready" -eq 0 ] && break
+  sleep 1
+done
+cat /tmp/stackchan-overlap-observe.json || true
+echo "STACKCHAN_MEDIA_OVERLAP_STANDARD_READY=$([ "$observe_ready" -eq 0 ] && echo 1 || echo 0)"
+if [ "$observe_ready" -ne 0 ]; then
+  echo "STACKCHAN_MEDIA_OVERLAP_ABORTED_PROFILE_OR_CONNECTION=1"
+  phase_end 1
+  exit 1
+fi
+echo "STACKCHAN_MEDIA_OVERLAP_ABORTED_PROFILE_OR_CONNECTION=0"
+
+tone_wav=/tmp/stackchan-overlap-tone.wav
+python3 - "$tone_wav" <<'PY'
+import math
+import sys
+import wave
+
+sample_rate = 16000
+duration_ms = {playback_duration_ms}
+frequency = {playback_frequency}
+amplitude = {playback_amplitude}
+sample_count = max(1, int(sample_rate * duration_ms / 1000.0))
+samples = bytearray()
+for index in range(sample_count):
+    value = int(amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
+    samples.extend(int(value).to_bytes(2, "little", signed=True))
+with wave.open(sys.argv[1], "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(sample_rate)
+    wav.writeframes(bytes(samples))
+PY
+
+echo "=== camera-only sequential baseline ==="
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-seq1.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-seq1.json 2>&1
+cat /tmp/stackchan-overlap-camera-seq1.json || true
+classify_json CAMERA_SEQ1 /tmp/stackchan-overlap-camera-seq1.json
+[ -s /tmp/stackchan-overlap-camera-seq1.jpg ] && echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SEQ1_BYTES=$(wc -c < /tmp/stackchan-overlap-camera-seq1.jpg)" || echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SEQ1_BYTES=0"
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-seq2.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-seq2.json 2>&1
+cat /tmp/stackchan-overlap-camera-seq2.json || true
+classify_json CAMERA_SEQ2 /tmp/stackchan-overlap-camera-seq2.json
+[ -s /tmp/stackchan-overlap-camera-seq2.jpg ] && echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SEQ2_BYTES=$(wc -c < /tmp/stackchan-overlap-camera-seq2.jpg)" || echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SEQ2_BYTES=0"
+
+echo "=== camera-overlap ==="
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-first.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-first.json 2>&1 &
+camera_first_pid=$!
+sleep 0.05
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-second.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-second.json 2>&1
+wait $camera_first_pid
+cat /tmp/stackchan-overlap-camera-first.json || true
+classify_json CAMERA_OVERLAP_FIRST /tmp/stackchan-overlap-camera-first.json
+cat /tmp/stackchan-overlap-camera-second.json || true
+classify_json CAMERA_OVERLAP_SECOND /tmp/stackchan-overlap-camera-second.json
+[ -s /tmp/stackchan-overlap-camera-first.jpg ] && echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_FIRST_BYTES=$(wc -c < /tmp/stackchan-overlap-camera-first.jpg)" || echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_FIRST_BYTES=0"
+[ -s /tmp/stackchan-overlap-camera-second.jpg ] && echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SECOND_BYTES=$(wc -c < /tmp/stackchan-overlap-camera-second.jpg)" || echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_SECOND_BYTES=0"
+
+echo "=== audio-playback-overlap non-wait ==="
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play "$tone_wav" --json > /tmp/stackchan-overlap-play-nowait.json 2>&1
+cat /tmp/stackchan-overlap-play-nowait.json || true
+classify_json AUDIO_PLAY_NOWAIT /tmp/stackchan-overlap-play-nowait.json
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-after-play.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-after-play.json 2>&1
+cat /tmp/stackchan-overlap-camera-after-play.json || true
+classify_json CAMERA_AFTER_AUDIO_PLAY_NOWAIT /tmp/stackchan-overlap-camera-after-play.json
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds 0.5 --output /tmp/stackchan-overlap-capture-after-play.wav --json > /tmp/stackchan-overlap-capture-after-play.json 2>&1
+cat /tmp/stackchan-overlap-capture-after-play.json || true
+classify_json AUDIO_CAPTURE_AFTER_AUDIO_PLAY_NOWAIT /tmp/stackchan-overlap-capture-after-play.json
+
+echo "=== audio-playback wait baseline ==="
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio play --wait "$tone_wav" --json > /tmp/stackchan-overlap-play-wait.json 2>&1
+cat /tmp/stackchan-overlap-play-wait.json || true
+classify_json AUDIO_PLAY_WAIT /tmp/stackchan-overlap-play-wait.json
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-after-play-wait.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-after-play-wait.json 2>&1
+cat /tmp/stackchan-overlap-camera-after-play-wait.json || true
+classify_json CAMERA_AFTER_AUDIO_PLAY_WAIT /tmp/stackchan-overlap-camera-after-play-wait.json
+
+echo "=== audio-capture-overlap ==="
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} audio capture --seconds {capture_seconds} --output /tmp/stackchan-overlap-capture.wav --json > /tmp/stackchan-overlap-capture.json 2>&1 &
+capture_pid=$!
+sleep 0.25
+python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-during-capture.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-during-capture.json 2>&1
+wait $capture_pid
+cat /tmp/stackchan-overlap-capture.json || true
+classify_json AUDIO_CAPTURE_PRIMARY /tmp/stackchan-overlap-capture.json
+[ -s /tmp/stackchan-overlap-capture.wav ] && echo "STACKCHAN_MEDIA_OVERLAP_AUDIO_CAPTURE_BYTES=$(wc -c < /tmp/stackchan-overlap-capture.wav)" || echo "STACKCHAN_MEDIA_OVERLAP_AUDIO_CAPTURE_BYTES=0"
+cat /tmp/stackchan-overlap-camera-during-capture.json || true
+classify_json CAMERA_DURING_AUDIO_CAPTURE /tmp/stackchan-overlap-camera-during-capture.json
+[ -s /tmp/stackchan-overlap-camera-during-capture.jpg ] && echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_DURING_CAPTURE_BYTES=$(wc -c < /tmp/stackchan-overlap-camera-during-capture.jpg)" || echo "STACKCHAN_MEDIA_OVERLAP_CAMERA_DURING_CAPTURE_BYTES=0"
+
+if [ "{say_enabled}" = "1" ]; then
+  echo "=== say-overlap ==="
+  python3 -m stackchanctl --backend bridge --timeout {args.timeout} say {say_text} --json > /tmp/stackchan-overlap-say.json 2>&1 &
+  say_pid=$!
+  sleep 0.25
+  python3 -m stackchanctl --backend bridge --timeout {args.timeout} camera capture --output /tmp/stackchan-overlap-camera-during-say.jpg --quality {camera_quality} --json > /tmp/stackchan-overlap-camera-during-say.json 2>&1
+  wait $say_pid
+  cat /tmp/stackchan-overlap-say.json || true
+  classify_json SAY_PRIMARY /tmp/stackchan-overlap-say.json
+  cat /tmp/stackchan-overlap-camera-during-say.json || true
+  classify_json CAMERA_DURING_SAY /tmp/stackchan-overlap-camera-during-say.json
+else
+  echo "STACKCHAN_MEDIA_OVERLAP_SAY_SKIPPED=1"
+fi
+
+echo "--- normal log redaction scan ---"
+cat /tmp/stackchan-overlap-bridge.log /tmp/stackchan-overlap-agent.log /tmp/stackchan-overlap-socat.log 2>/dev/null | grep -Ei 'nfc_tag_id|tag_id|uid|ir_code|raw_ir|raw_remote|remote_code|pcm|image|jpeg|base64|speech_text|transcript_text'
+log_sensitive_result=$?
+echo "STACKCHAN_MEDIA_OVERLAP_LOG_SENSITIVE_PAYLOAD_SEEN=$([ "$log_sensitive_result" -eq 0 ] && echo 1 || echo 0)"
+[ "$log_sensitive_result" -ne 0 ] || result=1
+
+phase_end "$result"
+exit "$result"
 """
     return docker_run(
         args.image,
