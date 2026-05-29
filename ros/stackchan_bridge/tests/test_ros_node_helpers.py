@@ -372,7 +372,7 @@ class RosNodeHelperTests(unittest.TestCase):
 
     def test_audio_playback_loaded_topic_publish_interval_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.9)
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.6)
 
         with mock.patch.dict(
             os.environ,

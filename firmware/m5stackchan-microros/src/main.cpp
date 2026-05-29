@@ -558,6 +558,11 @@ uint32_t play_audio_loaded_expected_sequence = 0;
 uint8_t play_audio_loaded_format = stackchan_msgs__msg__AudioChunk__PCM_S16LE;
 uint32_t play_audio_loaded_play_offset = 0;
 uint32_t play_audio_loaded_last_write_ms = 0;
+uint32_t play_audio_loaded_first_rx_ms = 0;
+uint32_t play_audio_loaded_last_rx_ms = 0;
+uint32_t play_audio_loaded_last_rx_gap_ms = 0;
+uint32_t play_audio_loaded_decode_total_ms = 0;
+uint32_t play_audio_loaded_last_decode_ms = 0;
 bool play_audio_loaded_complete = false;
 bool play_audio_loaded_playing = false;
 uint32_t play_audio_loaded_direct_playback_ms = 0;
@@ -648,6 +653,11 @@ void reset_play_audio_loaded_buffer() {
   play_audio_loaded_format = stackchan_msgs__msg__AudioChunk__PCM_S16LE;
   play_audio_loaded_play_offset = 0;
   play_audio_loaded_last_write_ms = 0;
+  play_audio_loaded_first_rx_ms = 0;
+  play_audio_loaded_last_rx_ms = 0;
+  play_audio_loaded_last_rx_gap_ms = 0;
+  play_audio_loaded_decode_total_ms = 0;
+  play_audio_loaded_last_decode_ms = 0;
   play_audio_loaded_complete = false;
   play_audio_loaded_playing = false;
   play_audio_loaded_direct_playback_ms = 0;
@@ -894,13 +904,19 @@ void log_play_audio_load_diagnostic(
     return;
   }
   char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  const uint32_t loaded_rx_elapsed_ms =
+      play_audio_loaded_first_rx_ms > 0 &&
+              play_audio_loaded_last_rx_ms >= play_audio_loaded_first_rx_ms
+          ? play_audio_loaded_last_rx_ms - play_audio_loaded_first_rx_ms
+          : 0;
   snprintf(
       payload,
       sizeof(payload),
       "{\"stage\":\"%s\",\"seq\":%lu,\"bytes\":%lu,\"chunks\":%lu,"
       "\"buf\":%lu,\"buf_chunks\":%lu,\"expected_seq\":%lu,"
       "\"received_seq\":%lu,\"complete\":%s,\"result\":\"%s\","
-      "\"detail\":\"%s\"}",
+      "\"detail\":\"%s\",\"rx_ms\":%lu,\"gap_ms\":%lu,"
+      "\"dec_ms\":%lu,\"last_dec_ms\":%lu}",
       stage == nullptr ? "" : stage,
       static_cast<unsigned long>(sequence),
       static_cast<unsigned long>(bytes),
@@ -911,7 +927,11 @@ void log_play_audio_load_diagnostic(
       static_cast<unsigned long>(sequence),
       complete ? "true" : "false",
       result.error_code,
-      audio_load_result_detail(result));
+      audio_load_result_detail(result),
+      static_cast<unsigned long>(loaded_rx_elapsed_ms),
+      static_cast<unsigned long>(play_audio_loaded_last_rx_gap_ms),
+      static_cast<unsigned long>(play_audio_loaded_decode_total_ms),
+      static_cast<unsigned long>(play_audio_loaded_last_decode_ms));
   event_publisher.publish_name(
       "audio_playback_load",
       millis(),
@@ -933,6 +953,12 @@ void log_play_audio_load_diagnostic(
   stackchan_diag_print(buffered_chunks);
   stackchan_diag_print(" complete=");
   stackchan_diag_print(complete ? "true" : "false");
+  stackchan_diag_print(" rx_ms=");
+  stackchan_diag_print(loaded_rx_elapsed_ms);
+  stackchan_diag_print(" gap_ms=");
+  stackchan_diag_print(play_audio_loaded_last_rx_gap_ms);
+  stackchan_diag_print(" decode_ms=");
+  stackchan_diag_print(play_audio_loaded_decode_total_ms);
   stackchan_diag_print(" result=");
   stackchan_diag_println(result.error_code);
 }
@@ -7135,6 +7161,7 @@ void handle_loaded_audio_topic_chunk(
   if (chunk == nullptr) {
     return;
   }
+  const uint32_t received_ms = millis();
   const char* command_id =
       chunk->command_id.data != nullptr ? chunk->command_id.data : "";
   if (is_duplicate_loaded_audio_topic_chunk(chunk)) {
@@ -7162,7 +7189,15 @@ void handle_loaded_audio_topic_chunk(
           command_id);
       play_audio_loaded_total_chunks = chunk->total_chunks;
       play_audio_loaded_format = chunk->format;
+      play_audio_loaded_first_rx_ms = received_ms;
+      play_audio_loaded_last_rx_gap_ms = 0;
+    } else if (play_audio_loaded_last_rx_ms > 0 &&
+               received_ms >= play_audio_loaded_last_rx_ms) {
+      play_audio_loaded_last_rx_gap_ms =
+          received_ms - play_audio_loaded_last_rx_ms;
     }
+    play_audio_loaded_last_rx_ms = received_ms;
+    const uint32_t decode_started_ms = millis();
     if (chunk->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE &&
         play_audio_loaded_total_bytes + chunk->pcm.size >
             kAudioPlaybackLoadBufferBytes) {
@@ -7196,6 +7231,12 @@ void handle_loaded_audio_topic_chunk(
         play_audio_loaded_total_bytes += decoded.bytes_written;
       }
     }
+    const uint32_t decode_finished_ms = millis();
+    play_audio_loaded_last_decode_ms =
+        decode_finished_ms >= decode_started_ms
+            ? decode_finished_ms - decode_started_ms
+            : 0;
+    play_audio_loaded_decode_total_ms += play_audio_loaded_last_decode_ms;
     if (result.ok) {
       play_audio_loaded_expected_sequence = chunk->sequence + 1;
       play_audio_loaded_last_write_ms = millis();

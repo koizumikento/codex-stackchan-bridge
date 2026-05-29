@@ -919,10 +919,12 @@ Rules:
   during K151 host-serial validation. Synchronous compressed ADPCM service-load
   requests completed at 96 bytes while 128 bytes and above timed out before the
   first firmware callback response, but the default loaded topic path completed
-  three consecutive short local TTS smokes with 128 byte ADPCM chunks at 0.9 s
-  pacing and a 30 s final completion wait. Use 64 or 96 bytes as conservative
-  service-load fallbacks; larger topic values remain diagnostic-only until the
-  serial micro-ROS MTU/resource path is revalidated.
+  short local TTS smokes with 128 byte ADPCM chunks at 0.6 s pacing and a 30 s
+  final completion wait. Firmware receive counters showed `rx_ms` tracking the
+  bridge publish loop for 128 byte chunks, while larger 160 and 256 byte ADPCM
+  topic chunks at 0.6 s still timed out waiting for final completion. Use 64 or
+  96 bytes as conservative service-load fallbacks; larger topic values remain
+  diagnostic-only until the serial micro-ROS MTU/resource path is revalidated.
 - `end_of_stream=true` marks the final chunk. The bridge may start
   `/stackchan/<device_id>/device/audio/play` only after `complete=true`.
 - If an incomplete load transaction stalls, firmware may accept a new
@@ -970,8 +972,9 @@ topic chunks for the same command id as idempotent and must not decode
 duplicate payload bytes twice.
 Firmware progress events may expose redacted transport counters such as
 `expected_seq`, `received_seq`, `buf_chunks`, `chunks`, `complete`, `result`,
-and a short `detail`, but must not expose PCM, ADPCM payload bytes, speech text,
-provider request bodies, or raw provider identifiers.
+short `detail`, `rx_ms`, `gap_ms`, `dec_ms`, and `last_dec_ms`, but must not
+expose PCM, ADPCM payload bytes, speech text, provider request bodies, or raw
+provider identifiers.
 For normal topic-loaded playback, successful intermediate chunks should not
 publish progress events; publish final completion and rejection diagnostics only.
 The firmware subscription depth is kept at 16 for this loaded-topic path so a

@@ -685,16 +685,15 @@ topic path for this default.
 post-publish delay before the playback action goal; it defaults to 0.15 s and
 is a local serial bring-up guard, not a media ACK.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC` controls the
-inter-chunk pacing for the topic payload path; it defaults to 0.9 s because
-the current full bring-up firmware completed short local TTS three consecutive
-times at 0.9 s when paired with 128 byte ADPCM chunks and a 30 s final
-completion wait. A 0.9 s run with 96 byte ADPCM chunks and
-the older 20 s completion wait timed out after payload publish, and 0.75 s and
-lower still dropped or reordered loaded chunks on the Windows host serial
-bridge. A later 128 byte / 0.6 s diagnostic completed three consecutive runs
-but did not materially reduce end-to-end load time because the firmware final
-completion event still arrived well after bridge publish completion. Values
-above 2 s are bounded to 2 s. The topic payload path
+inter-chunk pacing for the topic payload path; it defaults to 0.6 s because
+the current full bring-up firmware completed short local TTS with 128 byte
+ADPCM chunks and payload-free firmware receive timing counters showed the
+firmware receive elapsed time tracking the bridge publish loop. A 0.9 s run
+with 96 byte ADPCM chunks and the older 20 s completion wait timed out after
+payload publish, and 96 byte chunks below 1.0 s still dropped or reordered
+loaded chunks on the Windows host serial bridge. Larger 160 byte and 256 byte
+ADPCM topic chunks at 0.6 s still timed out waiting for final completion.
+Values above 2 s are bounded to 2 s. The topic payload path
 also uses
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to define
 the optional diagnostic progress window. By default

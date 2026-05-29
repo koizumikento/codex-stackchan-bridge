@@ -116,7 +116,7 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
   $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='128'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.9'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.6'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='0'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
@@ -2189,19 +2189,29 @@ KOIZUMI-112 diagnostic firmware update:
   run reduced the transaction from 32 chunks to 24 chunks and also completed
   three consecutive smokes at 0.9 s / 30 s. Keep 128 byte chunks, 0.9 s pacing,
   and 30 s final completion wait as the conservative defaults until a smaller
-  reliable pacing or a different bounded transfer shape is validated.
+  reliable pacing or a different bounded transfer shape is validated. This was
+  superseded by the KOIZUMI-180 firmware receive-counter validation below.
 - KOIZUMI-160 follow-up on 2026-05-29 tried reducing only the 128 byte loaded
   ADPCM topic pacing. One 0.75 s run and three 0.6 s runs completed with
   `STACKCHAN_BRIDGE_SAY_COMPLETED=1` and
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, but the end-to-end load time did
   not materially improve. Larger 160 byte and 256 byte chunks at 0.6 s timed
-  out waiting for the final `audio_playback_load` completion event. A default
-  env-free smoke after adding bridge publish timing diagnostics showed the
-  bridge finished publishing 24 x 128 byte chunks in about 20.8 s, while the
-  firmware final completion event arrived about 17.8 s later. Treat the
-  remaining latency as serial micro-ROS / firmware receive backlog until a new
-  bounded transfer shape is validated; do not lower the 0.9 s default on
-  interval-only evidence.
+  out waiting for the final `audio_playback_load` completion event. An initial
+  default env-free smoke after adding bridge publish timing diagnostics showed
+  the bridge finished publishing 24 x 128 byte chunks in about 20.8 s, while
+  the firmware final completion event arrived about 17.8 s later, so the
+  interval-only evidence was not enough to change defaults yet.
+- KOIZUMI-180 firmware receive-counter follow-up on 2026-05-29 added
+  payload-free `rx_ms`, `gap_ms`, `dec_ms`, and `last_dec_ms` counters to the
+  final `audio_playback_load` event, then uploaded the standard full firmware
+  to COM3. Three short loaded TTS smokes completed after upload. The first two
+  default 0.9 s runs showed bridge publish elapsed about 20.7 s and firmware
+  `rx_ms` about 20.8 s, with final completion about 0.36 s after bridge publish
+  completion. A 0.6 s run showed bridge publish elapsed about 13.9 s,
+  firmware `rx_ms` about 14.0 s, `gap_ms` about 690 ms, and final completion
+  about 0.32 s after bridge publish completion. Keep 128 byte ADPCM chunks and
+  30 s final completion wait, and lower the loaded-topic publish interval
+  default to 0.6 s.
 
 ## Cleanup
 

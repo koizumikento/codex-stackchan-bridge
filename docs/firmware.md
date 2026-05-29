@@ -679,9 +679,11 @@ while still allowing true mismatched command IDs to be reported.
 
 Loaded playback diagnostics may publish payload-free firmware events named
 `audio_playback_load`. The payload is limited to stage, sequence, byte count,
-declared chunk count, buffered byte/chunk counters, completion flag, and
-structured result code. It must not include PCM bytes, speech text, transcripts,
-provider request bodies, images, NFC tag IDs, IR codes, or protocol dumps.
+declared chunk count, buffered byte/chunk counters, completion flag, structured
+result code, and bounded timing counters such as loaded-topic receive elapsed
+milliseconds, last receive gap, and decode elapsed milliseconds. It must not
+include PCM bytes, ADPCM bytes, speech text, transcripts, provider request
+bodies, images, NFC tag IDs, IR codes, or protocol dumps.
 Normal successful service-load chunks should be sampled rather than published
 for every chunk. Normal successful topic-load chunks should publish only the
 final completion observation; sequence-gap, overflow, and other rejection
