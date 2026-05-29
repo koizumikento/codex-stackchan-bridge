@@ -194,8 +194,11 @@ chunks, playback acknowledgements, and one playback chunk subscription, so the
 meta raises
 `RMW_UXRCE_MAX_SERVICES` to `16`, `RMW_UXRCE_MAX_PUBLISHERS` to `20`, and
 `RMW_UXRCE_MAX_SUBSCRIPTIONS` to `4`. It also raises
-`RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and keeps
-the input and output reliable stream history at `8`. Action servers create
+`RMW_UXRCE_MAX_CLIENTS` to `8`, keeps `RMW_UXRCE_MAX_HISTORY` at `16`, and
+keeps both input and output reliable stream histories at `8`. Larger input
+stream histories overflow CoreS3 DRAM in the full bring-up profile, so loaded
+audio playback topic buffering is handled with the firmware subscriber
+keep-last depth instead. Action servers create
 result-expiry timers, so this profile also raises `RMW_UXRCE_MAX_WAIT_SETS` and
 `RMW_UXRCE_MAX_GUARD_CONDITION` to `8`. Device-scoped action service topic names
 also exceed the upstream 60 character rmw-microxrcedds default after the `rq` /

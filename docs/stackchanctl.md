@@ -565,7 +565,7 @@ speech text, transcript text, or raw audio bytes.
 Playback chunks use `/stackchan/<device_id>/device/audio/playback/chunks`;
 capture chunks use `/stackchan/<device_id>/device/audio/chunks`. Both paths are
 keyed by `device_id`, `command_id`, `direction`, and monotonic `sequence`.
-Playback chunks use reliable, volatile, keep-last-8 QoS plus the
+Playback chunks use reliable, volatile, keep-last-16 QoS plus the
 `/stackchan/<device_id>/audio/playback/next_chunk` recovery helper because
 best-effort playback lost even short prompts in hardware smoke; capture chunks
 remain best-effort, volatile, keep-last-8 observation telemetry.
@@ -682,20 +682,30 @@ compressed service-load requests timed out before the first firmware callback
 response. `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC` controls the
 small post-publish delay before the playback action goal; it defaults to 0.15 s
 and is a local serial bring-up guard, not a media ACK.
-`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC` controls the small
-inter-chunk pacing for the topic payload path; it defaults to 0.02 s because
-COM3 host-serial validation completed short and longer loaded ADPCM TTS at
-0.02 s while 0.01 s and 0.005 s dropped or reordered loaded chunks. Values
-above 0.25 s are bounded to 0.25 s. The topic payload path also uses
-`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to limit how
-many loaded chunks are in flight before waiting for firmware
-`audio_playback_load` progress. This is a transaction-progress gate over
-bounded events, not a service ACK per audio chunk.
-`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC`, default `3.0`,
-controls the per-window progress wait before the bridge retries the same topic
-chunk. `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES`, default `3`,
-limits those bounded retries. Firmware treats duplicate loaded topic chunks for
-the same command as idempotent and does not decode them twice.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC` controls the
+inter-chunk pacing for the topic payload path; it defaults to 1.0 s because
+the current full bring-up firmware reliably completed short local TTS at 1.0 s
+while 0.75 s and lower still dropped or reordered loaded chunks on the Windows
+host serial bridge. Values above 2 s are bounded to 2 s. The topic payload path
+also uses
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to define
+the optional diagnostic progress window. By default
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=0`, so the bridge
+does not wait for per-window progress and instead sends paced chunks before
+waiting for the final transaction-level firmware `audio_playback_load`
+completion event. Setting the progress timeout above zero re-enables bounded
+per-window progress checks and retries for transport diagnostics.
+`STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES`, default `3`, limits
+those bounded retries. Firmware treats duplicate loaded topic chunks for the
+same command as idempotent and does not decode them twice. In the normal topic
+path, firmware publishes successful `audio_playback_load` only at final
+completion; intermediate success progress events are reserved for non-topic
+load diagnostics so event output does not compete with payload input. The
+firmware subscription is sized to 16 samples for this path, while the micro-ROS
+input reliable stream history remains 8 to fit CoreS3 DRAM; raising ADPCM chunk
+bytes above the default still
+requires hardware validation because larger serialized messages can time out or
+miss the firmware callback on the Windows host serial bridge.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
 the bridge waits for the firmware's final `audio_playback_load` completion
 event before starting the playback action; it defaults to 20 s. This is a

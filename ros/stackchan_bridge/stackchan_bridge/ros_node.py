@@ -65,10 +65,10 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 96
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
-AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.02
+AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 1.0
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 20.0
 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS = 1
-AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 3.0
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 0.0
 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES = 3
 AUDIO_PLAYBACK_COMMAND_PRELOAD_WAIT_SEC = 2.5
 AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES = 32 * 1024
@@ -476,7 +476,7 @@ def _audio_playback_loaded_topic_publish_interval_sec() -> float:
             ),
             0.0,
         ),
-        0.25,
+        2.0,
     )
 
 
@@ -513,7 +513,7 @@ def _audio_playback_loaded_topic_progress_timeout_sec() -> float:
                 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV,
                 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC,
             ),
-            0.25,
+            0.0,
         ),
         10.0,
     )
@@ -2651,7 +2651,7 @@ def main(args: list[str] | None = None) -> None:
                     sequence + 1 >= total_chunks
                     or (sequence + 1) % window_chunks == 0
                 )
-                if should_wait_for_progress:
+                if should_wait_for_progress and progress_timeout_sec > 0:
                     progress_result = None
                     for retry_index in range(progress_retries + 1):
                         progress_result = self._wait_for_loaded_audio_topic_progress(
@@ -2679,7 +2679,7 @@ def main(args: list[str] | None = None) -> None:
                         self._publish_device_audio_chunk(device_id, message)
                     if progress_result is not None:
                         return progress_result
-                elif publish_interval_sec > 0:
+                if publish_interval_sec > 0:
                     time.sleep(publish_interval_sec)
             settle_sec = _audio_playback_loaded_topic_settle_sec()
             if settle_sec > 0:

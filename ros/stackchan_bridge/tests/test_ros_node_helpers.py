@@ -372,7 +372,7 @@ class RosNodeHelperTests(unittest.TestCase):
 
     def test_audio_playback_loaded_topic_publish_interval_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.02)
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 1.0)
 
         with mock.patch.dict(
             os.environ,
@@ -384,7 +384,7 @@ class RosNodeHelperTests(unittest.TestCase):
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV: "99"},
         ):
-            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.25)
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 2.0)
 
     def test_audio_playback_loaded_topic_complete_timeout_env_is_bounded(self) -> None:
         with mock.patch.dict(
@@ -419,6 +419,9 @@ class RosNodeHelperTests(unittest.TestCase):
             self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 8)
 
     def test_audio_playback_loaded_topic_progress_timeout_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 0.0)
+
         with mock.patch.dict(
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV: "2.5"},
@@ -429,7 +432,7 @@ class RosNodeHelperTests(unittest.TestCase):
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV: "0"},
         ):
-            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 0.25)
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 0.0)
 
         with mock.patch.dict(
             os.environ,

@@ -118,7 +118,7 @@ hardware bring-up issue complete.
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='96'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.02'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='3'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='0'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
   # Optional CLI audio-play experiment only:
   # $env:STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES='32768'
@@ -142,15 +142,18 @@ hardware bring-up issue complete.
   at 96 bytes while 128, 256, and 512 byte compressed load requests timed out
   before the first firmware callback response.
   Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
-  host-serial TCP path. The bridge waits for bounded firmware
-  `audio_playback_load` progress before sending the next loaded topic window so
-  sequence gaps show up as redacted `expected_seq`/`received_seq` diagnostics
-  instead of an opaque malformed payload.
-  Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=3` and
-  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES=3` unless explicitly
-  tuning the serial path. The bridge republishes the same loaded topic chunk
-  only after progress stalls, and firmware treats same-command duplicate
-  loaded chunks as idempotent observations instead of decoding them twice.
+  host-serial TCP path, but leave
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=0` for normal
+  audible checks. That keeps loaded topic transfer as paced publish plus one
+  final transaction completion observation instead of a per-chunk ACK-like
+  round trip on serial. Set the progress timeout above zero only when
+  explicitly tuning transport diagnostics; then the bridge republishes the same
+  loaded topic chunk after progress stalls, and firmware treats same-command
+  duplicate loaded chunks as idempotent observations instead of decoding them
+  twice. The current firmware keeps the loaded topic subscriber at 16 samples
+  and the micro-ROS input reliable stream at 8 samples; if a smoke still reports
+  `sequence_gap`, check that the rebuilt `libmicroros` cache picked up the
+  matching `microros_stackchan.meta` values before changing TTS timing.
   PCM loaded-transfer diagnostics should still keep
   `STACKCHAN_AUDIO_PLAYBACK_LOAD_CHUNK_BYTES=64` unless the target has been
   revalidated with larger synchronous requests.
@@ -402,8 +405,8 @@ hardware bring-up issue complete.
   A longer `say` smoke also passed at 0.02 s with 36 chunks / 13528 decoded
   PCM bytes. The 0.01 s run failed with `MALFORMED_AUDIO_CHUNK`: firmware
   accepted `seq=0`, then saw `seq=5` while still expecting the contiguous next
-  chunk. Keep 0.02 s as the fastest validated default until repeated longer
-  prompts prove a lower value is stable.
+  chunk. This 0.02 s default was later superseded by KOIZUMI-179 full-firmware
+  validation after media/entity pressure changed the loaded-topic behavior.
 - 2026-05-28 KOIZUMI-163 software-side TTS tuning compared local provider
   output without recording speech text in public logs. The old transport-fast
   profile used speed 3.0, zero phoneme padding, threshold 512, and 20 ms trim
@@ -2162,6 +2165,23 @@ KOIZUMI-112 diagnostic firmware update:
   `tmp/stackchan_camera_koizumi175_fixed.jpg` at 7928 bytes. The center label
   text was readable in the expected orientation, confirming that
   `set_hmirror(..., 0)` is the correct setting for this board.
+- KOIZUMI-179 loaded-topic TTS latency follow-up on 2026-05-29 found that
+  removing per-window progress waits and suppressing successful intermediate
+  topic-load events was not enough: 96 byte ADPCM topic chunks still produced
+  `MALFORMED_AUDIO_CHUNK(sequence_gap)`, including `expected_seq=3` with
+  received sequences such as 8, 15, 21, and 25. Larger 256/512 byte ADPCM topic
+  chunks avoided the visible sequence-gap event but timed out waiting for final
+  load completion on the Windows host serial TCP bridge. The older synchronous
+  `LoadAudioChunk` service path still completed the same short `say はい` smoke,
+  but took roughly one minute because it remained service-round-trip bound.
+  A 32-sample reliable history build overflowed DRAM by 925104 bytes, and a
+  16-sample input reliable stream build still overflowed DRAM by 121264 bytes.
+  The firmware therefore keeps the micro-ROS input stream history at 8 and only
+  raises the playback loaded-topic subscription depth to 16. On the flashed
+  full firmware, 96 byte ADPCM topic chunks still failed at 0.5 s and 0.75 s
+  pacing, but completed at 1.0 s with 32 chunks / 12178 decoded bytes. Keep
+  1.0 s as the conservative default until a smaller reliable pacing or a
+  different bounded transfer shape is validated.
 
 ## Cleanup
 

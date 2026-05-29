@@ -681,6 +681,15 @@ class FirmwareContractTests(unittest.TestCase):
             "core_audio_playback_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE",
             main,
         )
+        self.assertIn("kAudioPlaybackChunkSubscriptionDepth = 16", main)
+        self.assertIn(
+            "audio_playback_chunk_qos.depth = kAudioPlaybackChunkSubscriptionDepth",
+            main,
+        )
+        self.assertIn(
+            "core_audio_playback_chunk_qos.depth = kAudioPlaybackChunkSubscriptionDepth",
+            main,
+        )
         self.assertIn("audio_playback_chunk_topic_name", main)
         self.assertIn('"/stackchan/%s/device/audio/playback/chunks"', main)
         self.assertIn("audio_playback_ack_topic_name", main)
@@ -753,6 +762,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('\\"detail\\"', main)
         self.assertIn('"sequence_gap"', main)
         self.assertIn('strcmp(stage, "topic") == 0', main)
+        self.assertIn("!topic_stage &&", main)
         self.assertIn("is_duplicate_loaded_audio_topic_chunk", main)
         self.assertIn("loaded audio topic duplicate chunk ignored", main)
         self.assertIn("audio_playback_load", main)

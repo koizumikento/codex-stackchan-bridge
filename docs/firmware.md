@@ -477,7 +477,7 @@ Baseline audio path:
 - Audio transport starts with PCM 16 kHz mono 16-bit.
 - Playback and capture use actions coordinated with bounded audio chunks.
 - Chunk duration is 20 ms by default; 40 ms is acceptable when transport overhead matters.
-- Playback chunks use reliable, volatile, keep-last-8 QoS on
+- Playback chunks use reliable, volatile, keep-last-16 QoS on
   `/stackchan/<device_id>/device/audio/playback/chunks` because they are device
   command input. Capture chunks use best-effort, volatile, keep-last-8 QoS on
   `/stackchan/<device_id>/device/audio/chunks` because they are observation
@@ -682,9 +682,14 @@ Loaded playback diagnostics may publish payload-free firmware events named
 declared chunk count, buffered byte/chunk counters, completion flag, and
 structured result code. It must not include PCM bytes, speech text, transcripts,
 provider request bodies, images, NFC tag IDs, IR codes, or protocol dumps.
-Normal successful load chunks should be sampled rather than published for every
-chunk so service response latency does not compete with event output on the
-serial micro-ROS link.
+Normal successful service-load chunks should be sampled rather than published
+for every chunk. Normal successful topic-load chunks should publish only the
+final completion observation; sequence-gap, overflow, and other rejection
+events remain publishable. This keeps event output from competing with audio
+payload input on the serial micro-ROS link. The loaded topic subscriber uses a
+16-sample reliable keep-last depth. The micro-ROS input reliable stream history
+stays at 8 because larger stream histories overflow CoreS3 DRAM in the full
+bring-up profile.
 
 ### Camera
 
@@ -1071,8 +1076,8 @@ Pinning rules:
   `/stackchan/<device_id>/device/motion/run` plus
   `/stackchan/<device_id>/device/motion/pose/set` and
   `/stackchan/<device_id>/device/led/set`. The full K151 entity set also needs
-  raised publisher, subscription, client, RMW history, reliable stream history,
-  wait-set, and guard-condition limits for telemetry/events plus audio and
+  raised publisher, subscription, client, RMW history, input reliable stream
+  history, wait-set, and guard-condition limits for telemetry/events plus audio and
   camera actions. `rcl_action_server_init()` also creates a result-expiry timer,
   so action-server capacity must account for the timer guard condition, not only
   the action's visible services and topics. Device-scoped action service topics

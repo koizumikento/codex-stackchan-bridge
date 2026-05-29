@@ -679,7 +679,7 @@ playback flows coordinated by `/stackchan/<device_id>/device/audio/play`.
 
 Fields, IDL constraints, and baseline format are the same as
 `/stackchan/<device_id>/device/audio/chunks`. QoS is reliable, volatile, keep
-last 8 because physical smokes showed best-effort playback chunks can be lost
+last 16 because physical smokes showed best-effort playback chunks can be lost
 even for short prompts. Missing or late sequences are still recoverable through
 the `/stackchan/<device_id>/audio/playback/next_chunk` helper when possible,
 and otherwise become structured `AUDIO_UNDERRUN`.
@@ -959,15 +959,24 @@ final padding nibble only on the `end_of_stream=true` chunk. Bridge-owned TTS
 uses this compressed loaded path by default when loaded playback is enabled,
 and falls back to `PCM_S16LE` loaded writes if firmware returns
 `UNSUPPORTED_FEATURE` for the compressed format.
-For the topic-loaded path, the bridge sends a bounded loaded chunk window and
-waits for firmware `audio_playback_load` progress before sending the next
-window. If progress stalls, the bridge may republish the same chunk within a
-bounded retry count; firmware treats duplicate loaded topic chunks for the same
-command id as idempotent and must not decode duplicate payload bytes twice.
+For the topic-loaded path, the bridge defaults to paced topic publishes and then
+waits for the final transaction-level firmware `audio_playback_load`
+completion event before starting playback. It does not wait for per-chunk
+progress by default. A diagnostic progress timeout can be enabled to make the
+bridge wait at bounded loaded chunk windows and republish the same chunk within
+a bounded retry count if progress stalls; firmware treats duplicate loaded
+topic chunks for the same command id as idempotent and must not decode
+duplicate payload bytes twice.
 Firmware progress events may expose redacted transport counters such as
 `expected_seq`, `received_seq`, `buf_chunks`, `chunks`, `complete`, `result`,
 and a short `detail`, but must not expose PCM, ADPCM payload bytes, speech text,
 provider request bodies, or raw provider identifiers.
+For normal topic-loaded playback, successful intermediate chunks should not
+publish progress events; publish final completion and rejection diagnostics only.
+The firmware subscription depth is kept at 16 for this loaded-topic path so a
+short ADPCM transaction has more subscriber-side room. The micro-ROS input
+reliable stream history remains 8 because larger stream histories overflow
+CoreS3 DRAM in the full bring-up profile.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -1779,7 +1788,7 @@ Baseline QoS:
 - `/stackchan/<device_id>/motion/pose`: reliable, transient local, keep last 1.
 - `/stackchan/<device_id>/device/motion/pose`: reliable, volatile, keep last 2.
 - `/stackchan/<device_id>/cmd/audio/chunks`: reliable, volatile, keep last 64.
-- `/stackchan/<device_id>/device/audio/playback/chunks`: reliable, volatile, keep last 8.
+- `/stackchan/<device_id>/device/audio/playback/chunks`: reliable, volatile, keep last 16.
 - `/stackchan/<device_id>/device/audio/playback/acks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/audio/chunks`: best effort, volatile, keep last 8.
 - `/stackchan/<device_id>/device/camera/chunks`: best effort, volatile.

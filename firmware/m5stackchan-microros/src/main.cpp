@@ -256,6 +256,7 @@ constexpr unsigned long kAudioPlaybackAckPublishIntervalMs = 50;
 constexpr unsigned long kAudioPlaybackPendingGapTimeoutMs = 5000;
 constexpr unsigned long kAudioPlaybackTerminalStaleSuppressMs = 5000;
 constexpr uint32_t kAudioPlaybackChunkDiagnosticSampleInterval = 16;
+constexpr size_t kAudioPlaybackChunkSubscriptionDepth = 16;
 #ifndef STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER
 #define STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER 0
 #endif
@@ -881,13 +882,14 @@ void log_play_audio_load_diagnostic(
     uint32_t buffered_chunks,
     bool complete,
     const stackchan::Result& result) {
+  const bool topic_stage = stage != nullptr && strcmp(stage, "topic") == 0;
   const bool should_log =
       complete ||
       !result.ok ||
-      (stage != nullptr && strcmp(stage, "topic") == 0) ||
-      sequence <= 1 ||
-      (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
-       sequence % kAudioPlaybackChunkDiagnosticSampleInterval == 0);
+      (!topic_stage &&
+       (sequence <= 1 ||
+        (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
+         sequence % kAudioPlaybackChunkDiagnosticSampleInterval == 0)));
   if (!should_log) {
     return;
   }
@@ -3169,7 +3171,7 @@ bool initialize_microros_entities() {
   rmw_qos_profile_t core_audio_playback_chunk_qos = rmw_qos_profile_default;
   core_audio_playback_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
   core_audio_playback_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
-  core_audio_playback_chunk_qos.depth = 8;
+  core_audio_playback_chunk_qos.depth = kAudioPlaybackChunkSubscriptionDepth;
   rmw_qos_profile_t core_audio_playback_ack_qos = rmw_qos_profile_default;
   core_audio_playback_ack_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   core_audio_playback_ack_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
@@ -3679,7 +3681,7 @@ bool initialize_microros_entities() {
   rmw_qos_profile_t audio_playback_chunk_qos = rmw_qos_profile_default;
   audio_playback_chunk_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
   audio_playback_chunk_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
-  audio_playback_chunk_qos.depth = 8;
+  audio_playback_chunk_qos.depth = kAudioPlaybackChunkSubscriptionDepth;
   rmw_qos_profile_t audio_playback_ack_qos = rmw_qos_profile_default;
   audio_playback_ack_qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
   audio_playback_ack_qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
