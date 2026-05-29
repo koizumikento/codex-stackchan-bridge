@@ -2633,6 +2633,7 @@ def main(args: list[str] | None = None) -> None:
             window_chunks = _audio_playback_loaded_topic_window_chunks()
             progress_timeout_sec = _audio_playback_loaded_topic_progress_timeout_sec()
             progress_retries = _audio_playback_loaded_topic_progress_retries()
+            publish_started_at = time.monotonic()
             for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
                 message = self._audio_chunk_type()
                 message.device_id = device_id
@@ -2679,8 +2680,18 @@ def main(args: list[str] | None = None) -> None:
                         self._publish_device_audio_chunk(device_id, message)
                     if progress_result is not None:
                         return progress_result
-                if publish_interval_sec > 0:
+                if publish_interval_sec > 0 and sequence + 1 < total_chunks:
                     time.sleep(publish_interval_sec)
+            publish_finished_at = time.monotonic()
+            self.get_logger().info(
+                "audio playback loaded topic publish complete "
+                f"device_id={device_id!r} command_id={meta.command_id!r} "
+                f"encoding={candidate.encoding!r} chunks={total_chunks} "
+                f"encoded_bytes={len(candidate.payload)} "
+                f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes} "
+                f"publish_elapsed_ms={int((publish_finished_at - publish_started_at) * 1000)} "
+                f"publish_interval_ms={int(publish_interval_sec * 1000)}"
+            )
             settle_sec = _audio_playback_loaded_topic_settle_sec()
             if settle_sec > 0:
                 time.sleep(settle_sec)

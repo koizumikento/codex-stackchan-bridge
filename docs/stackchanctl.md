@@ -691,7 +691,10 @@ times at 0.9 s when paired with 128 byte ADPCM chunks and a 30 s final
 completion wait. A 0.9 s run with 96 byte ADPCM chunks and
 the older 20 s completion wait timed out after payload publish, and 0.75 s and
 lower still dropped or reordered loaded chunks on the Windows host serial
-bridge. Values above 2 s are bounded to 2 s. The topic payload path
+bridge. A later 128 byte / 0.6 s diagnostic completed three consecutive runs
+but did not materially reduce end-to-end load time because the firmware final
+completion event still arrived well after bridge publish completion. Values
+above 2 s are bounded to 2 s. The topic payload path
 also uses
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS`, default `1`, to define
 the optional diagnostic progress window. By default
@@ -714,7 +717,9 @@ miss the firmware callback on the Windows host serial bridge.
 `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC` controls how long
 the bridge waits for the firmware's final `audio_playback_load` completion
 event before starting the playback action; it defaults to 30 s. This is a
-single transaction-level readiness check, not per-chunk ACK.
+single transaction-level readiness check, not per-chunk ACK. Bridge logs include
+the loaded-topic `publish_elapsed_ms` so transport tuning can distinguish local
+publish-loop duration from later firmware / micro-ROS receive backlog.
 The TTS path can be forced back to pull-only diagnostics with
 `STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY=1`, but that is not the recommended speech
 path on serial hardware because larger service responses may time out and tiny

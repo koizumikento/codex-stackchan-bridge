@@ -2190,6 +2190,18 @@ KOIZUMI-112 diagnostic firmware update:
   three consecutive smokes at 0.9 s / 30 s. Keep 128 byte chunks, 0.9 s pacing,
   and 30 s final completion wait as the conservative defaults until a smaller
   reliable pacing or a different bounded transfer shape is validated.
+- KOIZUMI-160 follow-up on 2026-05-29 tried reducing only the 128 byte loaded
+  ADPCM topic pacing. One 0.75 s run and three 0.6 s runs completed with
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1` and
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, but the end-to-end load time did
+  not materially improve. Larger 160 byte and 256 byte chunks at 0.6 s timed
+  out waiting for the final `audio_playback_load` completion event. A default
+  env-free smoke after adding bridge publish timing diagnostics showed the
+  bridge finished publishing 24 x 128 byte chunks in about 20.8 s, while the
+  firmware final completion event arrived about 17.8 s later. Treat the
+  remaining latency as serial micro-ROS / firmware receive backlog until a new
+  bounded transfer shape is validated; do not lower the 0.9 s default on
+  interval-only evidence.
 
 ## Cleanup
 

@@ -977,7 +977,10 @@ publish progress events; publish final completion and rejection diagnostics only
 The firmware subscription depth is kept at 16 for this loaded-topic path so a
 short ADPCM transaction has more subscriber-side room. The micro-ROS input
 reliable stream history remains 8 because larger stream histories overflow
-CoreS3 DRAM in the full bring-up profile.
+CoreS3 DRAM in the full bring-up profile. Bridge diagnostics should report
+loaded-topic publish elapsed time separately from the final firmware
+`audio_playback_load` completion wait so serial backlog and firmware receive
+latency can be investigated without reintroducing per-chunk application ACKs.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
