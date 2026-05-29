@@ -2237,7 +2237,12 @@ KOIZUMI-112 diagnostic firmware update:
   `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=684`,
   `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=0`, and
   `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. No incompatible QoS
-  warning was observed in this run.
+  warning was observed in this run. A follow-up standard/full firmware
+  all-media smoke with 500 ms waited playback then capture then camera also
+  completed with playback, audio capture, and camera capture all reporting
+  `OK_SEEN=1`, `FIRMWARE_BUSY_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`; the audio capture WAV
+  was 684 bytes and the camera JPEG was 6393 bytes.
 
 ## Cleanup
 
