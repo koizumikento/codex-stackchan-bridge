@@ -1040,7 +1040,7 @@ class BridgeBackendTests(unittest.TestCase):
             pcm[64:],
         )
 
-    def test_bridge_backend_audio_chunk_qos_is_reliable_for_command_payloads(self) -> None:
+    def test_bridge_backend_audio_chunk_qos_matches_audio_direction_contract(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
             / "src"
@@ -1049,9 +1049,14 @@ class BridgeBackendTests(unittest.TestCase):
             / "bridge.py"
         ).read_text()
 
-        self.assertIn("self._audio_chunk_qos = QoSProfile(depth=64)", source)
+        self.assertIn("self._audio_playback_chunk_qos = QoSProfile(depth=64)", source)
         self.assertIn(
-            "self._audio_chunk_qos.reliability = ReliabilityPolicy.RELIABLE",
+            "self._audio_playback_chunk_qos.reliability = ReliabilityPolicy.RELIABLE",
+            source,
+        )
+        self.assertIn("self._audio_capture_chunk_qos = QoSProfile(depth=8)", source)
+        self.assertIn(
+            "self._audio_capture_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT",
             source,
         )
 
@@ -1169,6 +1174,7 @@ class BridgeBackendTests(unittest.TestCase):
         client._action_client_type = action
         client._capture_audio_type = FakeCaptureAudio
         client._audio_chunk_type = FakeAudioChunk
+        client._audio_capture_chunk_qos = "capture-best-effort-qos"
         client.get_status = lambda meta, timeout: DeviceStatus(
             device_id=meta.device_id,
             connected=True,
@@ -1203,6 +1209,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(response.result_state, ResultState.COMPLETED)
         self.assertEqual(action.action_name, "/stackchan/default/cmd/audio/capture")
         self.assertEqual(action.last_goal.duration_ms, 1000)
+        self.assertEqual(node.subscription_log[0].qos, "capture-best-effort-qos")
         self.assertEqual(node.subscriptions, [])
 
     def test_capture_audio_rejects_completed_action_without_chunks(self) -> None:
@@ -1505,17 +1512,19 @@ class FakeNode:
     def __init__(self) -> None:
         self.publishers = {}
         self.subscriptions = []
+        self.subscription_log = []
 
-    def create_publisher(self, message_type, topic: str, depth: int):
-        del message_type, depth
+    def create_publisher(self, message_type, topic: str, qos):
+        del message_type, qos
         publisher = FakePublisher()
         self.publishers[topic] = publisher
         return publisher
 
-    def create_subscription(self, message_type, topic: str, callback, depth: int):
-        del message_type, depth
-        subscription = SimpleNamespace(topic=topic, callback=callback)
+    def create_subscription(self, message_type, topic: str, callback, qos):
+        del message_type
+        subscription = SimpleNamespace(topic=topic, callback=callback, qos=qos)
         self.subscriptions.append(subscription)
+        self.subscription_log.append(subscription)
         return subscription
 
     def destroy_subscription(self, subscription) -> bool:

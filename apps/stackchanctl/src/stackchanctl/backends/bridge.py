@@ -643,9 +643,12 @@ class RclpyBridgeClient:
         self._rclpy.init(args=None)
         self._node = self._rclpy.create_node("stackchanctl_bridge_client")
         self._audio_chunk_publishers = {}
-        self._audio_chunk_qos = QoSProfile(depth=64)
-        self._audio_chunk_qos.reliability = ReliabilityPolicy.RELIABLE
-        self._audio_chunk_qos.durability = DurabilityPolicy.VOLATILE
+        self._audio_playback_chunk_qos = QoSProfile(depth=64)
+        self._audio_playback_chunk_qos.reliability = ReliabilityPolicy.RELIABLE
+        self._audio_playback_chunk_qos.durability = DurabilityPolicy.VOLATILE
+        self._audio_capture_chunk_qos = QoSProfile(depth=8)
+        self._audio_capture_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        self._audio_capture_chunk_qos.durability = DurabilityPolicy.VOLATILE
         self._camera_chunk_qos = QoSProfile(depth=64)
         self._camera_chunk_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         self._camera_chunk_qos.durability = DurabilityPolicy.VOLATILE
@@ -869,7 +872,7 @@ class RclpyBridgeClient:
             self._audio_chunk_type,
             f"/stackchan/{meta.device_id}/device/audio/chunks",
             collector.handle_chunk,
-            getattr(self, "_audio_chunk_qos", 8),
+            getattr(self, "_audio_capture_chunk_qos", 8),
         )
         goal = self._capture_audio_type.Goal()
         _copy_meta(goal.meta, meta)
@@ -1097,7 +1100,7 @@ class RclpyBridgeClient:
             publisher = self._node.create_publisher(
                 self._audio_chunk_type,
                 f"/stackchan/{device_id}/cmd/audio/chunks",
-                getattr(self, "_audio_chunk_qos", 8),
+                getattr(self, "_audio_playback_chunk_qos", 8),
             )
             self._audio_chunk_publishers[device_id] = publisher
         return publisher

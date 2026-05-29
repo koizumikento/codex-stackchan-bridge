@@ -2226,6 +2226,18 @@ KOIZUMI-112 diagnostic firmware update:
   `FIRMWARE_BUSY`; camera reported a capture failure and audio capture reported
   a QoS mismatch / no-PCM-chunks failure, which should be tracked separately
   from playback relay gate release.
+- KOIZUMI-181 audio capture QoS follow-up on 2026-05-29 split
+  stackchanctl audio chunk QoS by direction. Playback command chunks keep the
+  reliable command-payload QoS, while capture subscribes to
+  `/stackchan/<device_id>/device/audio/chunks` with best-effort, volatile,
+  keep-last-8 QoS to match the firmware observation topic. A standard/full
+  firmware `audio-capture-only` smoke over the host serial TCP bridge completed
+  with `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=684`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. No incompatible QoS
+  warning was observed in this run.
 
 ## Cleanup
 

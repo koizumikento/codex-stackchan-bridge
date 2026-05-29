@@ -739,10 +739,13 @@ When `audio_capture` is available, the bridge backend subscribes to
 `/stackchan/<device_id>/device/audio/chunks` before sending the public
 `CaptureAudio` action, collects only `AudioChunk(direction=CAPTURE)` messages
 with the matching `device_id` and `command_id`, and writes the collected PCM to
-the requested WAV output path. Missing chunks, malformed metadata, odd byte
-lengths, or sequence gaps return structured audio capture errors. Captured PCM
-bytes are written only to the explicit output file and are not printed in
-normal output, JSON, events, or diagnostics.
+the requested WAV output path. The capture subscription uses best-effort,
+volatile, keep-last-8 QoS to match the firmware-owned observation topic; CLI
+playback command chunks continue to use the separate reliable command-payload
+QoS. Missing chunks, malformed metadata, odd byte lengths, or sequence gaps
+return structured audio capture errors. Captured PCM bytes are written only to
+the explicit output file and are not printed in normal output, JSON, events, or
+diagnostics.
 
 Audio command results should distinguish transport/session acceptance from
 playback or capture completion. For example, a future `audio play --json` result
