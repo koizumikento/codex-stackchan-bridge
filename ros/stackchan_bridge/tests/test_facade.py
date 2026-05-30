@@ -66,16 +66,28 @@ class FacadeTests(unittest.TestCase):
         self.assertTrue(response.result.ok)
         self.assertEqual(response.device_id, "default")
 
-    def test_motion_accepts_nod_and_idle(self) -> None:
+    def test_motion_accepts_named_presets(self) -> None:
         bridge = facade()
 
-        nod = bridge.run_motion(meta(), "nod")
-        idle = bridge.run_motion(meta(), "idle")
+        for name in ("nod", "shake", "cheerful", "idle", "look-left", "look-right", "look-user"):
+            with self.subTest(name=name):
+                response = bridge.run_motion(meta(), name)
+                self.assertTrue(response.result.ok)
+                self.assertEqual(response.result.state, STATE_ACCEPTED)
 
-        self.assertTrue(nod.result.ok)
-        self.assertEqual(nod.result.state, STATE_COMPLETED)
-        self.assertTrue(idle.result.ok)
-        self.assertEqual(bridge.get_status("default").status.motion, "idle")
+        status = bridge.get_status("default").status
+        self.assertEqual(status.motion, "look-user")
+        self.assertEqual(status.state, "acting")
+
+    def test_idle_motion_keeps_status_ready_and_idle(self) -> None:
+        bridge = facade()
+
+        response = bridge.run_motion(meta(), "idle")
+
+        self.assertTrue(response.result.ok)
+        status = bridge.get_status("default").status
+        self.assertEqual(status.motion, "idle")
+        self.assertEqual(status.state, "ready")
 
     def test_unknown_face_led_and_motion_are_rejected(self) -> None:
         bridge = facade()
@@ -114,6 +126,13 @@ class FacadeTests(unittest.TestCase):
         self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
         self.assertTrue(response.result.recoverable)
 
+    def test_head_pose_rejects_vertical_end_stop(self) -> None:
+        response = facade().move_head_pose(meta(), 0.0, 0.0, 500, 0)
+
+        self.assertFalse(response.result.ok)
+        self.assertEqual(response.result.error_code, "SERVO_LIMIT_EXCEEDED")
+        self.assertEqual(response.result.message, "motion pose tilt_deg is outside 5..85")
+
     def test_head_pose_rejects_non_finite_angles(self) -> None:
         response = facade().move_head_pose(meta(), math.nan, 20.0, 500, 0)
 
@@ -139,6 +158,20 @@ class FacadeTests(unittest.TestCase):
 
         self.assertFalse(response.result.ok)
         self.assertEqual(response.result.error_code, "UNKNOWN_COMMAND")
+
+    def test_say_rejects_unknown_expression_hints(self) -> None:
+        bridge = facade()
+
+        for kwargs in (
+            {"face_hint": "smirk"},
+            {"motion_hint": "spin"},
+            {"after_face_hint": "smirk"},
+        ):
+            with self.subTest(kwargs=kwargs):
+                response = bridge.say(meta(), "hello", **kwargs)
+
+                self.assertFalse(response.result.ok)
+                self.assertEqual(response.result.error_code, "UNKNOWN_COMMAND")
 
     def test_media_actions_remain_unsupported_until_firmware_confirmed_transport_exists(self) -> None:
         bridge = facade()

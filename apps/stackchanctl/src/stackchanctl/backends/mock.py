@@ -24,7 +24,7 @@ from stackchanctl.contract import (
 
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 ALLOWED_FACES = {"neutral", "happy", "thinking", "surprised", "sleepy", "error"}
-ALLOWED_MOTIONS = {"nod", "shake", "look-left", "look-right", "look-user", "idle"}
+ALLOWED_MOTIONS = {"nod", "shake", "cheerful", "look-left", "look-right", "look-user", "idle"}
 ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 BASELINE_AUDIO_FORMAT = "pcm_s16le"
 BASELINE_AUDIO_SAMPLE_RATE = 16000
@@ -32,8 +32,8 @@ BASELINE_AUDIO_CHANNELS = 1
 MAX_EVENTS = 32
 PAN_MIN_DEG = -128.0
 PAN_MAX_DEG = 128.0
-TILT_MIN_DEG = 0.0
-TILT_MAX_DEG = 90.0
+TILT_MIN_DEG = 5.0
+TILT_MAX_DEG = 85.0
 SPEED_MIN = 0
 SPEED_MAX = 1000
 MIN_NONZERO_DURATION_MS = 100
@@ -317,6 +317,28 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
             message="say requires non-empty text",
             recoverable=False,
         )
+    if request.command_type is CommandType.SAY:
+        face_hint = str(request.args.get("face_hint", "")).strip()
+        if face_hint and face_hint not in ALLOWED_FACES:
+            return ErrorDetail(
+                code="UNKNOWN_COMMAND",
+                message=f"unknown face {face_hint!r}",
+                recoverable=False,
+            )
+        motion_hint = str(request.args.get("motion_hint", "")).strip()
+        if motion_hint and motion_hint not in ALLOWED_MOTIONS:
+            return ErrorDetail(
+                code="UNKNOWN_COMMAND",
+                message=f"unknown motion {motion_hint!r}",
+                recoverable=False,
+            )
+        after_face = str(request.args.get("after_face", "")).strip()
+        if after_face and after_face not in ALLOWED_FACES:
+            return ErrorDetail(
+                code="UNKNOWN_COMMAND",
+                message=f"unknown face {after_face!r}",
+                recoverable=False,
+            )
 
     if request.command_type is CommandType.AUDIO_PLAY and not request.args["path"]:
         return ErrorDetail(
@@ -401,7 +423,7 @@ def _validate_pose_args(request: CommandRequest) -> ErrorDetail | None:
     if tilt_deg < TILT_MIN_DEG or tilt_deg > TILT_MAX_DEG:
         return ErrorDetail(
             code="SERVO_LIMIT_EXCEEDED",
-            message="motion pose tilt_deg is outside 0..90",
+            message="motion pose tilt_deg is outside 5..85",
             recoverable=True,
         )
     return _validate_motion_timing(request)
@@ -875,6 +897,15 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
         voice = str(request.args.get("voice", "")).strip()
         if voice:
             payload["voice_profile"] = voice
+        face_hint = str(request.args.get("face_hint", "")).strip()
+        if face_hint:
+            payload["face_hint"] = face_hint
+        motion_hint = str(request.args.get("motion_hint", "")).strip()
+        if motion_hint:
+            payload["motion_hint"] = motion_hint
+        after_face = str(request.args.get("after_face", "")).strip()
+        if after_face:
+            payload["after_face"] = after_face
         return payload
     if request.command_type is CommandType.FACE:
         return {"type": "face", "name": request.args["name"]}

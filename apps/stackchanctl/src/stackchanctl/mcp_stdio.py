@@ -332,6 +332,9 @@ def _build_tool_request(
         command_args: dict[str, Any] = {
             "text": text,
             "voice": _optional_string(arguments, "voice", "").strip(),
+            "face_hint": _optional_string(arguments, "face", "").strip(),
+            "motion_hint": _optional_string(arguments, "motion", "").strip(),
+            "after_face": _optional_string(arguments, "after_face", "").strip(),
         }
     elif name == "face":
         command_type = CommandType.FACE
@@ -522,7 +525,7 @@ def _optional_priority(arguments: Mapping[str, Any], key: str, default: Priority
 def _allowed_argument_keys(name: str) -> set[str]:
     keys = {"device_id", "priority", "timeout"}
     if name == "say":
-        keys.update({"text", "voice", "wait"})
+        keys.update({"text", "voice", "face", "motion", "after_face", "wait"})
     elif name in {"face", "motion"}:
         keys.add("name")
         if name == "motion":
@@ -570,13 +573,16 @@ def _tool_schema(name: str) -> dict[str, Any]:
     if name == "say":
         properties["text"] = {"type": "string"}
         properties["voice"] = {"type": "string"}
+        properties["face"] = {"type": "string"}
+        properties["motion"] = {"type": "string"}
+        properties["after_face"] = {"type": "string"}
         required.append("text")
     elif name in {"face", "motion"}:
         properties["name"] = {"type": "string"}
         required.append("name")
     elif name == "motion_pose":
         properties["pan_deg"] = {"type": "number", "minimum": -128.0, "maximum": 128.0}
-        properties["tilt_deg"] = {"type": "number", "minimum": 0.0, "maximum": 90.0}
+        properties["tilt_deg"] = {"type": "number", "minimum": 5.0, "maximum": 85.0}
         properties["speed"] = {"type": "integer", "minimum": 0, "maximum": 1000}
         properties["duration_ms"] = {
             "anyOf": [

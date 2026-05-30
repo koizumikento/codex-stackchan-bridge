@@ -31,10 +31,12 @@ from stackchanctl.backends import bridge as bridge_module  # noqa: E402
 from stackchanctl.cli import run_cli  # noqa: E402
 from stackchanctl.contract import (  # noqa: E402
     CapabilityStatus,
+    CommandMeta,
     DeviceStatus,
     ErrorDetail,
     EventListResult,
     PowerStatusResult,
+    Priority,
     ResultState,
     TranscriptResult,
 )
@@ -53,6 +55,7 @@ class FakeBridgeClient:
         self.power_status_args = None
         self.move_head_pose_args = None
         self.home_head_pose_args = None
+        self.run_motion_args = None
         self.say_args = None
         self.play_audio_args = None
         self.capture_audio_args = None
@@ -89,6 +92,7 @@ class FakeBridgeClient:
     ) -> BridgeCommandResponse:
         if self.timeout:
             raise BridgeBackendTimeout()
+        self.run_motion_args = (meta.device_id, name, wait, timeout)
         return BridgeCommandResponse(
             ok=True,
             result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
@@ -141,9 +145,27 @@ class FakeBridgeClient:
         )
 
     def say(
-        self, meta, text: str, voice: str, *, wait: bool, timeout: float
+        self,
+        meta,
+        text: str,
+        voice: str,
+        face_hint: str,
+        motion_hint: str,
+        after_face: str,
+        *,
+        wait: bool,
+        timeout: float,
     ) -> BridgeCommandResponse:
-        self.say_args = (meta.device_id, text, voice, wait, timeout)
+        self.say_args = (
+            meta.device_id,
+            text,
+            voice,
+            face_hint,
+            motion_hint,
+            after_face,
+            wait,
+            timeout,
+        )
         return BridgeCommandResponse(
             ok=True,
             result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED,
@@ -294,6 +316,7 @@ class BridgeBackendTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["device_id"], "default")
         self.assertEqual(payload["device_state"], "idle")
+        self.assertEqual(payload["motion"], "idle")
         self.assertEqual(payload["firmware_version"], "bridge-test")
         capabilities = {item["name"]: item for item in payload["capabilities"]}
         self.assertEqual(capabilities["face"]["state"], "available")
@@ -304,6 +327,45 @@ class BridgeBackendTests(unittest.TestCase):
             client.get_status_args,
             ("default", "cmd-test-0001", "human_cli", 5.0),
         )
+
+    def test_rclpy_get_status_preserves_motion_name(self) -> None:
+        class FakeGetStatus:
+            class Request:
+                def __init__(self) -> None:
+                    self.meta = SimpleNamespace(created_at=SimpleNamespace())
+
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._get_status_type = FakeGetStatus
+        client._service_client = lambda service_type, device_id, service_name, timeout: object()
+        client._call_service = lambda service_client, request, timeout: SimpleNamespace(
+            device_id="default",
+            connected=True,
+            state="acting",
+            face="neutral",
+            motion="look-user",
+            last_error=SimpleNamespace(
+                ok=True,
+                error_code="",
+                message="",
+                recoverable=False,
+            ),
+            firmware_version="bridge-test",
+            capabilities=[],
+        )
+
+        status = client.get_status(
+            CommandMeta(
+                device_id="default",
+                command_id="cmd-test-0001",
+                source="test",
+                created_at="2026-05-16T00:00:00Z",
+                priority=Priority.NORMAL,
+            ),
+            timeout=1.0,
+        )
+
+        self.assertEqual(status.device_state, "acting")
+        self.assertEqual(status.motion, "look-user")
 
     def test_bridge_face_json_matches_mock_shape(self) -> None:
         bridge_backend = BridgeBackend(FakeBridgeClient())
@@ -329,6 +391,17 @@ class BridgeBackendTests(unittest.TestCase):
 
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
+
+    def test_bridge_motion_preset_passes_name_to_client(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "motion", "cheerful", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["command"], {"type": "motion", "name": "cheerful"})
+        self.assertEqual(client.run_motion_args, ("default", "cheerful", False, 5.0))
 
     def test_bridge_motion_pose_passes_absolute_pose_to_client(self) -> None:
         client = FakeBridgeClient()
@@ -417,7 +490,80 @@ class BridgeBackendTests(unittest.TestCase):
             payload["command"],
             {"type": "say", "text_length": 5, "voice_profile": "default"},
         )
-        self.assertEqual(client.say_args, ("default", "hello", "default", True, 5.0))
+        self.assertEqual(client.say_args, ("default", "hello", "default", "", "", "", True, 5.0))
+
+    def test_bridge_say_passes_motion_hint(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "say",
+                "--voice",
+                "default",
+                "--face",
+                "happy",
+                "--motion",
+                "cheerful",
+                "--after-face",
+                "happy",
+                "hello",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["face_hint"], "happy")
+        self.assertEqual(payload["command"]["motion_hint"], "cheerful")
+        self.assertEqual(payload["command"]["after_face"], "happy")
+        self.assertEqual(
+            client.say_args,
+            ("default", "hello", "default", "happy", "cheerful", "happy", False, 5.0),
+        )
+
+    def test_rclpy_say_goal_carries_motion_hint(self) -> None:
+        client = RclpyBridgeClient.__new__(RclpyBridgeClient)
+        client._say_type = FakeSay
+        captured = {}
+
+        def send_action_goal(action_type, action_name, goal, *, wait, timeout):
+            captured["action_type"] = action_type
+            captured["action_name"] = action_name
+            captured["goal"] = goal
+            captured["wait"] = wait
+            captured["timeout"] = timeout
+            return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
+
+        client._send_action_goal = send_action_goal
+        meta = CommandMeta(
+            device_id="default",
+            command_id="cmd-test-0001",
+            source="human_cli",
+            created_at="2026-05-16T00:00:00Z",
+            priority=Priority.NORMAL,
+        )
+
+        response = client.say(
+            meta,
+            "hello",
+            "default",
+            "happy",
+            "cheerful",
+            "happy",
+            wait=False,
+            timeout=5.0,
+        )
+
+        self.assertTrue(response.ok)
+        self.assertEqual(captured["action_type"], FakeSay)
+        self.assertEqual(captured["action_name"], "/stackchan/default/cmd/say")
+        self.assertEqual(captured["goal"].text, "hello")
+        self.assertEqual(captured["goal"].voice, "default")
+        self.assertEqual(captured["goal"].face_hint, "happy")
+        self.assertEqual(captured["goal"].motion_hint, "cheerful")
+        self.assertEqual(captured["goal"].after_face_hint, "happy")
 
     def test_created_at_is_copied_to_ros_time(self) -> None:
         class Stamp:
@@ -1437,6 +1583,17 @@ class FakeRunMotion:
             self.name = ""
             self.intensity = 0.0
             self.duration_ms = 0
+
+
+class FakeSay:
+    class Goal:
+        def __init__(self) -> None:
+            self.meta = SimpleNamespace(created_at=SimpleNamespace())
+            self.text = ""
+            self.voice = ""
+            self.face_hint = ""
+            self.motion_hint = ""
+            self.after_face_hint = ""
 
 
 class FakePlayAudio:

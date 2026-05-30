@@ -83,6 +83,77 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
 
+    def test_named_motion_presets_return_deterministic_json(self) -> None:
+        for name in ("nod", "shake", "cheerful", "idle", "look-left", "look-right", "look-user"):
+            with self.subTest(name=name):
+                code, stdout, stderr = run_stackchanctl(
+                    ["motion", name, "--json"],
+                    {"STACKCHANCTL_BACKEND": "mock"},
+                )
+
+                self.assertEqual(code, 0, stderr)
+                payload = json.loads(stdout)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["command"], {"type": "motion", "name": name})
+                self.assertEqual(payload["result_state"], "ACCEPTED")
+
+    def test_say_can_include_expression_hints(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "say",
+                "--face",
+                "happy",
+                "--motion",
+                "cheerful",
+                "--after-face",
+                "happy",
+                "やったよ",
+                "--json",
+            ],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["command"]["type"], "say")
+        self.assertEqual(payload["command"]["face_hint"], "happy")
+        self.assertEqual(payload["command"]["motion_hint"], "cheerful")
+        self.assertEqual(payload["command"]["after_face"], "happy")
+        self.assertEqual(payload["command"]["text_length"], 4)
+
+    def test_say_rejects_unknown_motion_hint(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["say", "--motion", "spin", "hello", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNKNOWN_COMMAND")
+
+    def test_say_rejects_unknown_face_hint(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["say", "--face", "smirk", "hello", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNKNOWN_COMMAND")
+
+    def test_say_rejects_unknown_after_face(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["say", "--after-face", "smirk", "hello", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNKNOWN_COMMAND")
+
     def test_named_motion_rejects_extra_positional_args(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["motion", "nod", "extra", "--json"],
@@ -143,6 +214,18 @@ class MockCliTests(unittest.TestCase):
         payload = json.loads(stderr)
         self.assertEqual(payload["error"]["code"], "SERVO_LIMIT_EXCEEDED")
         self.assertEqual(payload["command"]["pan_deg"], 129.0)
+
+    def test_motion_pose_rejects_vertical_end_stop(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "pose", "--pan-deg", "0", "--tilt-deg", "0", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "SERVO_LIMIT_EXCEEDED")
+        self.assertEqual(payload["error"]["message"], "motion pose tilt_deg is outside 5..85")
 
     def test_motion_status_stale_is_non_success(self) -> None:
         code, stdout, stderr = run_stackchanctl(
@@ -568,6 +651,18 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(stdout, "")
         self.assertEqual(json.loads(stderr)["error"]["code"], "UNKNOWN_COMMAND")
+
+    def test_unknown_motion_is_rejected_by_mock_contract(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "spin", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["error"]["code"], "UNKNOWN_COMMAND")
+        self.assertEqual(payload["command"], {"type": "motion", "name": "spin"})
 
     def test_timeout_state_is_structured_and_recoverable(self) -> None:
         code, stdout, stderr = run_stackchanctl(

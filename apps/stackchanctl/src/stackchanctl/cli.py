@@ -139,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     say = subparsers.add_parser("say")
     say.add_argument("--voice")
+    say.add_argument("--face")
+    say.add_argument("--motion")
+    say.add_argument("--after-face")
     say.add_argument("text", nargs="+")
 
     face = subparsers.add_parser("face")
@@ -275,6 +278,9 @@ def build_request(
         command_args = {
             "text": " ".join(args.text).strip(),
             "voice": (args.voice or "").strip(),
+            "face_hint": (args.face or "").strip(),
+            "motion_hint": (args.motion or "").strip(),
+            "after_face": (args.after_face or "").strip(),
         }
     elif command_type is CommandType.FACE:
         command_args = {"name": args.name.strip()}

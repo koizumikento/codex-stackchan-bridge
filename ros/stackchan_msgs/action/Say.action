@@ -3,6 +3,7 @@ string<=512 text
 string<=64 voice
 string<=32 face_hint
 string<=32 motion_hint
+string<=32 after_face_hint
 ---
 stackchan_msgs/Result result
 ---

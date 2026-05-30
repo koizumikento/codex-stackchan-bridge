@@ -301,6 +301,10 @@ Recommended IDL details:
   liveness heartbeat, republishes the aggregated public
   `/stackchan/<device_id>/status`, and returns `TRANSPORT_DISCONNECTED` after
   3 missed status heartbeats unless `liveness_timeout_sec` is overridden.
+- The bridge may also publish the latest aggregated
+  `/stackchan/<device_id>/status` on its own liveness tick so command-acceptance
+  state such as `motion: look-user` is observable even before the next
+  firmware-origin status heartbeat arrives.
 - `capabilities` is a bounded additive status field and does not replace
   feature-specific interfaces. Capability records include `name`, `state`,
   `detail_code`, `active`, `queued`, and `last_update`, where `state` is one of
@@ -1299,6 +1303,23 @@ structured `Result` failures. Firmware still receives only audio playback
 goals and chunks; it must not receive `text`, `voice`, provider endpoint
 configuration, or provider credentials.
 
+When `face_hint` or `motion_hint` is present, the bridge validates those names
+against the same normal face and firmware-owned named motion allowlists used by
+`/stackchan/<device_id>/cmd/face/set` and
+`/stackchan/<device_id>/cmd/motion/run`. The bridge starts those hints after TTS
+synthesis and any bounded audio preload, immediately before starting firmware
+audio playback for the same `command_id`. A rejected face or motion hint rejects
+the `say` action rather than silently speaking without the requested expression.
+
+When `after_face_hint` is present, the bridge validates it as a normal face name
+and applies it after the firmware-owned audio playback action reaches a terminal
+result. When it is omitted, the bridge must not unconditionally return to
+`neutral`: `happy`, `thinking`, `sleepy`, and `neutral` remain as-is,
+`surprised` settles to `happy`, and `error` settles to `thinking`. If no
+`face_hint` is provided, the bridge leaves the current face unchanged. On an
+audio failure after face or motion hints have already started, the bridge may
+apply an explicit `after_face_hint`; otherwise it should settle to `thinking`.
+
 If no TTS provider is configured, the action returns `UNSUPPORTED_FEATURE`.
 The earlier accept-only scaffold behavior remains a historical bring-up note,
 not the completion contract for local TTS.
@@ -1310,6 +1331,7 @@ Goal fields:
 - `voice`
 - `face_hint`
 - `motion_hint`
+- `after_face_hint`
 
 Result fields:
 
@@ -1347,6 +1369,31 @@ Goal fields:
 - `name`
 - `intensity`
 - `duration_ms`
+
+Rules:
+
+- `name` is an intent-like preset name, not a raw servo pose or waypoint list.
+- The initial accepted set is `nod`, `shake`, `cheerful`, `idle`, `look-left`,
+  `look-right`, and `look-user`.
+- `idle` is accepted as a no-op and must not actuate servos.
+- Firmware owns the bounded waypoint table, trajectory planning, calibration
+  gating, servo limits, and final safety validation. CLI/MCP/bridge layers may
+  reject unknown names early, but they must not synthesize physical actuation
+  success without the firmware result.
+- On K151, firmware hard servo limits follow the official StackChan-BSP ranges:
+  X/yaw `-128..128` degrees and Y/pitch `0..90` degrees. Normal named-motion
+  presets and external explicit pose avoid Y-axis end stops except for
+  firmware-owned home/neutral behavior.
+- Firmware may reject named motion with `FIRMWARE_BUSY` when another motion or
+  incompatible servo action is already active.
+- After the bridge facade accepts a named motion, public
+  `/stackchan/<device_id>/status` should immediately expose `state: acting` and
+  `motion: <name>` until firmware status reports completion or another result
+  replaces it. This keeps `stackchanctl observe` useful even when firmware
+  status samples are delayed during serial bring-up.
+- Raw servo ticks, PWM, torque, relative movement, continuous rotation,
+  calibration writes, and externally supplied waypoint lists are not part of
+  `/stackchan/<device_id>/cmd/motion/run`.
 
 Result fields:
 
@@ -1386,11 +1433,11 @@ Feedback fields:
 Rules:
 
 - `pan_deg` range is `-128.0..128.0` inclusive.
-- `tilt_deg` range is `0.0..90.0` inclusive.
+- `tilt_deg` range is `5.0..85.0` inclusive for external explicit pose.
 - `speed` range is `0..1000`; `0` means firmware default speed.
 - `duration_ms` is `0` or `100..2000`; `0` means firmware default duration/planning bound.
 - `home=false` means `pan_deg` and `tilt_deg` are explicit external absolute pose targets.
-- `home=true` means firmware-owned home/neutral behavior; `pan_deg` and `tilt_deg` are ignored by the device-side planner and should be published as the resulting home pose when accepted.
+- `home=true` means firmware-owned home/neutral behavior; `pan_deg` and `tilt_deg` are ignored by the device-side planner and should be published as the resulting home pose when accepted. Home may use a vertical endpoint that external explicit pose rejects.
 - External explicit pose values outside limits are rejected with `SERVO_LIMIT_EXCEEDED` or `MOTION_INTERRUPTED`; they are not clamped.
 - Non-finite explicit pose values are rejected before they can be published as state.
 - Firmware owns the final safety validation even if the CLI or bridge rejected obvious invalid input earlier.

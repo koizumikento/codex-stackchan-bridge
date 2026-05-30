@@ -81,7 +81,8 @@ Current references to re-check before implementation:
 - M5Stack StackChan docs: official Arduino setup points users to the `M5StackChan` driver library and StackChan BSP resources.
 - `m5stack/StackChan-BSP`: official board support package for Arduino development.
 - `stack-chan/stackchan-arduino`: community Arduino library with servo abstraction for PWM, SCS, and Dynamixel XL330.
-- M5Stack Home Assistant StackChan docs: useful for hardware ranges and component wiring, especially servo constraints.
+- M5Stack StackChan servo docs and `StackChan-BSP` examples: K151 servo command units are deci-degrees, with X/yaw documented as `-1280..1280` (`-128..128` degrees) and Y/pitch as `0..900` (`0..90` degrees). The docs recommend keeping normal vertical operation within `5..85` degrees because extreme Y angles can stall and damage the servo.
+- M5Stack Home Assistant StackChan docs: useful for component wiring and calibration behavior.
 
 Dependency and license policy is tracked in [license-notes.md](license-notes.md). In short: use `StackChan-BSP` as a dependency, treat `m5stack/StackChan` firmware as reference material, and avoid copying full upstream firmware trees into this repository.
 
@@ -145,6 +146,18 @@ Current MVP scaffold:
 - The CLI and MCP surfaces intentionally do not expose calibration writes,
   import/export, or reset operations. Those belong to a later explicit
   maintenance mode.
+
+Named motion presets:
+
+- Firmware owns the safe-first waypoint table for `nod`, `shake`, `cheerful`,
+  `look-left`, `look-right`, and `look-user`.
+- `idle` is accepted as a no-op and must not actuate servos or require a valid
+  calibration record.
+- CLI, MCP, and bridge layers pass intent names only. They do not provide raw
+  servo angles, PWM, torque, relative movement, continuous rotation,
+  calibration writes, or external waypoint lists through normal `motion`.
+- Servo-actuating named motions still require valid firmware-owned calibration,
+  successful servo reads, and hard-limit validation before movement.
 
 Maintenance calibration contract:
 
@@ -363,6 +376,7 @@ Baseline motions:
 
 - `nod`
 - `shake`
+- `cheerful`
 - `look-left`
 - `look-right`
 - `look-user`
@@ -370,7 +384,6 @@ Baseline motions:
 
 Safety constraints must be enforced here:
 
-- Clamp servo angles to known-safe ranges.
 - Reject or ignore commands that would exceed limits.
 - Prefer named motion primitives over arbitrary angle commands.
 - Provide a neutral or idle fallback.
@@ -381,7 +394,7 @@ Suggested internal motion model:
 
 - Validate requested motion name.
 - Resolve it to a bounded trajectory.
-- Clamp each target to device limits.
+- Reject any target outside device limits.
 - Enqueue the plan and execute servo target/neutral steps from the firmware
   loop, not from the micro-ROS service callback.
 - Publish completion or error state.
@@ -389,7 +402,7 @@ Suggested internal motion model:
 Current K151 bring-up firmware keeps one active named-motion job at a time.
 The service callback validates calibration, cached servo health, priority, and
 busy/fault state, then returns `ACCEPTED` after enqueueing the plan. The loop
-advances target hold and neutral recovery steps before heartbeat publishing,
+advances bounded waypoint holds and neutral recovery steps before heartbeat publishing,
 event drain, or command executor work, preserving the safety and motion-neutral
 priority order. Connected transport liveness is inferred from heartbeat publish
 failures rather than active `rmw_uros_ping_agent()` probes, because connected
@@ -398,13 +411,109 @@ servo safety step fails,
 firmware attempts an explicit neutral/home recovery and latches `fault` while
 preserving the original structured error. Combined home-plus-motion targets are
 revalidated against firmware degree limits before scheduling.
+While a named motion is active, firmware defers routine servo-health polling
+and low-rate sensor telemetry so blocking reads do not collapse the scheduler's
+25 ms retarget cadence. Command executor, status heartbeat, event drain, and
+media polling still run so the device remains observable.
 
-K151 tuning uses a deliberately visible `nod` profile for bring-up: the
-firmware-owned default duration is 900 ms, the named nod target is up to 28
-degrees at intensity `1.0`, and servo writes use a slower K151 time parameter
-so the motion is observable instead of appearing as a status-only blip. These
-values are still bounded by the firmware hard servo limits and valid
-calibration gate.
+K151 tuning uses deliberately visible named-motion profiles for bring-up. The
+firmware hard servo limits follow the official K151/BSP angle ranges:
+`x=-128..128` and `y=0..90`. Named presets avoid normal operation at the Y-axis
+end stops; for example `nod` uses two 18-degree positive-Y waypoints at
+intensity `1.0`, and `look-user` uses visible positive-Y waypoints at 60, 15,
+and 45 degrees before returning home. Named-motion servo writes use a
+synchronized yaw/pitch write and a shorter motion-only servo time so diagonal
+waypoints are reached as a coordinated head movement instead of sequential
+single-axis nudges. These values are still bounded by the firmware hard servo
+limits and valid calibration gate.
+
+Current default hold timing separates gestures from gaze-like motions: `nod`
+uses 90 ms per waypoint so the nod has a visible beat.
+`shake` uses no endpoint hold because stop-and-wait side poses do not read as a
+natural head shake on the K151. Its safety contract still carries ten larger
+yaw waypoints with a small pitch component and a tapering amplitude:
+`(88,8)`, `(-88,11)`, `(84,8)`, `(-84,11)`, `(78,8)`, `(-78,10)`,
+`(70,8)`, `(-70,10)`, `(58,7)`, and `(-48,7)`, followed by the scheduler's
+explicit return home. At execution time, however, firmware does not step
+through those side waypoints as settle points. `shake` enters a dedicated
+continuous trajectory phase for about 3.0 seconds and generates a five-cycle
+tapered sine-wave yaw target every 25 ms, with a small pitch lift mixed in.
+Each retarget uses a longer servo time than the retarget interval, so the head
+keeps chasing the curve instead of reaching a side target and stopping there.
+The side targets are therefore a bounded envelope, not per-side stop commands.
+After the continuous shake trajectory, firmware runs one explicit home return
+using a 270 ms segment. This keeps the gesture closer to five visible head
+shakes without tiny single-axis jitter or stop-and-wait gaps.
+`cheerful` is the first cute-motion grammar preset: it uses a visible
+two-axis diagonal bounce so the horizontal swing does not hide the pitch
+movement. It keeps the four visible key poses sparse, but maps them to the
+cute-motion grammar: anticipation, main diagonal arc, asymmetric rebound, and
+follow-through before the explicit home return. The current default offsets are
+`(28,52)`, `(82,82)`, `(-64,70)`, and `(16,46)`, deliberately exaggerating the
+main diagonal arc and the asymmetric rebound while keeping the follow-through
+smaller.
+Earlier dense retarget tables made the K151 look like it was stopping at each
+micro-step, so `cheerful` deliberately avoids long fine-grained point lists.
+The scheduler now treats each visible `cheerful` key pose as a timed motion
+segment rather than as a point to reach and hold. The preset keeps non-uniform
+style floor durations of 320 ms for anticipation, 700 ms for the main diagonal
+arc, 620 ms for the rebound, 500 ms for the follow-through, and 700 ms for the
+explicit home return. At execution time, `cheerful` additionally lengthens a
+segment when the largest yaw/pitch axis delta would otherwise make the head
+sweep too quickly. The current distance rule uses a 190 ms base plus 7 ms per
+degree of the larger axis delta, capped at 1200 ms, and never shortens the
+style floor duration. Visible holds are zero except for a short 20 ms rebound
+beat, so the gesture length comes from the segment timing, distance-scaled
+speed, and easing curve rather than from artificial stop-and-wait gaps.
+
+Firmware applies an internal segment/easing engine for scheduled named motion:
+instead of sending each visible key pose as a single constant-speed servo
+target, it computes the current yaw/pitch target on a 25 ms tick and sends the
+synchronized pair with a short 55 ms servo move time. `cheerful` uses
+`easeInOutCubic` for anticipation and rebound, an `easeOutBack`-like fast-main
+arc, and `easeOutSine` for the follow-through. The actual overshoot-like feel
+is produced by the larger main target and asymmetric rebound, not by exposing
+unbounded external servo targets. Because the rebound traverses a much larger
+horizontal delta than the anticipation or follow-through, `cheerful` applies
+the distance duration rule only inside this segment engine; quick gesture
+presets such as `nod` and `shake` keep explicit per-preset timing.
+These intermediate targets are implementation detail, not public waypoints, and
+must not introduce hold gaps between visible key poses. The firmware keeps room
+for up to 24 named-motion waypoints so cute motions can be shaped with
+intermediate points rather than long pauses alone. Motions that need true
+continuous motion, such as `shake`, may use a preset-specific trajectory runner
+instead of treating each side target as an executable waypoint.
+Scheduled named motion enables the yaw/pitch servo pair once at command
+acceptance and then sends synchronized waypoint writes, avoiding per-waypoint
+torque ACK delays.
+After the final waypoint sequence, firmware sends one explicit synchronized home
+write before the physical settle window. The settle window then keeps the motion
+state active and uses the servo moving flag when available before publishing
+`motion completed`, then disables the yaw/pitch torque for normal named-motion
+completion so the servos do not keep trying to hold position after the gesture.
+Public `ready` means the scheduled gesture has also given the physical servos
+time to stop and released named-motion torque. Explicit pose/home commands keep
+their separate posture-control behavior and do not use this named-motion torque
+release path.
+`look-left` and `look-right` use 750 ms because they intentionally hold a gaze.
+`look-user` uses asymmetric timing: 180 ms at the upper waypoint, 220 ms at the
+lower waypoint, 850 ms while looking toward the user, and 650 ms before
+returning home. The default explicit-pose servo move time remains 140 ms;
+most named-motion waypoints use a 105 ms servo move time; `cheerful` uses
+per-segment move durations and easing because its sparse key-pose table should
+read as one continuous gesture with gentle start/end motion. The internal
+retarget loop is used to reduce the constant-speed robot-sweep impression
+without changing the public preset or adding a dense list of visible
+micro-steps.
+
+For focused physical tuning, the optional `--motion-diagnostics` firmware
+profile emits bounded firmware events instead of serial text. On `shake`, the
+firmware publishes `motion_diag_plan` when the scheduler accepts the command
+and `motion_diag_writes` when the scheduled motion finishes or fails. These
+events include only numeric summary ranges: calibrated home, planned envelope,
+actual target min/max, raw servo min/max, servo-time min/max, and write count.
+They are observation-only diagnostics; they do not expose raw servo control,
+external waypoint lists, calibration writes, or any alternate command surface.
 
 Explicit head pose control is a separate safety path from named motion. It uses
 home-frame absolute `pan_deg` and `tilt_deg` values, not StackChan-BSP `X/Y` as
@@ -420,12 +529,13 @@ command before firmware planning.
 Explicit pose safety rules:
 
 - Keep explicit pose limits separate from named motion trajectory limits.
-- Baseline external limits are `pan_deg=-128..128`, `tilt_deg=0..90`,
+- Baseline external explicit-pose limits are `pan_deg=-128..128`, `tilt_deg=5..85`,
   `speed=0..1000`, and `duration_ms=0` or `100..2000`.
 - External explicit pose values outside those limits are rejected with a
   structured error; they are not clamped.
-- Named motion trajectories may clamp internally because they are firmware-owned
-  safe trajectories.
+- Named motion trajectories are firmware-owned safe trajectories and should
+  reject any generated non-neutral Y target outside the normal `5..85`
+  operation envelope or any target outside hard limits.
 - `motion home` is firmware-owned home/neutral behavior and requires valid
   calibration.
 - Reject pose, home, and successful pose status when calibration is invalid,

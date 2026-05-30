@@ -66,7 +66,7 @@ int main() {
       "CALIBRATION_INVALID");
 
   stackchan::ServoCalibration unsafe_home{
-      100,
+      200,
       0,
       0,
       0,
@@ -79,9 +79,9 @@ int main() {
       "CALIBRATION_INVALID");
 
   stackchan::ServoCalibration unsafe_correction{
-      20,
+      110,
       0,
-      31,
+      30,
       0,
       0,
       0,

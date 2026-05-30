@@ -10,7 +10,7 @@ SKILL = ROOT / "skills" / "codex-stackchan" / "SKILL.md"
 README = ROOT / "skills" / "codex-stackchan" / "README.md"
 
 ALLOWED_FACES = {"neutral", "happy", "thinking", "surprised", "sleepy", "error"}
-ALLOWED_MOTIONS = {"nod", "shake", "look-left", "look-right", "look-user", "idle"}
+ALLOWED_MOTIONS = {"nod", "shake", "cheerful", "look-left", "look-right", "look-user", "idle"}
 ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 FORBIDDEN_COMMAND_PARTS = (
     " ros2 ",

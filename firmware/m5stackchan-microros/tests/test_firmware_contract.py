@@ -137,8 +137,35 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("bool calibration_valid = true", safety)
         self.assertNotIn("bool servo_read_ok = true", safety)
         self.assertNotIn("bool fault_state = false", safety)
-        self.assertIn("intensity < 0.0f || intensity > 1.0f", safety)
-        self.assertRegex(safety, re.compile(r"constexpr ServoLimits kDefaultServoLimits"))
+        self.assertIn("is_invalid_float(intensity) || intensity < 0.0f || intensity > 1.0f", safety)
+        for motion in ("nod", "shake", "cheerful", "idle", "look-left", "look-right", "look-user"):
+            self.assertIn(f'strcmp(name, "{motion}") == 0', safety)
+        self.assertIn("struct MotionWaypoint", safety)
+        self.assertIn("enum class MotionEasing", safety)
+        self.assertIn("MotionEasing::Linear", safety)
+        self.assertIn("MotionEasing::EaseOutBackLike", safety)
+        self.assertIn("MotionEasing::EaseOutSine", safety)
+        self.assertIn("kShakeMotionSideServoTimeMs", safety)
+        self.assertIn("kShakeMotionSmallSideServoTimeMs", safety)
+        self.assertIn("kShakeMotionReturnHomeServoTimeMs", safety)
+        self.assertRegex(safety, re.compile(r"add_motion_waypoint\(\s*&plan,\s*88,\s*8,\s*0,", re.MULTILINE))
+        self.assertRegex(safety, re.compile(r"add_motion_waypoint\(\s*&plan,\s*-88,\s*11,\s*0,", re.MULTILINE))
+        self.assertRegex(safety, re.compile(r"add_motion_waypoint\(\s*&plan,\s*58,\s*7,\s*0,", re.MULTILINE))
+        self.assertRegex(safety, re.compile(r"add_motion_waypoint\(\s*&plan,\s*-48,\s*7,\s*0,", re.MULTILINE))
+        self.assertNotIn("add_motion_waypoint(&plan, 18, 0", safety)
+        self.assertIn("kMaxMotionWaypoints = 24", safety)
+        self.assertIn("waypoint_count", safety)
+        self.assertIn("add_motion_waypoint", safety)
+        self.assertIn("add_motion_return_home", safety)
+        self.assertIn("motion_target_within_limits", safety)
+        self.assertIn("motion_target_within_normal_limits", safety)
+        self.assertIn("constexpr ServoLimits kDefaultServoLimits{-128, 128, 0, 90}", safety)
+        self.assertIn("kNormalServoMinY = 5", safety)
+        self.assertIn("kNormalServoMaxY = 85", safety)
+        self.assertIn("add_motion_waypoint(&plan, 0, 60", safety)
+        self.assertIn("add_motion_waypoint(&plan, 0, 15", safety)
+        self.assertIn("add_motion_waypoint(&plan, 0, 45", safety)
+        self.assertNotIn("add_motion_waypoint(&plan, 0, -30", safety)
 
     def test_head_pose_safety_rejects_external_pose_without_clamping(self) -> None:
         safety = (ROOT / "include" / "stackchan" / "motion_safety.hpp").read_text()
@@ -147,8 +174,10 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("constexpr HeadPoseLimits kDefaultHeadPoseLimits", safety)
         self.assertIn("-128.0f", safety)
         self.assertIn("128.0f", safety)
-        self.assertIn("90.0f", safety)
+        self.assertIn("5.0f", safety)
+        self.assertIn("85.0f", safety)
         self.assertIn("validate_head_pose_target", safety)
+        self.assertIn("validate_head_pose_motion_parameters", safety)
         self.assertIn('"SERVO_READ_FAILED"', safety)
         self.assertIn('"CALIBRATION_INVALID"', safety)
         self.assertIn("plan_head_home", safety)
@@ -217,6 +246,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("stackchan::Result initialize_servo_adapter()", main)
         self.assertIn("servo_bus.ReadPos(kYawServoId)", main)
         self.assertIn("servo_bus.ReadPos(kPitchServoId)", main)
+        self.assertIn("servo_bus.ReadMove(kYawServoId)", main)
+        self.assertIn("servo_bus.ReadMove(kPitchServoId)", main)
         self.assertIn("raw_servo_position_valid", main)
         self.assertIn('"SERVO_READ_FAILED"', main)
         self.assertIn("servo_adapter_init_result.ok", main)
@@ -224,14 +255,18 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("void step_motion_scheduler(unsigned long now)", main)
         self.assertIn("stackchan::Result enqueue_motion_scheduler", main)
         self.assertIn("stackchan::Result try_motion_neutral_recovery()", main)
+        self.assertIn("stackchan::Result enable_servo_pair_torque()", main)
         self.assertIn("servo_bus.EnableTorque(kYawServoId, 1)", main)
-        self.assertIn("servo_bus.WritePos(kYawServoId", main)
-        self.assertIn("servo_bus.WritePos(kPitchServoId", main)
+        self.assertIn("servo_bus.SyncWritePos", main)
+        self.assertIn("static_cast<u8>(kYawServoId)", main)
+        self.assertIn("static_cast<u8>(kPitchServoId)", main)
         self.assertIn("servo_position_read_available_cache", main)
         self.assertIn("void update_servo_health_cache(unsigned long now, bool force = false)", main)
         self.assertIn("const bool servo_read_ok = calibration_valid && servo_position_read_available_cache;", main)
         self.assertIn("validate_motion_servo_target(home, \"home\")", main)
-        self.assertIn("validate_motion_servo_target(target, \"motion\")", main)
+        self.assertIn("validate_motion_servo_target(target, \"motion\", true)", main)
+        self.assertIn("plan.waypoint_count == 0", main)
+        self.assertIn("motion idle accepted", main)
         self.assertIn("state_machine.fault();", main)
         self.assertIn("const bool safety_fault = is_servo_safety_fault(result);", main)
         self.assertIn("if (safety_fault || !recovery_result.ok)", main)
@@ -243,11 +278,60 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("update_servo_health_cache(now);"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("publish_status_heartbeat();"))
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("spin_command_executor();"))
+        self.assertIn("if (!motion_scheduler.active) {\n    update_servo_health_cache(now);", loop_body)
+        self.assertIn(
+            "if (!motion_scheduler.active) {\n    publish_runtime_telemetry(static_cast<uint32_t>(now));",
+            loop_body,
+        )
         self.assertLess(loop_body.find("poll_capture_audio_action_server();"), loop_body.find("spin_command_executor();"))
         self.assertLess(loop_body.find("poll_play_audio_action_server();"), loop_body.find("spin_command_executor();"))
         self.assertLess(loop_body.find("spin_command_executor();"), loop_body.find("poll_capture_camera_action_server();"))
-        self.assertIn("move_servo_pair_to(motion_scheduler.target)", main)
-        self.assertIn("move_servo_pair_to(motion_scheduler.home)", main)
+        self.assertIn("motion_scheduler.waypoints", main)
+        self.assertIn("motion_scheduler.waypoint_index", main)
+        self.assertIn("MotionSchedulerPhase::ShakeTrajectory", main)
+        self.assertIn("MotionSchedulerPhase::ReturnHome", main)
+        self.assertIn("MotionSchedulerPhase::FinalSettle", main)
+        self.assertIn("kMotionFinalSettleMinMs", main)
+        self.assertIn("kMotionFinalSettleTimeoutMs", main)
+        self.assertIn("kMotionSegmentTickIntervalMs", main)
+        self.assertIn("kMotionSegmentTickServoTimeMs", main)
+        self.assertIn("segment_easing", main)
+        self.assertIn("eased_motion_progress", main)
+        self.assertIn("ease_in_out_cubic_progress", main)
+        self.assertIn("ease_out_sine_progress", main)
+        self.assertIn("ease_out_cubic_progress", main)
+        self.assertIn("case stackchan::MotionEasing::Linear:", main)
+        self.assertIn("interpolate_motion_target", main)
+        self.assertIn("sinusoidal_motion_wave", main)
+        self.assertIn("continuous_shake_target", main)
+        self.assertIn("kShakeTrajectoryDurationMs", main)
+        self.assertIn("kShakeTrajectoryTickServoTimeMs", main)
+        self.assertIn("kShakeTrajectoryCycles", main)
+        self.assertIn("kShakeTrajectoryYawAmplitudeDeg", main)
+        self.assertIn("kMotionPi", main)
+        self.assertIn("motion_return_home_start_target", main)
+        self.assertIn("advance_motion_segment", main)
+        self.assertIn('strcmp(motion_scheduler.name, "shake") == 0', main)
+        self.assertIn('return stackchan::Result::accepted("motion segment completed");', main)
+        self.assertIn("cheerful_distance_adjusted_segment_duration", main)
+        self.assertIn("kCheerfulMotionDistanceBaseMs", main)
+        self.assertIn("kCheerfulMotionMsPerDegree", main)
+        self.assertIn('strcmp(motion_scheduler.name, "cheerful") == 0', main)
+        self.assertIn("max_axis_distance", main)
+        self.assertIn("constexpr int kServoTime = 140;", main)
+        self.assertIn("servo_time_ms", main)
+        self.assertIn("motion_scheduler.servo_time_ms", main)
+        self.assertIn("waypoint.servo_time_ms == 0 ? motion_scheduler.servo_time_ms", main)
+        self.assertIn("start_motion_segment(", main)
+        self.assertIn("move_servo_pair_to(target, kMotionSegmentTickServoTimeMs, false)", main)
+        self.assertIn("motion_scheduler.phase == MotionSchedulerPhase::MoveWaypoint &&", main)
+        self.assertIn("if (waypoint.hold_ms == 0)", main)
+        self.assertIn("move_servo_pair_to(target)", main)
+        self.assertIn("servo_pair_moving(&moving)", main)
+        self.assertIn("stackchan::Result disable_servo_pair_torque()", main)
+        self.assertIn("servo_bus.EnableTorque(kYawServoId, 0)", main)
+        self.assertIn("servo_bus.EnableTorque(kPitchServoId, 0)", main)
+        self.assertIn("const stackchan::Result torque_result = disable_servo_pair_torque();", main)
         self.assertIn("fail_motion_scheduler(result);", main)
         self.assertIn("try_motion_neutral_recovery", main)
         self.assertNotIn("delay(plan.duration_ms / 2)", main)
@@ -257,11 +341,12 @@ class FirmwareContractTests(unittest.TestCase):
         ]
         self.assertNotIn("move_servo_pair_to(", motion_handler)
         self.assertNotIn("servo_position_read_available()", motion_handler)
+        self.assertNotIn("state_machine.fault();", motion_handler)
         enqueue_body = main[
             main.find("stackchan::Result enqueue_motion_scheduler") :
             main.find("void step_motion_scheduler")
         ]
-        self.assertNotIn("publish_status_heartbeat();", enqueue_body)
+        self.assertIn("motion_status_publish_pending = true;", enqueue_body)
         self.assertNotIn("TODO: call StackChan-BSP servo adapter", main)
 
     def test_face_commands_render_to_display(self) -> None:
@@ -340,6 +425,33 @@ class FirmwareContractTests(unittest.TestCase):
 
         binary = ROOT / "tests" / "calibration_contract_test"
         source = ROOT / "tests" / "calibration_contract_test.cpp"
+        if binary.exists():
+            binary.unlink()
+        if binary.with_suffix(".exe").exists():
+            binary.with_suffix(".exe").unlink()
+
+        output = binary.with_suffix(".exe") if compiler.lower().endswith("cl.exe") else binary
+        subprocess.run(
+            [
+                compiler,
+                "-std=c++17",
+                "-I",
+                str(ROOT / "include"),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        subprocess.run([str(output)], check=True)
+
+    def test_motion_safety_contract_cpp_harness(self) -> None:
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler not available")
+
+        binary = ROOT / "tests" / "motion_safety_contract_test"
+        source = ROOT / "tests" / "motion_safety_contract_test.cpp"
         if binary.exists():
             binary.unlink()
         if binary.with_suffix(".exe").exists():
@@ -776,7 +888,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("buffer_play_audio_pending_chunk", main)
         self.assertIn("drain_play_audio_pending_chunks", main)
         self.assertIn("validate_play_audio_chunk_shape", main)
-        self.assertIn("delay(play_audio_goal_active ? 1 : 10)", main)
+        self.assertIn("delay(play_audio_goal_active || motion_scheduler.active ? 1 : 10)", main)
         self.assertIn("!STACKCHAN_MICROROS_CORE_MEDIA_BRINGUP", main)
         self.assertIn("audio_playback_action", main)
         self.assertIn("audio_playback_chunk", main)
@@ -910,6 +1022,38 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("sensor_input_diag", firmware_doc)
         self.assertIn("--sensor-input-diagnostics", hardware_doc)
         self.assertIn("sensor_input_diag", hardware_doc)
+
+    def test_motion_diagnostic_profile_uses_bounded_events(self) -> None:
+        main = (ROOT / "src" / "main.cpp").read_text()
+        events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
+        helper = (REPO_ROOT / "scripts" / "firmware_platformio.py").read_text()
+        firmware_doc = (REPO_ROOT / "docs" / "firmware.md").read_text()
+        hardware_doc = (REPO_ROOT / "docs" / "hardware-validation.md").read_text(encoding="utf-8")
+
+        self.assertIn("#define STACKCHAN_MOTION_DIAGNOSTICS 0", main)
+        self.assertIn("MotionDiagnosticSummary motion_diagnostic", main)
+        self.assertIn("motion_diag_start(name, command_id, home, plan);", main)
+        self.assertIn("motion_diag_record_write(", main)
+        self.assertIn("motion_diag_publish_writes();", main)
+        self.assertIn("motion_diag_reset();", main)
+        self.assertIn('"motion_diag_plan"', main)
+        self.assertIn('"motion_diag_writes"', main)
+        self.assertIn("target_min_x", main)
+        self.assertIn("raw_min_x", main)
+        self.assertIn("time_min_ms", main)
+        self.assertIn('strcmp(name, "shake") != 0', main)
+        self.assertIn("motion_diag_plan", events)
+        self.assertIn("motion_diag_writes", events)
+        self.assertIn("--motion-diagnostics", helper)
+        self.assertIn("STACKCHAN_MOTION_DIAGNOSTICS=1", helper)
+        motion_helper_block = helper[
+            helper.find('if getattr(args, "motion_diagnostics"') :
+            helper.find("return flags", helper.find('if getattr(args, "motion_diagnostics"'))
+        ]
+        self.assertNotIn("STACKCHAN_SERIAL_DIAGNOSTICS", motion_helper_block)
+        self.assertIn("--motion-diagnostics", firmware_doc)
+        self.assertIn("motion_diag_plan", firmware_doc)
+        self.assertIn("motion_diag_writes", hardware_doc)
 
     def test_microros_publish_failures_are_debounced_before_disconnect(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()

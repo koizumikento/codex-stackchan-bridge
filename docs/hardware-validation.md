@@ -124,14 +124,19 @@ hardware bring-up issue complete.
   # $env:STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES='32768'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
-  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default --say-face happy --say-motion cheerful --say-after-face happy
   ```
 
   The smoke expects `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
   `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`, and
-  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. Also record whether the operator
-  heard the speaker output; `tts_finished` alone is not an audible-playback
-  pass. For audible-quality checks, prefer loaded playback
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. When expression hints are passed,
+  it also expects `STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=1`,
+  `STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=1`, and
+  `STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=1`; these confirm that the facade
+  command carried the hints, while the operator must still confirm the visible
+  expression and motion timing. Also record whether the operator heard the
+  speaker output; `tts_finished` alone is not an audible-playback pass. For
+  audible-quality checks, prefer loaded playback
   (`STACKCHAN_TTS_LOADED_PLAYBACK=1`) so firmware can pass a stable loaded PCM
   buffer to M5Unified. The current default sends loaded ADPCM over the playback
   chunk topic and uses the final playback action result, not per-chunk service
@@ -347,8 +352,26 @@ hardware bring-up issue complete.
   accepts and moves to the expected absolute home-frame pose.
 - With a valid calibration record, confirm `stackchanctl --backend bridge motion nod --json`
   reaches firmware and moves only within the documented named-motion limits.
-  Record observed direction, approximate range, noise, interference, and return
-  behavior.
+  Also sample `shake`, `cheerful`, `look-left`, `look-right`, and `look-user`
+  before marking the preset set visually tuned. Record observed direction,
+  approximate range, noise, interference, and return behavior.
+- When `shake` visually disagrees with the configured preset envelope, build
+  and upload the event-based motion diagnostic profile, then run a longer
+  motion smoke so the terminal `motion_diag_writes` event can drain:
+
+  ```powershell
+  uv run --no-project python scripts/firmware_platformio.py upload --port COM3 --upload-speed 115200 --no-stub --motion-diagnostics
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 120 --motion-check shake --soak-seconds 5 --soak-interval-seconds 1
+  ```
+
+  Expected events are `motion_diag_plan` at scheduler acceptance and
+  `motion_diag_writes` at completion/failure. Compare their planned target
+  range, actual target range, raw servo range, servo time, and write count
+  before changing amplitude or timing again. This diagnostic is event-based and
+  may run with the micro-ROS Agent; do not use serial text diagnostics on the
+  same COM port while the Agent is attached.
+- Confirm `stackchanctl --backend bridge motion idle --json` is accepted as a
+  no-op and does not actuate servos.
 - On the initial K151 bring-up, a seed record with home/correction values all
   zero allowed `motion nod` to return `ok=true` and publish
   `state: acting` / `motion: nod` through `/stackchan/default/status`. After

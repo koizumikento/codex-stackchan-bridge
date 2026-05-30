@@ -32,6 +32,21 @@ class FakeBridgeClient:
     def set_face(self, meta, name: str, timeout: float) -> BridgeCommandResponse:
         return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
 
+    def say(
+        self,
+        meta,
+        text: str,
+        voice: str,
+        face_hint: str,
+        motion_hint: str,
+        after_face: str,
+        *,
+        wait: bool,
+        timeout: float,
+    ) -> BridgeCommandResponse:
+        del face_hint, motion_hint, after_face
+        return BridgeCommandResponse(ok=True, result_state=ResultState.COMPLETED if wait else ResultState.ACCEPTED)
+
     def play_audio(self, meta, path: str, *, wait: bool, timeout: float) -> BridgeCommandResponse:
         return BridgeCommandResponse(
             ok=False,
@@ -249,6 +264,13 @@ class McpStdioTests(unittest.TestCase):
             self.assertNotIn("calibration", tool["name"])
         schemas = {tool["name"]: tool["inputSchema"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("voice", schemas["say"]["properties"])
+        self.assertIn("face", schemas["say"]["properties"])
+        self.assertIn("motion", schemas["say"]["properties"])
+        self.assertIn("after_face", schemas["say"]["properties"])
+        self.assertEqual(
+            schemas["motion_pose"]["properties"]["tilt_deg"],
+            {"type": "number", "minimum": 5.0, "maximum": 85.0},
+        )
         self.assertEqual(
             schemas["motion_pose"]["properties"]["duration_ms"]["anyOf"],
             [
@@ -346,6 +368,33 @@ class McpStdioTests(unittest.TestCase):
             {"type": "say", "text_length": 5, "voice_profile": "default"},
         )
         self.assertNotIn("hello", responses[0]["result"]["content"][0]["text"])
+
+    def test_mock_say_tool_accepts_expression_hints(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-say",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "say",
+                        "arguments": {
+                            "text": "hello",
+                            "face": "happy",
+                            "motion": "cheerful",
+                            "after_face": "happy",
+                        },
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertEqual(structured["command"]["face_hint"], "happy")
+        self.assertEqual(structured["command"]["motion_hint"], "cheerful")
+        self.assertEqual(structured["command"]["after_face"], "happy")
 
     def test_observe_tool_returns_status_shape(self) -> None:
         code, responses, stderr = run_mcp(
@@ -698,6 +747,43 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual(structured["command"]["type"], "motion.pose")
         self.assertEqual(structured["command"]["frame"], "home")
         self.assertEqual(structured["command"]["pan_deg"], 30.0)
+
+    def test_motion_tool_accepts_cheerful_preset(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-motion",
+                    "method": "tools/call",
+                    "params": {"name": "motion", "arguments": {"name": "cheerful"}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertTrue(structured["ok"])
+        self.assertEqual(structured["command"], {"type": "motion", "name": "cheerful"})
+
+    def test_unknown_motion_tool_rejection_is_tool_result_not_protocol_error(self) -> None:
+        code, responses, stderr = run_mcp(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call-motion",
+                    "method": "tools/call",
+                    "params": {"name": "motion", "arguments": {"name": "spin"}},
+                }
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertNotIn("error", responses[0])
+        structured = responses[0]["result"]["structuredContent"]
+        self.assertFalse(structured["ok"])
+        self.assertEqual(structured["error"]["code"], "UNKNOWN_COMMAND")
 
     def test_motion_home_tool_returns_dedicated_command_shape(self) -> None:
         code, responses, stderr = run_mcp(

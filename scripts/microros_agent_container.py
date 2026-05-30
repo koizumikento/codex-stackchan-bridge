@@ -373,6 +373,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bridge-owned voice profile used by --say-check.",
     )
     tcp_pty_bridge.add_argument(
+        "--say-face",
+        default="",
+        help="Face hint passed to stackchanctl say during --say-check.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-motion",
+        default="",
+        help="Motion hint passed to stackchanctl say during --say-check.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-after-face",
+        default="",
+        help="After-speech face hint passed to stackchanctl say during --say-check.",
+    )
+    tcp_pty_bridge.add_argument(
         "--allow-missing-firmware-ready",
         action="store_true",
         help=(
@@ -1388,6 +1403,43 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     say_check = args.say_check.strip()
     say_check_arg = shlex.quote(say_check)
     say_voice = shlex.quote(args.say_voice.strip() or "default")
+    say_face = args.say_face.strip()
+    say_motion = args.say_motion.strip()
+    say_after_face = args.say_after_face.strip()
+    say_hint_args = " ".join(
+        option
+        for option in (
+            f"--face {shlex.quote(say_face)}" if say_face else "",
+            f"--motion {shlex.quote(say_motion)}" if say_motion else "",
+            f"--after-face {shlex.quote(say_after_face)}" if say_after_face else "",
+        )
+        if option
+    )
+    say_hint_payload_checks = ""
+    if say_face:
+        pattern = shlex.quote(f'"face_hint": "{say_face}"')
+        say_hint_payload_checks += f"""
+  printf '%s\\n' "$say_output" | grep -q {pattern}
+  say_face_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=$([ "$say_face_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_face_result" -eq 0 ] || result=1
+"""
+    if say_motion:
+        pattern = shlex.quote(f'"motion_hint": "{say_motion}"')
+        say_hint_payload_checks += f"""
+  printf '%s\\n' "$say_output" | grep -q {pattern}
+  say_motion_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=$([ "$say_motion_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_motion_result" -eq 0 ] || result=1
+"""
+    if say_after_face:
+        pattern = shlex.quote(f'"after_face": "{say_after_face}"')
+        say_hint_payload_checks += f"""
+  printf '%s\\n' "$say_output" | grep -q {pattern}
+  say_after_face_result=$?
+  echo "STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=$([ "$say_after_face_result" -eq 0 ] && echo 1 || echo 0)"
+  [ "$say_after_face_result" -eq 0 ] || result=1
+"""
     say_tts_enabled = "1" if say_check else "0"
     led_check = "1" if args.led_check else "0"
     motion_check = args.motion_check.strip()
@@ -1454,10 +1506,34 @@ sleep 5
 phase_end 0
 phase_start "smoke checks" SMOKE_CHECKS
 echo "--- stackchanctl observe ---"
-python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json
+observe_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json 2>&1)
 observe_result=$?
+printf '%s\n' "$observe_output"
 echo "STACKCHAN_BRIDGE_OBSERVE_EXIT=$observe_result"
 [ "$observe_result" -eq 0 ] || result=1
+bridge_connected_output="$observe_output"
+bridge_connected_result=$observe_result
+printf '%s\n' "$bridge_connected_output" | grep -q '"connected": true'
+bridge_connected_seen_result=$?
+bridge_connected_attempt=1
+for bridge_connected_attempt in $(seq 1 {status_attempt_limit}); do
+  [ "$bridge_connected_result" -eq 0 ] && [ "$bridge_connected_seen_result" -eq 0 ] && break
+  sleep 1
+  bridge_connected_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} observe --json 2>&1)
+  bridge_connected_result=$?
+  printf '%s\n' "$bridge_connected_output" | grep -q '"connected": true'
+  bridge_connected_seen_result=$?
+done
+echo "--- connected observe wait ---"
+printf '%s\n' "$bridge_connected_output"
+echo "STACKCHAN_BRIDGE_CONNECTED_OBSERVE_EXIT=$bridge_connected_result"
+echo "STACKCHAN_BRIDGE_CONNECTED_OBSERVE_ATTEMPTS=$bridge_connected_attempt"
+[ "$bridge_connected_result" -eq 0 ] || result=1
+echo "STACKCHAN_BRIDGE_CONNECTED_OBSERVE_SEEN=$([ "$bridge_connected_seen_result" -eq 0 ] && echo 1 || echo 0)"
+[ "$bridge_connected_seen_result" -eq 0 ] || result=1
+if [ "$bridge_connected_seen_result" -eq 0 ]; then
+  firmware_ready_seen=1
+fi
 echo "--- public status echo ---"
 status_output=""
 status_result=1
@@ -1476,7 +1552,10 @@ echo "STACKCHAN_BRIDGE_STATUS_ECHO_EXIT=$status_result"
 echo "STACKCHAN_BRIDGE_STATUS_ATTEMPTS=$status_attempt"
 [ "$status_result" -eq 0 ] || result=1
 echo "STACKCHAN_BRIDGE_STATUS_CONNECTED=$([ "$status_connected_result" -eq 0 ] && echo 1 || echo 0)"
-[ "$status_connected_result" -eq 0 ] || result=1
+echo "STACKCHAN_BRIDGE_STATUS_CONNECTED_VIA_OBSERVE=$([ "$bridge_connected_seen_result" -eq 0 ] && echo 1 || echo 0)"
+if [ "$status_connected_result" -ne 0 ] && [ "$bridge_connected_seen_result" -ne 0 ]; then
+  result=1
+fi
 if [ "$status_connected_result" -eq 0 ]; then
   firmware_ready_seen=1
 fi
@@ -1523,7 +1602,7 @@ if [ -n "{face_check}" ]; then
 fi
 if [ -n "{say_check}" ]; then
   echo "--- stackchanctl say ---"
-  say_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} say --voice {say_voice} {say_check_arg} --wait --json 2>&1)
+  say_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} say --voice {say_voice} {say_hint_args} {say_check_arg} --wait --json 2>&1)
   say_result=$?
   printf '%s\n' "$say_output"
   echo "STACKCHAN_BRIDGE_SAY_EXIT=$say_result"
@@ -1536,6 +1615,7 @@ if [ -n "{say_check}" ]; then
   say_voice_result=$?
   echo "STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=$([ "$say_voice_result" -eq 0 ] && echo 1 || echo 0)"
   [ "$say_voice_result" -eq 0 ] || result=1
+{say_hint_payload_checks}
   sleep 1
   say_events_output=$(python3 -m stackchanctl --backend bridge --timeout {args.timeout} events list --json 2>&1)
   say_events_result=$?

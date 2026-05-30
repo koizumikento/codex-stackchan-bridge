@@ -238,6 +238,10 @@ def main() -> int:
             require("bool first_chunk_present" in text, "PlayAudio missing first chunk presence")
             require("uint32 first_chunk_sequence" in text, "PlayAudio missing first chunk sequence")
             require("uint8[<=1280] first_chunk_pcm" in text, "PlayAudio first chunk bound drifted")
+        if action.name == "Say.action":
+            require("string<=32 face_hint" in text, "Say missing face hint")
+            require("string<=32 motion_hint" in text, "Say missing motion hint")
+            require("string<=32 after_face_hint" in text, "Say missing after-face hint")
 
     audio = (MSGS / "msg" / "AudioChunk.msg").read_text()
     require("uint8 PCM_S16LE=1" in audio, "AudioChunk PCM_S16LE constant drifted")

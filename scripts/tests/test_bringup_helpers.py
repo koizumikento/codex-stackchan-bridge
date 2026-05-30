@@ -36,6 +36,9 @@ def bridge_smoke_args(
         face_check="",
         say_check="はい",
         say_voice="default",
+        say_face="",
+        say_motion="",
+        say_after_face="",
         led_check=False,
         motion_check="",
         motion_disconnect_check="",
@@ -188,7 +191,11 @@ class MicroRosAgentContainerTests(unittest.TestCase):
 
         command = docker_run.call_args.args[1]
         self.assertIn("firmware_ready_seen=0", command)
+        self.assertIn("--- connected observe wait ---", command)
+        self.assertIn("STACKCHAN_BRIDGE_CONNECTED_OBSERVE_SEEN=", command)
+        self.assertIn('if [ "$bridge_connected_seen_result" -eq 0 ]; then', command)
         self.assertIn('if [ "$status_connected_result" -eq 0 ]; then', command)
+        self.assertIn("STACKCHAN_BRIDGE_STATUS_CONNECTED_VIA_OBSERVE=", command)
         self.assertIn('firmware_ready_seen=1', command)
         self.assertIn('STACKCHAN_BRIDGE_FIRMWARE_READY_SEEN=$firmware_ready_seen', command)
         self.assertIn('[ "$firmware_ready_seen" = "1" ] || result=1', command)
@@ -208,6 +215,24 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         self.assertIn("STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.03", command)
         self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-256", command)
         self.assertIn("STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS:-30.0", command)
+
+    def test_bridge_smoke_passes_say_expression_hints(self) -> None:
+        args = bridge_smoke_args()
+        args.say_face = "happy"
+        args.say_motion = "cheerful"
+        args.say_after_face = "happy"
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("say --voice default --face happy --motion cheerful --after-face happy", command)
+        self.assertIn('STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=', command)
+        self.assertIn('STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=', command)
+        self.assertIn('STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=', command)
 
     def test_sensor_sweep_walks_media_terminal_events_after_pre_command_cursor(self) -> None:
         with mock.patch.object(

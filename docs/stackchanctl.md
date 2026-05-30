@@ -222,6 +222,7 @@ consume them safely.
 ```bash
 stackchanctl say "テスト終わったよ"
 stackchanctl say --voice default "テスト終わったよ"
+stackchanctl say --face happy --motion cheerful --after-face happy "できたよ"
 stackchanctl face happy
 stackchanctl motion nod
 stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500
@@ -254,6 +255,8 @@ Examples:
 ```bash
 stackchanctl --device default observe
 stackchanctl --device desk say "テスト終わったよ"
+stackchanctl --device desk say --motion cheerful "できたよ"
+stackchanctl --device desk say --face happy --motion cheerful --after-face happy "できたよ"
 stackchanctl --device livingroom motion nod
 ```
 
@@ -266,8 +269,19 @@ Expected backend behavior:
 - Normalize text.
 - Send a speech request to the bridge facade.
 - Optionally select a bridge-owned voice profile with `--voice <profile>`.
-- Optionally choose a face or motion while speaking when that policy is
-  implemented.
+- Optionally choose a named face while speaking with `--face <expression>`.
+- Optionally choose a named motion while speaking with `--motion <preset>`.
+- Optionally choose the expression left after speaking with
+  `--after-face <expression>`.
+- The bridge starts face and motion hints after TTS synthesis/preload and just
+  before firmware audio playback, so short gestures can align with the spoken
+  line.
+- After playback completes, the bridge applies `--after-face` when provided. If
+  it is omitted, the bridge keeps a cute/restful expression instead of
+  unconditionally returning to `neutral`: `happy`, `thinking`, `sleepy`, and
+  `neutral` stay as-is, `surprised` settles to `happy`, and `error` settles to
+  `thinking`. If no `--face` is provided, the bridge leaves the existing face
+  unchanged.
 - With the bridge backend and TTS enabled, return after local synthesis and the
   firmware-owned audio playback action reach a terminal result.
 - With the mock backend, keep deterministic metadata-only behavior and do not
@@ -276,7 +290,8 @@ Expected backend behavior:
 The CLI/MCP command result must not print speech text, synthesized PCM,
 provider request payloads, raw provider speaker IDs, or provider credentials.
 The command metadata may include `text_length` and the selected
-`voice_profile`.
+`voice_profile`. When provided, the command metadata may also include
+`face_hint`, `motion_hint`, and `after_face`; it must not include speech text.
 
 Bridge TTS configuration belongs to `stackchan_bridge`, not CLI config. The CLI
 may pass a profile name, but it must not own provider endpoints, secrets, or
@@ -313,12 +328,16 @@ Expected examples:
 
 - `nod`
 - `shake`
+- `cheerful`
+- `idle`
 - `look-left`
 - `look-right`
 - `look-user`
-- `idle`
 
-The CLI should send intent, not raw servo angles. Low-level angle limits belong in firmware.
+The CLI sends only the motion name, intensity, duration, and command metadata.
+It does not send raw servo angles or waypoint data. Low-level trajectory
+selection, servo limits, calibration gating, and final safety validation belong
+in firmware. `idle` is an accepted no-op and must not actuate servos.
 
 Named motion remains the normal Codex-facing behavior surface. Explicit pose
 control is available only through constrained home-frame absolute-angle
@@ -334,9 +353,15 @@ Rules:
 
 - `pan_deg` and `tilt_deg` are degrees in `frame=home`.
 - `pan_deg` is yaw/head horizontal and accepts `-128.0..128.0`.
-- `tilt_deg` is pitch/head vertical and accepts `0.0..90.0`.
+- `tilt_deg` is pitch/head vertical and accepts `5.0..85.0` for explicit
+  pose. Use `motion home` for firmware-owned home/neutral behavior at the
+  vertical endpoint.
 - `speed` accepts `0..1000`; `0` means firmware default speed.
 - `duration_ms` accepts `0` or `100..2000`; `0` means firmware default.
+- Named motions are safe-first presets owned by firmware. The initial accepted
+  set is `nod`, `shake`, `cheerful`, `idle`, `look-left`, `look-right`, and
+  `look-user`; expressive tuning can change the firmware waypoint table without
+  changing the CLI or ROS IDL.
 - Out-of-range explicit pose values are rejected, not clamped.
 - `motion home` uses firmware-owned home behavior. It is not sent to firmware
   as an external `pose(0,0)` target.
@@ -413,6 +438,7 @@ Default output is compact and human-readable. With `--json`, the output uses thi
   "connected": true,
   "device_state": "idle",
   "face": "neutral",
+  "motion": "idle",
   "last_error": null
 }
 ```

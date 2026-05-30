@@ -114,6 +114,7 @@ Good `say` messages are short and local:
 
 ```bash
 stackchanctl --source codex_skill say "テスト終わったよ"
+stackchanctl --source codex_skill say --face happy --motion cheerful --after-face happy "できたよ"
 ```
 
 Avoid reading long summaries, secrets, file paths, command output, or private user content aloud. Do not use `say` for errors unless the user is likely waiting on the physical device.

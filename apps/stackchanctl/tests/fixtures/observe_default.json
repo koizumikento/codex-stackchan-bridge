@@ -48,6 +48,7 @@
   "device_id": "default",
   "device_state": "idle",
   "face": "neutral",
+  "motion": "idle",
   "firmware_version": "mock-firmware-0.1",
   "last_error": null,
   "metadata": {

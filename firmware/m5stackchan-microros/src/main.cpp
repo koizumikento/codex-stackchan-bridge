@@ -84,6 +84,10 @@
 #define STACKCHAN_SENSOR_INPUT_DIAGNOSTICS 0
 #endif
 
+#ifndef STACKCHAN_MOTION_DIAGNOSTICS
+#define STACKCHAN_MOTION_DIAGNOSTICS 0
+#endif
+
 #if STACKCHAN_SENSOR_INPUT_DIAGNOSTICS && !STACKCHAN_SERIAL_DIAGNOSTICS
 #error "Sensor input diagnostics require STACKCHAN_SERIAL_DIAGNOSTICS=1"
 #endif
@@ -245,6 +249,18 @@ constexpr unsigned long kBringupEventDelayMs = 500;
 constexpr unsigned long kBringupEventRetryMs = 1000;
 constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
+constexpr unsigned long kMotionFinalSettleMinMs = 250;
+constexpr unsigned long kMotionFinalSettleTimeoutMs = 1200;
+constexpr unsigned long kMotionSegmentTickIntervalMs = 25;
+constexpr uint16_t kMotionSegmentTickServoTimeMs = 55;
+constexpr uint16_t kShakeTrajectoryTickServoTimeMs = 160;
+constexpr unsigned long kShakeTrajectoryDurationMs = 3000;
+constexpr float kShakeTrajectoryCycles = 5.0f;
+constexpr float kShakeTrajectoryYawAmplitudeDeg = 86.0f;
+constexpr float kShakeTrajectoryYawTaperRatio = 0.12f;
+constexpr float kShakeTrajectoryPitchBaseDeg = 8.0f;
+constexpr float kShakeTrajectoryPitchAmplitudeDeg = 3.0f;
+constexpr float kMotionPi = 3.14159265358979323846f;
 constexpr unsigned long kAudioPlaybackNoChunkTimeoutMs = 6000;
 constexpr unsigned long kAudioPlaybackDrainTimeoutMs = 180;
 constexpr unsigned long kAudioPlaybackMaxSpeakerDrainMs = 1500;
@@ -287,7 +303,7 @@ constexpr int kYawDefaultZeroPos = 460;
 constexpr int kPitchDefaultZeroPos = 620;
 constexpr int kServoRawMin = 0;
 constexpr int kServoRawMax = 1000;
-constexpr int kServoTime = 50;
+constexpr int kServoTime = 140;
 constexpr int kServoSpeed = 0;
 constexpr int kServoUartBaud = 1000000;
 constexpr int kServoTxPin = 6;
@@ -316,18 +332,28 @@ constexpr float kLtr553PsFullScale = 2047.0f;
 constexpr float kLtr553AlsIntegrationFactor = 2.0f;
 enum class MotionSchedulerPhase {
   Idle,
-  MoveTarget,
-  HoldTarget,
-  MoveNeutral,
-  HoldNeutral,
+  ShakeTrajectory,
+  MoveWaypoint,
+  HoldWaypoint,
+  ReturnHome,
+  FinalSettle,
 };
 
 struct MotionSchedulerJob {
   bool active;
   MotionSchedulerPhase phase;
-  stackchan::ServoTarget target;
   stackchan::ServoTarget home;
-  uint32_t duration_ms;
+  stackchan::MotionWaypoint waypoints[stackchan::kMaxMotionWaypoints];
+  size_t waypoint_count;
+  size_t waypoint_index;
+  uint16_t servo_time_ms;
+  bool segment_initialized;
+  stackchan::ServoTarget segment_start;
+  stackchan::ServoTarget segment_end;
+  stackchan::MotionEasing segment_easing;
+  uint16_t segment_duration_ms;
+  unsigned long segment_started_ms;
+  unsigned long last_retarget_ms;
   unsigned long phase_started_ms;
   char name[16];
   char command_id[37];
@@ -349,7 +375,16 @@ MotionSchedulerJob motion_scheduler{
     false,
     MotionSchedulerPhase::Idle,
     stackchan::kNeutralTarget,
+    {},
+    0,
+    0,
+    stackchan::kDefaultNamedMotionServoTimeMs,
+    false,
     stackchan::kNeutralTarget,
+    stackchan::kNeutralTarget,
+    stackchan::MotionEasing::EaseInOutCubic,
+    stackchan::kDefaultNamedMotionServoTimeMs,
+    0,
     0,
     0,
     "",
@@ -359,6 +394,29 @@ bool microros_transport_configured = false;
 bool microros_entities_initialized = false;
 bool servo_position_read_available_cache = false;
 bool motion_status_publish_pending = false;
+struct MotionDiagnosticSummary {
+  bool active;
+  char name[16];
+  char command_id[stackchan::kEventCommandIdMaxLength + 1];
+  int home_x;
+  int home_y;
+  int plan_min_x;
+  int plan_max_x;
+  int plan_min_y;
+  int plan_max_y;
+  int target_min_x;
+  int target_max_x;
+  int target_min_y;
+  int target_max_y;
+  int raw_min_x;
+  int raw_max_x;
+  int raw_min_y;
+  int raw_max_y;
+  int time_min_ms;
+  int time_max_ms;
+  uint32_t write_count;
+};
+MotionDiagnosticSummary motion_diagnostic{};
 unsigned long last_servo_health_check_ms = 0;
 rcl_allocator_t microros_allocator;
 rclc_support_t microros_support;
@@ -582,7 +640,16 @@ void update_servo_health_cache(unsigned long now, bool force);
 void show_neutral_face();
 stackchan::Result validate_motion_servo_target(
     const stackchan::ServoTarget& target,
-    const char* label);
+    const char* label,
+    bool normal_operation = false);
+stackchan::ServoTarget apply_motion_offset(
+    const stackchan::ServoTarget& home,
+    const stackchan::ServoTarget& offset);
+void motion_diag_record_write(
+    const stackchan::ServoTarget& target,
+    int yaw_raw,
+    int pitch_raw,
+    int servo_time_ms);
 
 void copy_bounded(char* destination, size_t size, const char* source) {
   if (size == 0) {
@@ -1113,6 +1180,19 @@ bool read_servo_raw_positions(int* yaw_raw, int* pitch_raw) {
   }
   *yaw_raw = yaw;
   *pitch_raw = pitch;
+  return true;
+}
+
+bool servo_pair_moving(bool* moving) {
+  if (moving == nullptr || !servo_adapter_init_result.ok) {
+    return false;
+  }
+  const int yaw_moving = servo_bus.ReadMove(kYawServoId);
+  const int pitch_moving = servo_bus.ReadMove(kPitchServoId);
+  if (yaw_moving < 0 || pitch_moving < 0) {
+    return false;
+  }
+  *moving = yaw_moving != 0 || pitch_moving != 0;
   return true;
 }
 
@@ -1881,7 +1961,39 @@ stackchan::Result sample_ir_events(uint32_t now_ms) {
   return result;
 }
 
-stackchan::Result move_servo_pair_to(int target_x_deg, int target_y_deg) {
+stackchan::Result enable_servo_pair_torque() {
+  if (!servo_adapter_init_result.ok) {
+    return servo_adapter_init_result;
+  }
+  if (servo_bus.EnableTorque(kYawServoId, 1) != 1 ||
+      servo_bus.EnableTorque(kPitchServoId, 1) != 1) {
+    return stackchan::Result::rejected(
+        "MOTION_INTERRUPTED",
+        "servo torque enable failed",
+        true);
+  }
+  return stackchan::Result::accepted("servo torque enabled");
+}
+
+stackchan::Result disable_servo_pair_torque() {
+  if (!servo_adapter_init_result.ok) {
+    return servo_adapter_init_result;
+  }
+  if (servo_bus.EnableTorque(kYawServoId, 0) != 1 ||
+      servo_bus.EnableTorque(kPitchServoId, 0) != 1) {
+    return stackchan::Result::rejected(
+        "MOTION_INTERRUPTED",
+        "servo torque disable failed",
+        true);
+  }
+  return stackchan::Result::accepted("servo torque disabled");
+}
+
+stackchan::Result move_servo_pair_to(
+    int target_x_deg,
+    int target_y_deg,
+    int servo_time_ms = kServoTime,
+    bool ensure_torque = true) {
   if (!servo_adapter_init_result.ok) {
     return servo_adapter_init_result;
   }
@@ -1895,16 +2007,206 @@ stackchan::Result move_servo_pair_to(int target_x_deg, int target_y_deg) {
         true);
   }
 
-  if (servo_bus.EnableTorque(kYawServoId, 1) != 1 ||
-      servo_bus.EnableTorque(kPitchServoId, 1) != 1 ||
-      servo_bus.WritePos(kYawServoId, yaw_raw, kServoTime, kServoSpeed) != 1 ||
-      servo_bus.WritePos(kPitchServoId, pitch_raw, kServoTime, kServoSpeed) != 1) {
-    return stackchan::Result::rejected(
-        "MOTION_INTERRUPTED",
-        "servo write failed",
-        true);
+  if (ensure_torque) {
+    const stackchan::Result torque_result = enable_servo_pair_torque();
+    if (!torque_result.ok) {
+      return torque_result;
+    }
   }
+  motion_diag_record_write(
+      stackchan::ServoTarget{target_x_deg, target_y_deg},
+      yaw_raw,
+      pitch_raw,
+      servo_time_ms);
+
+  u8 servo_ids[] = {
+      static_cast<u8>(kYawServoId),
+      static_cast<u8>(kPitchServoId),
+  };
+  u16 positions[] = {
+      static_cast<u16>(yaw_raw),
+      static_cast<u16>(pitch_raw),
+  };
+  u16 times[] = {
+      static_cast<u16>(servo_time_ms),
+      static_cast<u16>(servo_time_ms),
+  };
+  u16 speeds[] = {
+      static_cast<u16>(kServoSpeed),
+      static_cast<u16>(kServoSpeed),
+  };
+  servo_bus.SyncWritePos(servo_ids, 2, positions, times, speeds);
   return stackchan::Result::accepted("servo move accepted");
+}
+
+void motion_diag_reset() {
+  motion_diagnostic = {};
+  motion_diagnostic.plan_min_x = 0;
+  motion_diagnostic.plan_max_x = 0;
+  motion_diagnostic.plan_min_y = 0;
+  motion_diagnostic.plan_max_y = 0;
+  motion_diagnostic.target_min_x = 0;
+  motion_diagnostic.target_max_x = 0;
+  motion_diagnostic.target_min_y = 0;
+  motion_diagnostic.target_max_y = 0;
+  motion_diagnostic.raw_min_x = 0;
+  motion_diagnostic.raw_max_x = 0;
+  motion_diagnostic.raw_min_y = 0;
+  motion_diagnostic.raw_max_y = 0;
+  motion_diagnostic.time_min_ms = 0;
+  motion_diagnostic.time_max_ms = 0;
+}
+
+void motion_diag_include_plan_target(const stackchan::ServoTarget& target) {
+  if (motion_diagnostic.plan_min_x > motion_diagnostic.plan_max_x) {
+    motion_diagnostic.plan_min_x = target.x;
+    motion_diagnostic.plan_max_x = target.x;
+    motion_diagnostic.plan_min_y = target.y;
+    motion_diagnostic.plan_max_y = target.y;
+    return;
+  }
+  if (target.x < motion_diagnostic.plan_min_x) motion_diagnostic.plan_min_x = target.x;
+  if (target.x > motion_diagnostic.plan_max_x) motion_diagnostic.plan_max_x = target.x;
+  if (target.y < motion_diagnostic.plan_min_y) motion_diagnostic.plan_min_y = target.y;
+  if (target.y > motion_diagnostic.plan_max_y) motion_diagnostic.plan_max_y = target.y;
+}
+
+void motion_diag_publish_plan() {
+#if STACKCHAN_MOTION_DIAGNOSTICS
+  if (!motion_diagnostic.active) {
+    return;
+  }
+  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"motion\":\"%s\",\"home_x\":%d,\"home_y\":%d,"
+      "\"plan_min_x\":%d,\"plan_max_x\":%d,\"plan_min_y\":%d,\"plan_max_y\":%d,"
+      "\"duration_ms\":%lu,\"amp_deg\":%d}",
+      motion_diagnostic.name,
+      motion_diagnostic.home_x,
+      motion_diagnostic.home_y,
+      motion_diagnostic.plan_min_x,
+      motion_diagnostic.plan_max_x,
+      motion_diagnostic.plan_min_y,
+      motion_diagnostic.plan_max_y,
+      static_cast<unsigned long>(kShakeTrajectoryDurationMs),
+      static_cast<int>(kShakeTrajectoryYawAmplitudeDeg));
+  event_publisher.publish_name(
+      "motion_diag_plan",
+      static_cast<uint32_t>(millis()),
+      motion_diagnostic.command_id,
+      payload);
+#endif
+}
+
+void motion_diag_start(
+    const char* name,
+    const char* command_id,
+    const stackchan::ServoTarget& home,
+    const stackchan::MotionPlan& plan) {
+  motion_diag_reset();
+#if STACKCHAN_MOTION_DIAGNOSTICS
+  if (strcmp(name, "shake") != 0) {
+    return;
+  }
+  motion_diagnostic.active = true;
+  copy_bounded(motion_diagnostic.name, sizeof(motion_diagnostic.name), name);
+  copy_bounded(
+      motion_diagnostic.command_id,
+      sizeof(motion_diagnostic.command_id),
+      command_id);
+  motion_diagnostic.home_x = home.x;
+  motion_diagnostic.home_y = home.y;
+  motion_diagnostic.plan_min_x = 1;
+  motion_diagnostic.plan_max_x = 0;
+  for (size_t index = 0; index < plan.waypoint_count; ++index) {
+    motion_diag_include_plan_target(apply_motion_offset(home, plan.waypoints[index].offset));
+  }
+  motion_diag_publish_plan();
+#else
+  (void)name;
+  (void)command_id;
+  (void)home;
+  (void)plan;
+#endif
+}
+
+void motion_diag_record_write(
+    const stackchan::ServoTarget& target,
+    int yaw_raw,
+    int pitch_raw,
+    int servo_time_ms) {
+#if STACKCHAN_MOTION_DIAGNOSTICS
+  if (!motion_diagnostic.active) {
+    return;
+  }
+  if (motion_diagnostic.write_count == 0) {
+    motion_diagnostic.target_min_x = target.x;
+    motion_diagnostic.target_max_x = target.x;
+    motion_diagnostic.target_min_y = target.y;
+    motion_diagnostic.target_max_y = target.y;
+    motion_diagnostic.raw_min_x = yaw_raw;
+    motion_diagnostic.raw_max_x = yaw_raw;
+    motion_diagnostic.raw_min_y = pitch_raw;
+    motion_diagnostic.raw_max_y = pitch_raw;
+    motion_diagnostic.time_min_ms = servo_time_ms;
+    motion_diagnostic.time_max_ms = servo_time_ms;
+  } else {
+    if (target.x < motion_diagnostic.target_min_x) motion_diagnostic.target_min_x = target.x;
+    if (target.x > motion_diagnostic.target_max_x) motion_diagnostic.target_max_x = target.x;
+    if (target.y < motion_diagnostic.target_min_y) motion_diagnostic.target_min_y = target.y;
+    if (target.y > motion_diagnostic.target_max_y) motion_diagnostic.target_max_y = target.y;
+    if (yaw_raw < motion_diagnostic.raw_min_x) motion_diagnostic.raw_min_x = yaw_raw;
+    if (yaw_raw > motion_diagnostic.raw_max_x) motion_diagnostic.raw_max_x = yaw_raw;
+    if (pitch_raw < motion_diagnostic.raw_min_y) motion_diagnostic.raw_min_y = pitch_raw;
+    if (pitch_raw > motion_diagnostic.raw_max_y) motion_diagnostic.raw_max_y = pitch_raw;
+    if (servo_time_ms < motion_diagnostic.time_min_ms) {
+      motion_diagnostic.time_min_ms = servo_time_ms;
+    }
+    if (servo_time_ms > motion_diagnostic.time_max_ms) {
+      motion_diagnostic.time_max_ms = servo_time_ms;
+    }
+  }
+  motion_diagnostic.write_count += 1;
+#else
+  (void)target;
+  (void)yaw_raw;
+  (void)pitch_raw;
+  (void)servo_time_ms;
+#endif
+}
+
+void motion_diag_publish_writes() {
+#if STACKCHAN_MOTION_DIAGNOSTICS
+  if (!motion_diagnostic.active) {
+    return;
+  }
+  char payload[stackchan::kEventPayloadJsonMaxLength + 1];
+  snprintf(
+      payload,
+      sizeof(payload),
+      "{\"writes\":%lu,\"target_min_x\":%d,\"target_max_x\":%d,"
+      "\"target_min_y\":%d,\"target_max_y\":%d,"
+      "\"raw_min_x\":%d,\"raw_max_x\":%d,\"raw_min_y\":%d,\"raw_max_y\":%d,"
+      "\"time_min_ms\":%d,\"time_max_ms\":%d}",
+      static_cast<unsigned long>(motion_diagnostic.write_count),
+      motion_diagnostic.target_min_x,
+      motion_diagnostic.target_max_x,
+      motion_diagnostic.target_min_y,
+      motion_diagnostic.target_max_y,
+      motion_diagnostic.raw_min_x,
+      motion_diagnostic.raw_max_x,
+      motion_diagnostic.raw_min_y,
+      motion_diagnostic.raw_max_y,
+      motion_diagnostic.time_min_ms,
+      motion_diagnostic.time_max_ms);
+  event_publisher.publish_name(
+      "motion_diag_writes",
+      static_cast<uint32_t>(millis()),
+      motion_diagnostic.command_id,
+      payload);
+#endif
 }
 
 stackchan::ServoTarget calibrated_home_target() {
@@ -1924,24 +2226,247 @@ stackchan::ServoTarget apply_motion_offset(
   };
 }
 
-stackchan::Result move_servo_pair_to(const stackchan::ServoTarget& target) {
-  return move_servo_pair_to(target.x, target.y);
+stackchan::Result move_servo_pair_to(
+    const stackchan::ServoTarget& target,
+    int servo_time_ms = kServoTime,
+    bool ensure_torque = true) {
+  return move_servo_pair_to(target.x, target.y, servo_time_ms, ensure_torque);
 }
 
-uint32_t motion_half_duration(uint32_t duration_ms) {
-  return duration_ms / 2;
+uint32_t ease_out_cubic_progress(uint32_t t) {
+  constexpr uint32_t kScale = 1000;
+  const uint32_t inverse = kScale - t;
+  return kScale - (inverse * inverse * inverse) / (kScale * kScale);
+}
+
+uint32_t ease_in_out_cubic_progress(uint32_t t) {
+  constexpr uint32_t kScale = 1000;
+  if (t < kScale / 2) {
+    return (4 * t * t * t) / (kScale * kScale);
+  }
+  const uint32_t inverse = kScale - t;
+  return kScale - (4 * inverse * inverse * inverse) / (kScale * kScale);
+}
+
+uint32_t ease_out_sine_progress(uint32_t t) {
+  constexpr uint32_t kScale = 1000;
+  return (t * (2 * kScale - t)) / kScale;
+}
+
+uint32_t eased_motion_progress(
+    uint32_t elapsed_ms,
+    uint32_t duration_ms,
+    stackchan::MotionEasing easing) {
+  constexpr uint32_t kScale = 1000;
+  if (duration_ms == 0 || elapsed_ms >= duration_ms) {
+    return kScale;
+  }
+  const uint32_t t = (elapsed_ms * kScale) / duration_ms;
+  switch (easing) {
+    case stackchan::MotionEasing::Linear:
+      return t;
+    case stackchan::MotionEasing::EaseOutSine:
+      return ease_out_sine_progress(t);
+    case stackchan::MotionEasing::EaseOutBackLike:
+      return ease_out_cubic_progress(t);
+    case stackchan::MotionEasing::EaseInOutCubic:
+    default:
+      return ease_in_out_cubic_progress(t);
+  }
+}
+
+int interpolate_motion_axis(int start, int end, uint32_t progress) {
+  constexpr int32_t kScale = 1000;
+  const int32_t delta = end - start;
+  const int32_t weighted = delta * static_cast<int32_t>(progress);
+  const int32_t rounded = weighted >= 0
+                              ? (weighted + kScale / 2) / kScale
+                              : (weighted - kScale / 2) / kScale;
+  return start + rounded;
+}
+
+stackchan::ServoTarget interpolate_motion_target(
+    const stackchan::ServoTarget& start,
+    const stackchan::ServoTarget& end,
+    uint32_t progress) {
+  return {
+      interpolate_motion_axis(start.x, end.x, progress),
+      interpolate_motion_axis(start.y, end.y, progress),
+  };
+}
+
+int rounded_float_to_int(float value) {
+  return static_cast<int>(value >= 0.0f ? value + 0.5f : value - 0.5f);
+}
+
+float sinusoidal_motion_wave(float phase) {
+  return sinf(phase * 2.0f * kMotionPi);
+}
+
+stackchan::ServoTarget continuous_shake_target(
+    const stackchan::ServoTarget& home,
+    uint32_t elapsed_ms) {
+  float normalized =
+      static_cast<float>(elapsed_ms) / static_cast<float>(kShakeTrajectoryDurationMs);
+  if (normalized < 0.0f) {
+    normalized = 0.0f;
+  }
+  if (normalized > 1.0f) {
+    normalized = 1.0f;
+  }
+
+  const float wave = sinusoidal_motion_wave(normalized * kShakeTrajectoryCycles);
+  const float taper = 1.0f - kShakeTrajectoryYawTaperRatio * normalized;
+  const float side_emphasis = wave * wave;
+  const int x_offset = rounded_float_to_int(kShakeTrajectoryYawAmplitudeDeg * taper * wave);
+  const int y_offset =
+      rounded_float_to_int(kShakeTrajectoryPitchBaseDeg +
+                           kShakeTrajectoryPitchAmplitudeDeg * side_emphasis);
+  return {
+      home.x + x_offset,
+      home.y + y_offset,
+  };
+}
+
+stackchan::ServoTarget motion_segment_start_target(size_t waypoint_index) {
+  if (waypoint_index == 0 || waypoint_index > motion_scheduler.waypoint_count) {
+    return motion_scheduler.home;
+  }
+  return apply_motion_offset(
+      motion_scheduler.home,
+      motion_scheduler.waypoints[waypoint_index - 1].offset);
+}
+
+stackchan::ServoTarget motion_return_home_start_target() {
+  if (strcmp(motion_scheduler.name, "shake") == 0) {
+    return continuous_shake_target(motion_scheduler.home, kShakeTrajectoryDurationMs);
+  }
+  return motion_segment_start_target(motion_scheduler.waypoint_count);
+}
+
+uint32_t motion_axis_distance(int start, int end) {
+  return start > end
+             ? static_cast<uint32_t>(start - end)
+             : static_cast<uint32_t>(end - start);
+}
+
+uint16_t clamp_motion_segment_duration(uint32_t duration_ms) {
+  constexpr uint16_t kCheerfulMotionDistanceDurationMaxMs = 1200;
+  if (duration_ms > kCheerfulMotionDistanceDurationMaxMs) {
+    return kCheerfulMotionDistanceDurationMaxMs;
+  }
+  return static_cast<uint16_t>(duration_ms);
+}
+
+uint16_t cheerful_distance_adjusted_segment_duration(
+    const stackchan::ServoTarget& start,
+    const stackchan::ServoTarget& end,
+    uint16_t style_floor_ms) {
+  constexpr uint16_t kCheerfulMotionDistanceBaseMs = 190;
+  constexpr uint16_t kCheerfulMotionMsPerDegree = 7;
+  const uint32_t dx = motion_axis_distance(start.x, end.x);
+  const uint32_t dy = motion_axis_distance(start.y, end.y);
+  const uint32_t max_axis_distance = dx > dy ? dx : dy;
+  const uint32_t distance_duration_ms =
+      kCheerfulMotionDistanceBaseMs + max_axis_distance * kCheerfulMotionMsPerDegree;
+  const uint32_t adjusted_duration_ms =
+      distance_duration_ms > style_floor_ms ? distance_duration_ms : style_floor_ms;
+  return clamp_motion_segment_duration(adjusted_duration_ms);
+}
+
+void start_motion_segment(
+    const stackchan::ServoTarget& start,
+    const stackchan::ServoTarget& end,
+    stackchan::MotionEasing easing,
+    uint16_t duration_ms,
+    unsigned long now) {
+  motion_scheduler.segment_initialized = true;
+  motion_scheduler.segment_start = start;
+  motion_scheduler.segment_end = end;
+  motion_scheduler.segment_easing = easing;
+  motion_scheduler.segment_duration_ms =
+      strcmp(motion_scheduler.name, "cheerful") == 0
+          ? cheerful_distance_adjusted_segment_duration(start, end, duration_ms)
+          : duration_ms;
+  motion_scheduler.segment_started_ms = now;
+  motion_scheduler.last_retarget_ms = 0;
+}
+
+stackchan::Result advance_motion_segment(unsigned long now, bool* completed) {
+  if (completed == nullptr) {
+    return stackchan::Result::rejected("MOTION_INTERRUPTED", "motion segment state invalid", true);
+  }
+  *completed = false;
+  if (!motion_scheduler.segment_initialized) {
+    return stackchan::Result::rejected("MOTION_INTERRUPTED", "motion segment not initialized", true);
+  }
+
+  uint32_t elapsed_ms = static_cast<uint32_t>(now - motion_scheduler.segment_started_ms);
+  if (elapsed_ms >= motion_scheduler.segment_duration_ms) {
+    *completed = true;
+    if (strcmp(motion_scheduler.name, "shake") == 0 &&
+        motion_scheduler.phase == MotionSchedulerPhase::MoveWaypoint) {
+      return stackchan::Result::accepted("motion segment completed");
+    }
+    return move_servo_pair_to(
+        motion_scheduler.segment_end,
+        kMotionSegmentTickServoTimeMs,
+        false);
+  }
+
+  if (motion_scheduler.last_retarget_ms != 0 &&
+      now - motion_scheduler.last_retarget_ms < kMotionSegmentTickIntervalMs) {
+    return stackchan::Result::accepted("motion segment waiting");
+  }
+
+  if (motion_scheduler.last_retarget_ms == 0 &&
+      elapsed_ms < kMotionSegmentTickIntervalMs) {
+    elapsed_ms = kMotionSegmentTickIntervalMs;
+  }
+  const uint32_t progress =
+      eased_motion_progress(
+          elapsed_ms,
+          motion_scheduler.segment_duration_ms,
+          motion_scheduler.segment_easing);
+  const stackchan::ServoTarget target =
+      interpolate_motion_target(
+          motion_scheduler.segment_start,
+          motion_scheduler.segment_end,
+          progress);
+  const stackchan::Result result =
+      move_servo_pair_to(target, kMotionSegmentTickServoTimeMs, false);
+  if (result.ok) {
+    motion_scheduler.last_retarget_ms = now;
+  }
+  return result;
 }
 
 void reset_motion_scheduler() {
   motion_scheduler.active = false;
   motion_status_publish_pending = false;
   motion_scheduler.phase = MotionSchedulerPhase::Idle;
-  motion_scheduler.target = stackchan::kNeutralTarget;
   motion_scheduler.home = stackchan::kNeutralTarget;
-  motion_scheduler.duration_ms = 0;
+  for (size_t index = 0; index < stackchan::kMaxMotionWaypoints; ++index) {
+    motion_scheduler.waypoints[index] = {
+        stackchan::kNeutralTarget,
+        0,
+        stackchan::kDefaultNamedMotionServoTimeMs,
+        stackchan::MotionEasing::EaseInOutCubic};
+  }
+  motion_scheduler.waypoint_count = 0;
+  motion_scheduler.waypoint_index = 0;
+  motion_scheduler.servo_time_ms = stackchan::kDefaultNamedMotionServoTimeMs;
+  motion_scheduler.segment_initialized = false;
+  motion_scheduler.segment_start = stackchan::kNeutralTarget;
+  motion_scheduler.segment_end = stackchan::kNeutralTarget;
+  motion_scheduler.segment_easing = stackchan::MotionEasing::EaseInOutCubic;
+  motion_scheduler.segment_duration_ms = stackchan::kDefaultNamedMotionServoTimeMs;
+  motion_scheduler.segment_started_ms = 0;
+  motion_scheduler.last_retarget_ms = 0;
   motion_scheduler.phase_started_ms = 0;
   copy_bounded(motion_scheduler.name, sizeof(motion_scheduler.name), "");
   copy_bounded(motion_scheduler.command_id, sizeof(motion_scheduler.command_id), "");
+  motion_diag_reset();
 }
 
 stackchan::Result try_motion_neutral_recovery() {
@@ -1955,11 +2480,19 @@ stackchan::Result try_motion_neutral_recovery() {
 }
 
 void finish_motion_scheduler(const stackchan::Result& result) {
-  last_error = result;
+  stackchan::Result final_result = result;
+  if (result.ok) {
+    const stackchan::Result torque_result = disable_servo_pair_torque();
+    if (!torque_result.ok) {
+      final_result = torque_result;
+    }
+  }
+  last_error = final_result;
   copy_bounded(current_motion, sizeof(current_motion), "idle");
   if (state_machine.state() == stackchan::RuntimeState::Acting) {
     state_machine.command_finished();
   }
+  motion_diag_publish_writes();
   reset_motion_scheduler();
   publish_status_heartbeat();
 }
@@ -1976,6 +2509,7 @@ void fail_motion_scheduler(const stackchan::Result& result) {
     }
   }
   copy_bounded(current_motion, sizeof(current_motion), "idle");
+  motion_diag_publish_writes();
   reset_motion_scheduler();
   publish_status_heartbeat();
 }
@@ -1992,25 +2526,53 @@ stackchan::Result enqueue_motion_scheduler(
         true);
   }
 
+  if (plan.waypoint_count == 0) {
+    copy_bounded(current_motion, sizeof(current_motion), "idle");
+    last_error = stackchan::Result::accepted("motion idle accepted");
+    publish_status_heartbeat();
+    return stackchan::Result::accepted("motion accepted");
+  }
+
   const stackchan::ServoTarget home = calibrated_home_target();
-  const stackchan::ServoTarget target = apply_motion_offset(home, plan.target);
   stackchan::Result target_result = validate_motion_servo_target(home, "home");
   if (!target_result.ok) {
     return target_result;
   }
-  target_result = validate_motion_servo_target(target, "motion");
-  if (!target_result.ok) {
-    return target_result;
+
+  for (size_t index = 0; index < plan.waypoint_count; ++index) {
+    const stackchan::ServoTarget target = apply_motion_offset(home, plan.waypoints[index].offset);
+    target_result = validate_motion_servo_target(target, "motion", true);
+    if (!target_result.ok) {
+      return target_result;
+    }
+  }
+
+  const stackchan::Result torque_result = enable_servo_pair_torque();
+  if (!torque_result.ok) {
+    return torque_result;
   }
 
   motion_scheduler.active = true;
-  motion_scheduler.phase = MotionSchedulerPhase::MoveTarget;
+  motion_scheduler.phase =
+      strcmp(name, "shake") == 0 ? MotionSchedulerPhase::ShakeTrajectory
+                                 : MotionSchedulerPhase::MoveWaypoint;
   motion_scheduler.home = home;
-  motion_scheduler.target = target;
-  motion_scheduler.duration_ms = plan.duration_ms;
+  for (size_t index = 0; index < stackchan::kMaxMotionWaypoints; ++index) {
+    motion_scheduler.waypoints[index] = index < plan.waypoint_count
+                                            ? plan.waypoints[index]
+                                            : stackchan::MotionWaypoint{
+                                                  stackchan::kNeutralTarget,
+                                                  0,
+                                                  stackchan::kDefaultNamedMotionServoTimeMs,
+                                                  stackchan::MotionEasing::EaseInOutCubic};
+  }
+  motion_scheduler.waypoint_count = plan.waypoint_count;
+  motion_scheduler.waypoint_index = 0;
+  motion_scheduler.servo_time_ms = plan.servo_time_ms;
   motion_scheduler.phase_started_ms = now;
   copy_bounded(motion_scheduler.name, sizeof(motion_scheduler.name), name);
   copy_bounded(motion_scheduler.command_id, sizeof(motion_scheduler.command_id), command_id);
+  motion_diag_start(name, command_id, home, plan);
   state_machine.command_started();
   copy_bounded(current_motion, sizeof(current_motion), motion_scheduler.name);
   motion_status_publish_pending = true;
@@ -2037,38 +2599,139 @@ void step_motion_scheduler(unsigned long now) {
     return;
   }
 
-  if (motion_scheduler.phase == MotionSchedulerPhase::MoveTarget) {
-    const stackchan::Result result = move_servo_pair_to(motion_scheduler.target);
+  if (motion_scheduler.phase == MotionSchedulerPhase::FinalSettle) {
+    const unsigned long elapsed_ms = now - motion_scheduler.phase_started_ms;
+    if (elapsed_ms < kMotionFinalSettleMinMs) {
+      return;
+    }
+    bool moving = true;
+    if (servo_pair_moving(&moving) && !moving) {
+      finish_motion_scheduler(stackchan::Result::accepted("motion completed"));
+      return;
+    }
+    if (elapsed_ms >= kMotionFinalSettleTimeoutMs) {
+      finish_motion_scheduler(stackchan::Result::accepted("motion completed"));
+    }
+    return;
+  }
+
+  if (motion_scheduler.phase == MotionSchedulerPhase::ShakeTrajectory) {
+    const unsigned long elapsed_ms = now - motion_scheduler.phase_started_ms;
+    if (elapsed_ms >= kShakeTrajectoryDurationMs) {
+      motion_scheduler.phase = MotionSchedulerPhase::ReturnHome;
+      motion_scheduler.phase_started_ms = now;
+      motion_scheduler.segment_initialized = false;
+      step_motion_scheduler(now);
+      return;
+    }
+    if (motion_scheduler.last_retarget_ms != 0 &&
+        now - motion_scheduler.last_retarget_ms < kMotionSegmentTickIntervalMs) {
+      return;
+    }
+    const uint32_t target_elapsed_ms =
+        elapsed_ms < kMotionSegmentTickIntervalMs
+            ? kMotionSegmentTickIntervalMs
+            : static_cast<uint32_t>(elapsed_ms);
+    const stackchan::ServoTarget target =
+        continuous_shake_target(motion_scheduler.home, target_elapsed_ms);
+    const stackchan::Result result =
+        move_servo_pair_to(target, kShakeTrajectoryTickServoTimeMs, false);
     if (!result.ok) {
       fail_motion_scheduler(result);
       return;
     }
-    motion_scheduler.phase = MotionSchedulerPhase::HoldTarget;
-    motion_scheduler.phase_started_ms = now;
+    motion_scheduler.last_retarget_ms = now;
     return;
   }
 
-  if (motion_scheduler.phase == MotionSchedulerPhase::HoldTarget) {
-    if (now - motion_scheduler.phase_started_ms < motion_half_duration(motion_scheduler.duration_ms)) {
-      return;
-    }
-    motion_scheduler.phase = MotionSchedulerPhase::MoveNeutral;
+  if (motion_scheduler.phase == MotionSchedulerPhase::MoveWaypoint &&
+      motion_scheduler.waypoint_index >= motion_scheduler.waypoint_count) {
+    motion_scheduler.phase = MotionSchedulerPhase::ReturnHome;
+    motion_scheduler.phase_started_ms = now;
+    motion_scheduler.segment_initialized = false;
   }
 
-  if (motion_scheduler.phase == MotionSchedulerPhase::MoveNeutral) {
-    const stackchan::Result result = move_servo_pair_to(motion_scheduler.home);
+  if (motion_scheduler.phase == MotionSchedulerPhase::ReturnHome) {
+    if (!motion_scheduler.segment_initialized) {
+      start_motion_segment(
+          motion_return_home_start_target(),
+          motion_scheduler.home,
+          stackchan::MotionEasing::EaseInOutCubic,
+          motion_scheduler.servo_time_ms,
+          now);
+    }
+    bool completed = false;
+    const stackchan::Result result = advance_motion_segment(now, &completed);
     if (!result.ok) {
       fail_motion_scheduler(result);
       return;
     }
-    motion_scheduler.phase = MotionSchedulerPhase::HoldNeutral;
+    if (!completed) {
+      return;
+    }
+    motion_scheduler.segment_initialized = false;
+    motion_scheduler.phase = MotionSchedulerPhase::FinalSettle;
     motion_scheduler.phase_started_ms = now;
     return;
   }
 
-  if (motion_scheduler.phase == MotionSchedulerPhase::HoldNeutral &&
-      now - motion_scheduler.phase_started_ms >= motion_half_duration(motion_scheduler.duration_ms)) {
-    finish_motion_scheduler(stackchan::Result::accepted("motion completed"));
+  if (motion_scheduler.phase == MotionSchedulerPhase::MoveWaypoint) {
+    const stackchan::MotionWaypoint& waypoint =
+        motion_scheduler.waypoints[motion_scheduler.waypoint_index];
+    const stackchan::ServoTarget target = apply_motion_offset(motion_scheduler.home, waypoint.offset);
+    const uint16_t servo_time_ms =
+        waypoint.servo_time_ms == 0 ? motion_scheduler.servo_time_ms : waypoint.servo_time_ms;
+    if (!motion_scheduler.segment_initialized) {
+      start_motion_segment(
+          motion_segment_start_target(motion_scheduler.waypoint_index),
+          target,
+          waypoint.easing,
+          servo_time_ms,
+          now);
+    }
+    bool completed = false;
+    const stackchan::Result result = advance_motion_segment(now, &completed);
+    if (!result.ok) {
+      fail_motion_scheduler(result);
+      return;
+    }
+    if (!completed) {
+      return;
+    }
+    motion_scheduler.segment_initialized = false;
+    if (waypoint.hold_ms == 0) {
+      motion_scheduler.waypoint_index += 1;
+      if (motion_scheduler.waypoint_index >= motion_scheduler.waypoint_count) {
+        motion_scheduler.phase = MotionSchedulerPhase::ReturnHome;
+      } else {
+        motion_scheduler.phase = MotionSchedulerPhase::MoveWaypoint;
+      }
+      motion_scheduler.phase_started_ms = now;
+      step_motion_scheduler(now);
+      return;
+    }
+    motion_scheduler.phase = MotionSchedulerPhase::HoldWaypoint;
+    motion_scheduler.phase_started_ms = now;
+    return;
+  }
+
+  if (motion_scheduler.phase == MotionSchedulerPhase::HoldWaypoint) {
+    const stackchan::MotionWaypoint& waypoint =
+        motion_scheduler.waypoints[motion_scheduler.waypoint_index];
+    if (now - motion_scheduler.phase_started_ms < waypoint.hold_ms) {
+      return;
+    }
+    motion_scheduler.waypoint_index += 1;
+    if (motion_scheduler.waypoint_index >= motion_scheduler.waypoint_count) {
+      motion_scheduler.phase = MotionSchedulerPhase::ReturnHome;
+      motion_scheduler.phase_started_ms = now;
+      motion_scheduler.segment_initialized = false;
+      step_motion_scheduler(now);
+      return;
+    }
+    motion_scheduler.phase = MotionSchedulerPhase::MoveWaypoint;
+    motion_scheduler.segment_initialized = false;
+    step_motion_scheduler(now);
   }
 }
 
@@ -2236,16 +2899,24 @@ bool servo_target_within_limits(
 
 stackchan::Result validate_motion_servo_target(
     const stackchan::ServoTarget& target,
-    const char* label) {
-  if (servo_target_within_limits(target)) {
+    const char* label,
+    bool normal_operation) {
+  const bool hard_limits_ok = servo_target_within_limits(target);
+  const bool normal_limits_ok =
+      !normal_operation ||
+      target.y == stackchan::kNeutralTarget.y ||
+      (target.y >= stackchan::kNormalServoMinY &&
+       target.y <= stackchan::kNormalServoMaxY);
+  if (hard_limits_ok && normal_limits_ok) {
     return stackchan::Result::accepted("servo target accepted");
   }
   char message[96] = "";
   snprintf(
       message,
       sizeof(message),
-      "%s servo target exceeds firmware degree limits",
-      label == nullptr ? "motion" : label);
+      "%s servo target exceeds firmware %s limits",
+      label == nullptr ? "motion" : label,
+      hard_limits_ok ? "normal-operation" : "degree");
   return stackchan::Result::rejected("SERVO_LIMIT_EXCEEDED", message, true);
 }
 
@@ -7596,7 +8267,7 @@ stackchan::Result handle_head_pose_command(
 
   stackchan::Result result = validate_motion_servo_target(home_target, "home");
   if (result.ok) {
-    result = validate_motion_servo_target(target, "head pose");
+    result = validate_motion_servo_target(target, "head pose", true);
   }
   if (result.ok) {
     result = move_servo_pair_to(target);
@@ -7726,9 +8397,6 @@ stackchan::Result handle_motion_command(
   copy_bounded(last_command_id, sizeof(last_command_id), meta.command_id);
   last_error = plan.result;
   if (!plan.result.ok) {
-    if (is_servo_safety_fault(plan.result)) {
-      state_machine.fault();
-    }
     copy_bounded(current_motion, sizeof(current_motion), "idle");
     return plan.result;
   }
@@ -7737,9 +8405,6 @@ stackchan::Result handle_motion_command(
       enqueue_motion_scheduler(plan, name, meta.command_id, millis());
   last_error = schedule_result;
   if (!schedule_result.ok) {
-    if (is_servo_safety_fault(schedule_result)) {
-      state_machine.fault();
-    }
     copy_bounded(current_motion, sizeof(current_motion), "idle");
   }
   return schedule_result;
@@ -8081,7 +8746,9 @@ void loop() {
 #endif
   M5.update();
   step_motion_scheduler(now);
-  update_servo_health_cache(now);
+  if (!motion_scheduler.active) {
+    update_servo_health_cache(now);
+  }
 
   if (!microros_connected && now - last_agent_attempt_ms >= 1000) {
     update_agent_connection(try_connect_microros_agent());
@@ -8102,6 +8769,8 @@ void loop() {
   poll_capture_camera_action_server();
   queue_bringup_event_if_ready(now);
   drain_device_events();
-  publish_runtime_telemetry(static_cast<uint32_t>(now));
-  delay(play_audio_goal_active ? 1 : 10);
+  if (!motion_scheduler.active) {
+    publish_runtime_telemetry(static_cast<uint32_t>(now));
+  }
+  delay(play_audio_goal_active || motion_scheduler.active ? 1 : 10);
 }

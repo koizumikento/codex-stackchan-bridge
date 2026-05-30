@@ -338,6 +338,9 @@ class BridgeClient(Protocol):
         meta: CommandMeta,
         text: str,
         voice: str,
+        face_hint: str,
+        motion_hint: str,
+        after_face: str,
         *,
         wait: bool,
         timeout: float,
@@ -504,6 +507,9 @@ class BridgeBackend:
                 request.meta,
                 str(request.args["text"]),
                 str(request.args.get("voice", "")),
+                str(request.args.get("face_hint", "")),
+                str(request.args.get("motion_hint", "")),
+                str(request.args.get("after_face", "")),
                 wait=request.wait,
                 timeout=request.timeout,
             )
@@ -663,6 +669,7 @@ class RclpyBridgeClient:
             connected=bool(response.connected),
             device_state=response.state,
             face=response.face,
+            motion=getattr(response, "motion", "idle"),
             last_error=_error_from_ros(response.last_error),
             firmware_version=getattr(response, "firmware_version", ""),
             capabilities=tuple(
@@ -786,6 +793,9 @@ class RclpyBridgeClient:
         meta: CommandMeta,
         text: str,
         voice: str,
+        face_hint: str,
+        motion_hint: str,
+        after_face: str,
         *,
         wait: bool,
         timeout: float,
@@ -794,8 +804,9 @@ class RclpyBridgeClient:
         _copy_meta(goal.meta, meta)
         goal.text = text
         goal.voice = voice
-        goal.face_hint = ""
-        goal.motion_hint = ""
+        goal.face_hint = face_hint
+        goal.motion_hint = motion_hint
+        goal.after_face_hint = after_face
         return self._send_action_goal(
             self._say_type,
             f"/stackchan/{meta.device_id}/cmd/say",
@@ -1660,6 +1671,15 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
         voice = str(request.args.get("voice", "")).strip()
         if voice:
             payload["voice_profile"] = voice
+        face_hint = str(request.args.get("face_hint", "")).strip()
+        if face_hint:
+            payload["face_hint"] = face_hint
+        motion_hint = str(request.args.get("motion_hint", "")).strip()
+        if motion_hint:
+            payload["motion_hint"] = motion_hint
+        after_face = str(request.args.get("after_face", "")).strip()
+        if after_face:
+            payload["after_face"] = after_face
         return payload
     if request.command_type is CommandType.AUDIO_PLAY:
         return {

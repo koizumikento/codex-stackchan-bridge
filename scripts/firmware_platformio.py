@@ -298,6 +298,15 @@ def add_microros_diagnostic_arguments(parser: argparse.ArgumentParser) -> None:
             "Agent to the same COM port while this profile is running."
         ),
     )
+    profile.add_argument(
+        "--motion-diagnostics",
+        action="store_true",
+        help=(
+            "Build a diagnostic firmware that emits bounded motion target/raw "
+            "summaries as device events. This is safe to use with the "
+            "micro-ROS Agent because it does not write to the serial monitor."
+        ),
+    )
     parser.add_argument(
         "--board-init-stage",
         type=int,
@@ -402,6 +411,8 @@ def firmware_build_flags(
     if getattr(args, "sensor_input_diagnostics", False):
         flags.append("-D STACKCHAN_SERIAL_DIAGNOSTICS=1")
         flags.append("-D STACKCHAN_SENSOR_INPUT_DIAGNOSTICS=1")
+    if getattr(args, "motion_diagnostics", False):
+        flags.append("-D STACKCHAN_MOTION_DIAGNOSTICS=1")
     return flags
 
 

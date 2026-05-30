@@ -139,6 +139,7 @@ class DeviceStatus:
     meta: CommandMeta | None = None
     firmware_version: str = ""
     capabilities: tuple[CapabilityStatus, ...] = ()
+    motion: str = "idle"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +149,7 @@ class DeviceStatus:
             "connected": self.connected,
             "device_state": self.device_state,
             "face": self.face,
+            "motion": self.motion,
             "last_error": None if self.last_error is None else self.last_error.to_dict(),
             "firmware_version": self.firmware_version,
             "capabilities": [capability.to_dict() for capability in self.capabilities],

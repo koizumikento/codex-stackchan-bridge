@@ -186,6 +186,8 @@ inline bool is_firmware_device_event_name(const char* name) {
          strcmp(name, "audio_playback_load") == 0 ||
          strcmp(name, "audio_playback_action") == 0 ||
          strcmp(name, "audio_playback_chunk") == 0 ||
+         strcmp(name, "motion_diag_plan") == 0 ||
+         strcmp(name, "motion_diag_writes") == 0 ||
          strcmp(name, "audio_playback_underrun") == 0 ||
          strcmp(name, "audio_capture_started") == 0 ||
          strcmp(name, "audio_capture_finished") == 0 ||

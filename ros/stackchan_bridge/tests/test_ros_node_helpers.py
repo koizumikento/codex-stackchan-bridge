@@ -1204,6 +1204,13 @@ class RosNodeHelperTests(unittest.TestCase):
             "_device_head_pose_clients",
             "_device_motion_clients",
             "_call_device_face_set",
+            "_run_say_face_hint",
+            "_run_say_motion_hint",
+            "_run_say_after_face",
+            "_resolve_say_after_face",
+            "after_face_hint",
+            '"surprised": "happy"',
+            '"error": "thinking"',
             "_set_led_type = SetLed",
             "_call_device_audio_capture",
             "_call_device_audio_play",
@@ -1264,6 +1271,21 @@ class RosNodeHelperTests(unittest.TestCase):
 
         self.assertIn(
             "record = self.event_aggregator.add(\n                device_id,",
+            source,
+        )
+        self.assertIn(
+            "command_response = self.facade.run_motion(\n"
+            "                meta,\n"
+            "                request.name,\n"
+            "                request.intensity,\n"
+            "                request.duration_ms,\n"
+            "            )\n"
+            "            self._publish_status(device_id)",
+            source,
+        )
+        self.assertIn(
+            "for device_id in self.facade.registry.device_ids():\n"
+            "                self._publish_status(device_id)",
             source,
         )
 

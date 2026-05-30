@@ -23,12 +23,12 @@ AVAILABILITY_ERROR_CODES = {
     "DEVICE_ID_CONFLICT",
 }
 ALLOWED_FACES = {"neutral", "happy", "thinking", "surprised", "sleepy", "error"}
-ALLOWED_MOTIONS = {"nod", "shake", "look-left", "look-right", "look-user", "idle"}
+ALLOWED_MOTIONS = {"nod", "shake", "cheerful", "look-left", "look-right", "look-user", "idle"}
 ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
 PAN_MIN_DEG = -128.0
 PAN_MAX_DEG = 128.0
-TILT_MIN_DEG = 0.0
-TILT_MAX_DEG = 90.0
+TILT_MIN_DEG = 5.0
+TILT_MAX_DEG = 85.0
 SPEED_MIN = 0
 SPEED_MAX = 1000
 MIN_NONZERO_DURATION_MS = 100
@@ -148,7 +148,9 @@ class StackChanBridgeFacade:
             self._record_error(meta, validation, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, validation)
 
-        status = self._mark_completed(meta, motion=name)
+        status = self._mark_accepted(meta, motion=name)
+        if name != "idle":
+            status.state = "acting"
         log_structured(
             self.logger,
             logging.INFO,
@@ -220,7 +222,14 @@ class StackChanBridgeFacade:
         )
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
 
-    def say(self, meta: CommandMeta, text: str) -> CommandResponse:
+    def say(
+        self,
+        meta: CommandMeta,
+        text: str,
+        face_hint: str = "",
+        motion_hint: str = "",
+        after_face_hint: str = "",
+    ) -> CommandResponse:
         checked = self._validate(meta)
         if checked is not None:
             return checked
@@ -232,6 +241,17 @@ class StackChanBridgeFacade:
             )
             self._record_error(meta, result, connected=True)
             return CommandResponse(meta.device_id, meta.command_id, result)
+        for label, value, allowed in (
+            ("face", face_hint, ALLOWED_FACES),
+            ("motion", motion_hint, ALLOWED_MOTIONS),
+            ("face", after_face_hint, ALLOWED_FACES),
+        ):
+            if not value:
+                continue
+            validation = self._validate_named_value(label, value, allowed)
+            if validation is not None:
+                self._record_error(meta, validation, connected=True)
+                return CommandResponse(meta.device_id, meta.command_id, validation)
 
         status = self._mark_accepted(meta)
         return CommandResponse(meta.device_id, meta.command_id, status.last_error)
@@ -385,7 +405,7 @@ class StackChanBridgeFacade:
         if tilt_deg < TILT_MIN_DEG or tilt_deg > TILT_MAX_DEG:
             return Result.rejected(
                 "SERVO_LIMIT_EXCEEDED",
-                "motion pose tilt_deg is outside 0..90",
+                "motion pose tilt_deg is outside 5..85",
                 recoverable=True,
             )
         return StackChanBridgeFacade._validate_head_pose_timing(speed, duration_ms)

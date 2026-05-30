@@ -3133,6 +3133,8 @@ def main(args: list[str] | None = None) -> None:
                     )
                 )
                 self._publish_status(device_id)
+            for device_id in self.facade.registry.device_ids():
+                self._publish_status(device_id)
 
         def _handle_device_event(self, device_id: str, event: object) -> None:
             if not _event_matches_device_id(device_id, event):
@@ -3252,6 +3254,7 @@ def main(args: list[str] | None = None) -> None:
                 request.intensity,
                 request.duration_ms,
             )
+            self._publish_status(device_id)
             if command_response.result.ok:
                 device_result = self._call_device_motion_run(device_id, request, meta)
                 command_response = type(command_response)(
@@ -3381,6 +3384,9 @@ def main(args: list[str] | None = None) -> None:
             command_response = self.facade.say(
                 meta,
                 request.text,
+                str(getattr(request, "face_hint", "") or "").strip(),
+                str(getattr(request, "motion_hint", "") or "").strip(),
+                str(getattr(request, "after_face_hint", "") or "").strip(),
             )
             result = Say.Result()
             if not command_response.result.ok:
@@ -3501,13 +3507,58 @@ def main(args: list[str] | None = None) -> None:
                 return result
             else:
                 playback_request = self._loaded_tts_playback_request(request.meta, request)
+            face_hint_result = self._run_say_face_hint(device_id, request, meta)
+            if face_hint_result is not None and not face_hint_result.ok:
+                _copy_result(result.result, face_hint_result)
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "error_code": face_hint_result.error_code,
+                        },
+                    )
+                )
+                goal_handle.abort()
+                return result
+            motion_hint_result = self._run_say_motion_hint(device_id, request, meta)
+            if motion_hint_result is not None and not motion_hint_result.ok:
+                _copy_result(result.result, motion_hint_result)
+                self._handle_speech_event(
+                    SpeechEvent(
+                        device_id=device_id,
+                        event_name="tts_failed",
+                        command_id=meta.command_id,
+                        source="bridge",
+                        payload={
+                            "voice_profile": profile.name,
+                            "provider": profile.provider,
+                            "error_code": motion_hint_result.error_code,
+                        },
+                    )
+                )
+                goal_handle.abort()
+                return result
             playback_result = self._call_device_audio_play(
                 device_id,
                 playback_request,
                 meta,
             )
-            _copy_result(result.result, playback_result)
-            if playback_result.ok:
+            after_face_result = self._run_say_after_face(
+                device_id,
+                request,
+                meta,
+                playback_ok=playback_result.ok,
+            )
+            final_result = playback_result
+            if playback_result.ok and after_face_result is not None and not after_face_result.ok:
+                final_result = after_face_result
+            _copy_result(result.result, final_result)
+            if final_result.ok:
                 self._handle_speech_event(
                     SpeechEvent(
                         device_id=device_id,
@@ -3525,6 +3576,7 @@ def main(args: list[str] | None = None) -> None:
                 )
                 goal_handle.succeed()
             else:
+                error_code = final_result.error_code
                 self._handle_speech_event(
                     SpeechEvent(
                         device_id=device_id,
@@ -3534,12 +3586,97 @@ def main(args: list[str] | None = None) -> None:
                         payload={
                             "voice_profile": profile.name,
                             "provider": profile.provider,
-                            "error_code": playback_result.error_code,
+                            "error_code": error_code,
                         },
                     )
                 )
                 goal_handle.abort()
             return result
+
+        def _run_say_face_hint(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result | None:
+            face_hint = str(getattr(request, "face_hint", "") or "").strip()
+            if not face_hint:
+                return None
+            return self._run_say_face(device_id, request.meta, meta, face_hint)
+
+        def _run_say_after_face(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+            *,
+            playback_ok: bool,
+        ) -> Result | None:
+            after_face = self._resolve_say_after_face(request, playback_ok=playback_ok)
+            if not after_face:
+                return None
+            return self._run_say_face(device_id, request.meta, meta, after_face)
+
+        def _resolve_say_after_face(
+            self,
+            request: object,
+            *,
+            playback_ok: bool,
+        ) -> str:
+            explicit = str(getattr(request, "after_face_hint", "") or "").strip()
+            if explicit:
+                return explicit
+            face_hint = str(getattr(request, "face_hint", "") or "").strip()
+            motion_hint = str(getattr(request, "motion_hint", "") or "").strip()
+            if not playback_ok:
+                return "thinking" if face_hint or motion_hint else ""
+            return {
+                "happy": "happy",
+                "thinking": "thinking",
+                "sleepy": "sleepy",
+                "surprised": "happy",
+                "error": "thinking",
+                "neutral": "neutral",
+            }.get(face_hint, "")
+
+        def _run_say_face(
+            self,
+            device_id: str,
+            ros_meta: object,
+            meta: CommandMeta,
+            face_name: str,
+        ) -> Result:
+            command_response = self.facade.set_face(meta, face_name, 0)
+            self._publish_status(device_id)
+            if not command_response.result.ok:
+                return command_response.result
+            device_request = SimpleNamespace(
+                meta=ros_meta,
+                name=face_name,
+                duration_ms=0,
+            )
+            return self._call_device_face_set(device_id, device_request, meta)
+
+        def _run_say_motion_hint(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+        ) -> Result | None:
+            motion_hint = str(getattr(request, "motion_hint", "") or "").strip()
+            if not motion_hint:
+                return None
+            command_response = self.facade.run_motion(meta, motion_hint, 1.0, 0)
+            self._publish_status(device_id)
+            if not command_response.result.ok:
+                return command_response.result
+            device_request = SimpleNamespace(
+                meta=request.meta,
+                name=motion_hint,
+                intensity=1.0,
+                duration_ms=0,
+            )
+            return self._call_device_motion_run(device_id, device_request, meta)
 
         def _handle_play_audio(self, device_id: str, goal_handle: object) -> object:
             request = goal_handle.request
@@ -3797,24 +3934,32 @@ def main(args: list[str] | None = None) -> None:
                 if not loaded_playback:
                     self._prepare_playback_chunk_relay(device_id, meta.command_id)
                 if loaded_playback:
-                    accepted_callback = lambda: self._media_action_gate.mark_busy_seen(
-                        device_id,
-                        meta.command_id,
-                    )
+                    def accepted_callback() -> None:
+                        self._media_action_gate.mark_busy_seen(
+                            device_id,
+                            meta.command_id,
+                        )
+
                     finished_callback = None
-                    completion_result = lambda: self._loaded_playback_completion_result(
-                        device_id,
-                        meta.command_id,
-                    )
+
+                    def completion_result() -> Result:
+                        return self._loaded_playback_completion_result(
+                            device_id,
+                            meta.command_id,
+                        )
                 else:
-                    accepted_callback = lambda: self._activate_playback_chunk_relay(
-                        device_id,
-                        meta.command_id,
-                    )
-                    finished_callback = lambda: self._finish_playback_chunk_relay(
-                        device_id,
-                        meta.command_id,
-                    )
+                    def accepted_callback() -> None:
+                        self._activate_playback_chunk_relay(
+                            device_id,
+                            meta.command_id,
+                        )
+
+                    def finished_callback() -> None:
+                        self._finish_playback_chunk_relay(
+                            device_id,
+                            meta.command_id,
+                        )
+
                     completion_result = None
                 device_result = self._send_device_action_goal(
                     client,
