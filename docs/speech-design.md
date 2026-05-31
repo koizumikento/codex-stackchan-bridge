@@ -56,6 +56,21 @@ sample rate, channels, and structured errors.
 Low-confidence ASR does not execute robot actions. It produces metadata through
 `voice_semantic_event` with `suppressed_reason=low_confidence`.
 
+## Local ASR Provider Boundary
+
+Local Whisper servers may be used as operator-owned bridge-side ASR providers.
+The default compose helper exposes an OpenAI-compatible transcription endpoint
+for future bridge adapters, but it remains optional and local. The bridge must
+send only VAD-bounded utterance audio to the ASR provider, not continuous raw
+microphone streams.
+
+ASR provider configuration belongs to bridge-local parameters or environment
+variables. Firmware, CLI results, MCP tool results, public events, and normal
+logs must not expose provider endpoints, raw model identifiers, request bodies,
+PCM bytes, or transcript text. Provider failures should be mapped into the
+existing structured ASR result codes: `ASR_UNAVAILABLE`, `ASR_TIMEOUT`,
+`ASR_WORKER_FAILED`, `ASR_EMPTY_RESULT`, and `ASR_INVALID_OUTPUT`.
+
 ## Safety Keywords
 
 Immediate direct safety commands such as `止まって`, `ストップ`, `停止`, and
