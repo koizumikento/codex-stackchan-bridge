@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import RLock
 
 from stackchan_bridge.asr import AsrError, AsrResult, LocalAsrWorker
 from stackchan_bridge.audio_session import (
@@ -58,17 +59,19 @@ class SpeechSessionProcessor:
         self.event_sink = event_sink
         self._vad_by_device: dict[str, VadStateMachine] = {}
         self._events: list[SpeechEvent] = []
+        self._events_lock = RLock()
 
     @property
     def events(self) -> tuple[SpeechEvent, ...]:
-        return tuple(self._events)
+        with self._events_lock:
+            return tuple(self._events)
 
     def handle_audio_chunk(self, chunk: AudioChunk) -> tuple[SpeechEvent, ...]:
-        before = len(self._events)
+        before = self._event_count()
         if chunk.direction == AUDIO_DIRECTION_PLAYBACK:
             for frame in _playback_frames(chunk):
                 self.echo_controller.process_render(frame)
-            return tuple(self._events[before:])
+            return self._events_since(before)
         try:
             frames = split_capture_chunk(chunk)
         except AudioSessionError as exc:
@@ -80,7 +83,7 @@ class SpeechSessionProcessor:
                     payload={"error_code": exc.code},
                 )
             )
-            return tuple(self._events[before:])
+            return self._events_since(before)
 
         for frame in frames:
             capture = self.echo_controller.process_capture(frame)
@@ -93,8 +96,6 @@ class SpeechSessionProcessor:
                         payload={
                             "utterance_id": "",
                             "confidence": 0.0,
-                            "requires_codex": False,
-                            "safety_action": "none",
                             "echo_state": capture.state.value,
                             "suppressed_reason": capture.suppressed_reason,
                         },
@@ -114,11 +115,19 @@ class SpeechSessionProcessor:
                 )
             if update.utterance is not None:
                 self._complete_utterance(update.utterance, echo_state=capture.state)
-        return tuple(self._events[before:])
+        return self._events_since(before)
 
     def _complete_utterance(self, utterance, *, echo_state: EchoState) -> None:
         try:
-            asr = self.asr_worker.transcribe(utterance)
+            self.asr_worker.submit(
+                utterance,
+                lambda completed, result, error: self._handle_asr_result(
+                    completed,
+                    result=result,
+                    error=error,
+                    echo_state=echo_state,
+                ),
+            )
         except AsrError as exc:
             self._emit(
                 SpeechEvent(
@@ -130,7 +139,27 @@ class SpeechSessionProcessor:
             )
             return
 
-        safety_action = detect_immediate_safety_action(asr.text)
+    def _handle_asr_result(
+        self,
+        utterance,
+        *,
+        result: AsrResult | None,
+        error: AsrError | None,
+        echo_state: EchoState,
+    ) -> None:
+        if error is not None or result is None:
+            exc = error or AsrError("ASR_WORKER_FAILED", "local ASR worker failed")
+            self._emit(
+                SpeechEvent(
+                    device_id=utterance.device_id,
+                    event_name="transcript_failed",
+                    command_id=utterance.command_id,
+                    payload={"utterance_id": utterance.utterance_id, "error_code": exc.code},
+                )
+            )
+            return
+
+        asr = result
         if asr.confidence < self.confidence_threshold:
             self._emit_semantic(utterance, asr, echo_state=echo_state, suppressed_reason="low_confidence")
             return
@@ -143,7 +172,6 @@ class SpeechSessionProcessor:
             source="speech_session",
             confidence=asr.confidence,
             language=asr.language,
-            intent_hint=asr.intent_hint,
         )
         self._emit(
             SpeechEvent(
@@ -157,7 +185,6 @@ class SpeechSessionProcessor:
             utterance,
             asr,
             echo_state=echo_state,
-            safety_action=safety_action,
             suppressed_reason="none",
         )
 
@@ -167,10 +194,8 @@ class SpeechSessionProcessor:
         asr: AsrResult,
         *,
         echo_state: EchoState,
-        safety_action: str = "none",
         suppressed_reason: str = "none",
     ) -> None:
-        requires_codex = safety_action == "none" and not asr.intent_hint
         self._emit(
             SpeechEvent(
                 device_id=utterance.device_id,
@@ -179,9 +204,6 @@ class SpeechSessionProcessor:
                 payload={
                     "utterance_id": utterance.utterance_id,
                     "confidence": round(asr.confidence, 3),
-                    "intent_hint": asr.intent_hint,
-                    "requires_codex": requires_codex,
-                    "safety_action": safety_action,
                     "echo_state": echo_state.value,
                     "suppressed_reason": suppressed_reason,
                 },
@@ -189,34 +211,24 @@ class SpeechSessionProcessor:
         )
 
     def _emit(self, event: SpeechEvent) -> None:
-        self._events.append(event)
+        with self._events_lock:
+            self._events.append(event)
         if self.event_sink is not None:
             self.event_sink(event)
 
+    def wait_asr_idle(self, timeout_sec: float = 1.0) -> bool:
+        return self.asr_worker.wait_idle(timeout_sec=timeout_sec)
 
-def detect_immediate_safety_action(text: str) -> str:
-    normalized = text.strip().lower()
-    if not normalized:
-        return "none"
-    negative_contexts = (
-        "止まらないで",
-        "停止しないで",
-        "ストップしないで",
-        "止まってという",
-        "「止まって」",
-        "\"止まって\"",
-        "ストップという",
-        "コマンドを追加",
-        "認識して",
-        "どうなる",
-    )
-    if any(fragment in normalized for fragment in negative_contexts):
-        return "none"
-    if normalized in {"止まって", "ストップ", "停止", "やめて"}:
-        return "stop"
-    if normalized.endswith(("止まって", "ストップ", "停止して", "やめて")):
-        return "stop"
-    return "none"
+    def close(self) -> None:
+        self.asr_worker.close(wait=False)
+
+    def _event_count(self) -> int:
+        with self._events_lock:
+            return len(self._events)
+
+    def _events_since(self, index: int) -> tuple[SpeechEvent, ...]:
+        with self._events_lock:
+            return tuple(self._events[index:])
 
 
 def _playback_frames(chunk: AudioChunk) -> tuple[AudioFrame, ...]:

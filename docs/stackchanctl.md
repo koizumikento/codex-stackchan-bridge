@@ -611,6 +611,9 @@ Example JSON shape:
 Speech transcripts are retrieved explicitly after a `transcript_ready` event.
 The event payload carries an `utterance_id`; full transcript text is not placed
 in normal event payloads or logs.
+Reading an event or transcript does not authorize a physical StackChan action;
+callers must issue any `say`, `face`, `motion`, `led`, or audio command
+explicitly through the normal command surface.
 
 ```bash
 stackchanctl speech transcript <utterance_id> --json
@@ -658,6 +661,8 @@ Example JSON shape:
 ### Audio commands
 
 Audio is a first-class capability. The CLI should expose simple commands while keeping speech recognition, speech synthesis, and dialog policy on the PC side.
+Microphone capture is explicit observation input; it must not be hidden inside
+`observe` or converted into robot actions by the CLI or MCP adapter.
 
 Baseline examples:
 

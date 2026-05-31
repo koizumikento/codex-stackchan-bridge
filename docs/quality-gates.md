@@ -141,9 +141,10 @@ Required for bridge event changes:
   and default 10 minute TTL expiry.
 - Speech processing tests cover 20 ms chunk to 10 ms frame splitting, VAD
   state transitions, AEC unavailable fallback, playback hangover suppression,
-  ASR worker timeout/failure, transcript redaction, low-confidence suppression,
-  immediate safety command positive/negative cases, and queue overflow/drop
-  behavior.
+  ASR worker timeout/failure, callback non-blocking behavior, transcript
+  redaction, low-confidence suppression, queue overflow/drop behavior, and proof
+  that speech/audio events do not emit action-oriented fields or dispatch
+  physical commands.
 - Power telemetry tests cover latest snapshot storage, stale detection, public
   topic naming, and `device_id` preservation while relaying telemetry.
 - Audio routing tests cover command_id/direction separation, no per-chunk ACK
@@ -218,8 +219,10 @@ Required for skill changes:
 - Skill behavior works against the mock backend.
 - User-facing command timing and failure behavior is documented if it changes.
 - Event-policy behavior treats events as observations rather than direct
-  commands, fetches transcripts explicitly after `transcript_ready`, and avoids
-  noisy responses to repeated low-value events.
+  commands, fetches transcripts only through explicit transcript lookup after
+  `transcript_ready`, and avoids noisy responses to repeated low-value events.
+- Skill validation proves speech/audio observations do not automatically call
+  `say`, `face`, `motion`, `led`, `audio`, or maintenance commands.
 - Skill validation proves routine cues never call maintenance commands, raw
   hardware controls, calibration writes, raw telemetry streams, or undocumented
   face/LED names.

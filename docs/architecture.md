@@ -85,8 +85,10 @@ Development decisions:
 - `stackchan_bridge` owns the public `/stackchan/<device_id>/events` topic and
   the event buffer queried by `stackchanctl` and MCP tools.
 - Codex treats events as observations. It does not execute an event name as a
-  command; it decides whether to call `say`, `face`, `motion`, `led`, audio, or
-  no command at all.
+  command. Audio and speech observations may update context or be retrieved
+  explicitly, but they must not cause `say`, `face`, `motion`, `led`, audio, or
+  other physical commands unless the user or a documented workflow explicitly
+  requests that command.
 - Speech transcripts are not placed directly in normal event payloads. Bridge
   publishes `transcript_ready` with an `utterance_id`, and Codex explicitly
   retrieves the transcript when it needs it.

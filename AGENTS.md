@@ -53,7 +53,12 @@ Development assistant surfaces:
 - Firmware owns safety-critical defaults and hard limits.
 - High-risk feature surfaces such as audio streams, camera payloads, calibration or maintenance controls, raw sensor streams, and multi-step behavior orchestration need an explicit docs-level contract before implementation.
 - Raw hardware controls, calibration writes, and maintenance operations must stay out of the normal Codex-facing command surface unless a documented design creates a separate maintenance path.
-- Hardware-origin events and raw telemetry are observations, not commands. Codex or bridge policy may react to them, but firmware event names must not become direct command execution.
+- Hardware-origin events and raw telemetry are observations, not commands. Codex
+  or bridge policy may update context from them, but firmware event names must
+  not become direct command execution. Audio and speech observations must not
+  trigger `say`, `face`, `motion`, `led`, audio, or other physical commands
+  unless a user request or documented workflow explicitly enters the normal
+  command facade.
 - TTS belongs on the local PC/bridge side. Do not route speech synthesis
   through cloud accounts, mobile apps, StackChan World, XiaoZhi, Alibaba-style
   service paths, or firmware-resident text handling unless a documented project
