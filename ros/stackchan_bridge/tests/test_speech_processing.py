@@ -21,10 +21,10 @@ from stackchan_bridge.speech_node import (
 )
 
 
-def chunk(direction: int, pcm: bytes | None = None) -> AudioChunk:
+def chunk(direction: int, pcm: bytes | None = None, *, command_id: str = "cmd-1") -> AudioChunk:
     return AudioChunk(
         device_id="default",
-        command_id="cmd-1",
+        command_id=command_id,
         direction=direction,
         sequence=1,
         format=AUDIO_FORMAT_PCM_S16LE,
@@ -32,6 +32,16 @@ def chunk(direction: int, pcm: bytes | None = None) -> AudioChunk:
         channels=1,
         pcm=pcm if pcm is not None else b"\xff" * 640,
     )
+
+
+def wait_for_events(processor: SpeechSessionProcessor, event_name: str, *, count: int = 1):
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        events = [event for event in processor.events if event.event_name == event_name]
+        if len(events) >= count:
+            return events
+        time.sleep(0.01)
+    return [event for event in processor.events if event.event_name == event_name]
 
 
 class CrashingEchoWorker(NullEchoController):
@@ -64,6 +74,7 @@ class SpeechProcessingTests(unittest.TestCase):
             speech_detector=lambda frame: True,
             vad_config=self.short_vad(),
         )
+        self.addCleanup(processor.close)
 
         processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_PLAYBACK))
         events = processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
@@ -78,14 +89,15 @@ class SpeechProcessingTests(unittest.TestCase):
             speech_detector=lambda frame: frame.pcm[0] != 0x80,
             vad_config=self.short_vad(),
         )
+        self.addCleanup(processor.close)
 
         for _ in range(4):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
         processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
         processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
 
-        ready = [event for event in processor.events if event.event_name == "transcript_ready"]
-        semantic = [event for event in processor.events if event.event_name == "voice_semantic_event"]
+        ready = wait_for_events(processor, "transcript_ready")
+        semantic = wait_for_events(processor, "voice_semantic_event")
 
         self.assertTrue(ready)
         self.assertNotIn("止まって", str(ready[0].payload))
@@ -101,14 +113,15 @@ class SpeechProcessingTests(unittest.TestCase):
             confidence_threshold=0.75,
             vad_config=self.short_vad(),
         )
+        self.addCleanup(processor.close)
 
         for _ in range(4):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
         for _ in range(2):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
 
+        semantic = wait_for_events(processor, "voice_semantic_event")
         self.assertFalse([event for event in processor.events if event.event_name == "transcript_ready"])
-        semantic = [event for event in processor.events if event.event_name == "voice_semantic_event"]
         self.assertEqual(semantic[-1].payload["suppressed_reason"], "low_confidence")
 
     def test_asr_worker_timeout_is_structured(self) -> None:
@@ -118,15 +131,15 @@ class SpeechProcessingTests(unittest.TestCase):
             speech_detector=lambda frame: frame.pcm[0] != 0x80,
             vad_config=self.short_vad(),
         )
+        self.addCleanup(processor.close)
 
         for _ in range(4):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
         for _ in range(2):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
 
-        failures = [event for event in processor.events if event.event_name == "transcript_failed"]
+        failures = wait_for_events(processor, "transcript_failed")
         self.assertEqual(failures[-1].payload["error_code"], "ASR_TIMEOUT")
-        worker.close()
 
     def test_asr_worker_failure_is_structured(self) -> None:
         worker = LocalAsrWorker(FailingEngine(), timeout_ms=1000)
@@ -135,15 +148,66 @@ class SpeechProcessingTests(unittest.TestCase):
             speech_detector=lambda frame: frame.pcm[0] != 0x80,
             vad_config=self.short_vad(),
         )
+        self.addCleanup(processor.close)
 
         for _ in range(4):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
         for _ in range(2):
             processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
 
-        failures = [event for event in processor.events if event.event_name == "transcript_failed"]
+        failures = wait_for_events(processor, "transcript_failed")
         self.assertEqual(failures[-1].payload["error_code"], "ASR_WORKER_FAILED")
-        worker.close()
+
+    def test_flush_session_finishes_speech_without_waiting_for_more_silence(self) -> None:
+        processor = SpeechSessionProcessor(
+            asr_worker=LocalAsrWorker(StaticAsrEngine(AsrResult("hello", 0.9)), timeout_ms=1000),
+            speech_detector=lambda frame: True,
+            vad_config=VadConfig(start_frames=2, end_silence_ms=700, pre_roll_ms=10, post_roll_ms=10, min_utterance_ms=20),
+        )
+        self.addCleanup(processor.close)
+
+        processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
+        processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
+        self.assertFalse([event for event in processor.events if event.event_name == "transcript_ready"])
+
+        processor.flush_session("default", "cmd-1")
+        ready = wait_for_events(processor, "transcript_ready")
+
+        self.assertTrue(ready)
+
+    def test_vad_sessions_are_separated_by_command_id(self) -> None:
+        processor = SpeechSessionProcessor(
+            asr_worker=LocalAsrWorker(StaticAsrEngine(AsrResult("hello", 0.9)), timeout_ms=1000),
+            speech_detector=lambda frame: True,
+            vad_config=self.short_vad(),
+        )
+        self.addCleanup(processor.close)
+
+        processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\xff" * 320, command_id="cmd-1"))
+        processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\xff" * 320, command_id="cmd-2"))
+        self.assertFalse([event for event in processor.events if event.event_name == "speech_detected"])
+
+        processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\xff" * 320, command_id="cmd-1"))
+        detected = [event for event in processor.events if event.event_name == "speech_detected"]
+
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].command_id, "cmd-1")
+
+    def test_asr_runs_outside_audio_callback(self) -> None:
+        processor = SpeechSessionProcessor(
+            asr_worker=LocalAsrWorker(SlowEngine(), timeout_ms=1000),
+            speech_detector=lambda frame: frame.pcm[0] != 0x80,
+            vad_config=self.short_vad(),
+        )
+        self.addCleanup(processor.close)
+
+        started = time.monotonic()
+        for _ in range(4):
+            processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
+        for _ in range(2):
+            processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE, b"\x80" * 640))
+
+        self.assertLess(time.monotonic() - started, 0.1)
 
     def test_echo_worker_timeout_falls_back_to_gate(self) -> None:
         controller = WorkerEchoController(CrashingEchoWorker())

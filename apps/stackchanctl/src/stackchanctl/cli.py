@@ -182,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     audio_capture = audio_subparsers.add_parser("capture")
     audio_capture.add_argument("--seconds", type=finite_float, default=3.0)
     audio_capture.add_argument("--output", required=True)
+    audio_capture.add_argument("--cue-led", action="store_true")
 
     camera = subparsers.add_parser("camera")
     camera_subparsers = camera.add_subparsers(dest="camera_command", required=True)
@@ -350,7 +351,11 @@ def build_request(
     elif command_type is CommandType.AUDIO_PLAY:
         command_args = {"path": args.path.strip()}
     elif command_type is CommandType.AUDIO_CAPTURE:
-        command_args = {"seconds": args.seconds, "output": args.output.strip()}
+        command_args = {
+            "seconds": args.seconds,
+            "output": args.output.strip(),
+            "cue_led": bool(args.cue_led),
+        }
     elif command_type is CommandType.CAMERA_CAPTURE:
         command_args = {"output": args.output.strip(), "quality": args.quality}
     elif command_type is CommandType.NFC_WAIT:

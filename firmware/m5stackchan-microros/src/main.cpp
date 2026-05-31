@@ -289,6 +289,7 @@ constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
     kAudioPlaybackSpeakerFrameBytes / 2;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
 constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
+constexpr uint32_t kAudioCaptureSessionTimeoutMarginMs = 2000;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
@@ -1443,7 +1444,8 @@ void initialize_ir_adapter() {
 
 void initialize_audio_probe_adapters() {
   stackchan_audio_playback_initialized = M5.Speaker.isEnabled();
-  stackchan_audio_capture_initialized = M5.Mic.isEnabled();
+  M5.Speaker.end();
+  stackchan_audio_capture_initialized = M5.Mic.begin();
 }
 
 void initialize_sensor_adapters() {
@@ -6159,6 +6161,7 @@ void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_st
         finished_command_id);
   }
   copy_bounded(audio_capture_command_id, sizeof(audio_capture_command_id), "");
+  publish_status_heartbeat();
 }
 
 void send_capture_audio_result_if_ready() {
@@ -6258,6 +6261,10 @@ bool start_next_capture_audio_chunk() {
   return true;
 }
 
+bool audio_capture_requested_duration_elapsed(uint32_t now_ms) {
+  return now_ms - audio_capture_started_ms >= audio_capture_duration_ms;
+}
+
 void step_capture_audio_session() {
   if (!audio_capture_session_active) {
     send_capture_audio_result_if_ready();
@@ -6278,6 +6285,27 @@ void step_capture_audio_session() {
     audio_capture_recording_chunk = false;
   }
   const uint32_t now_ms = millis();
+  if (!audio_capture_recording_chunk &&
+      audio_capture_requested_duration_elapsed(now_ms)) {
+    if (audio_capture_published_chunks == 0) {
+      finish_capture_audio_goal(
+          audio_capture_failed_result("microphone capture produced no chunks"),
+          GOAL_STATE_ABORTED);
+    } else {
+      publish_capture_audio_feedback(1.0f, "capture complete");
+      finish_capture_audio_goal(audio_capture_completed_result(), GOAL_STATE_SUCCEEDED);
+    }
+    send_capture_audio_result_if_ready();
+    return;
+  }
+  if (now_ms - audio_capture_started_ms >=
+      audio_capture_duration_ms + kAudioCaptureSessionTimeoutMarginMs) {
+    finish_capture_audio_goal(
+        audio_capture_failed_result("microphone capture session timed out"),
+        GOAL_STATE_ABORTED);
+    send_capture_audio_result_if_ready();
+    return;
+  }
   if (audio_capture_recording_chunk &&
       now_ms - audio_capture_last_chunk_ms >= kAudioCaptureChunkTimeoutMs) {
     finish_capture_audio_goal(

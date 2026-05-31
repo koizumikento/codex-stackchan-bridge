@@ -664,6 +664,7 @@ Baseline examples:
 ```bash
 stackchanctl audio play prompt.wav
 stackchanctl audio capture --seconds 3 --output mic.wav
+stackchanctl audio capture --seconds 3 --output mic.wav --cue-led
 ```
 
 Device exchange should use PCM 16 kHz mono 16-bit, even if the CLI accepts or writes WAV files for human convenience.
@@ -866,6 +867,13 @@ QoS. Missing chunks, malformed metadata, odd byte lengths, or sequence gaps
 return structured audio capture errors. Captured PCM bytes are written only to
 the explicit output file and are not printed in normal output, JSON, events, or
 diagnostics.
+
+`audio capture --cue-led` is the operator-facing readiness cue for manual voice
+checks. The bridge sets `led progress` before starting capture and sets
+`led off` after capture finishes or fails. Operators should speak while the LED
+is visibly lit; command-line text and countdowns are not the readiness signal.
+The LED cue is opt-in and does not turn explicit capture into background
+listening.
 
 Audio command results should distinguish transport/session acceptance from
 playback or capture completion. For example, a future `audio play --json` result
