@@ -15,7 +15,7 @@ from stackchan_bridge.audio_codec import (
     EncodedAudioPayload,
     encode_ima_adpcm_4bit,
 )
-from stackchan_bridge.audio_session import AudioChunk
+from stackchan_bridge.audio_session import AUDIO_DIRECTION_CAPTURE, AudioChunk
 from stackchan_bridge.event_aggregator import EventAggregator
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
 from stackchan_bridge.facade import StackChanBridgeFacade
@@ -77,6 +77,8 @@ AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES"
 )
 SPEECH_AUDIO_CHUNK_QUEUE_MAX = 64
+FIRMWARE_AUDIO_CAPTURE_SESSION_TIMEOUT_GRACE_SEC = 5.0
+AUDIO_CAPTURE_ACTION_RESULT_MARGIN_SEC = 2.0
 MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.0
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
@@ -185,11 +187,7 @@ class MediaActionGate:
 
     def finish(self, device_id: str, command_id: str, label: str, result: Result) -> float:
         now = self._clock()
-        timed_out = (
-            result.state == STATE_TIMEOUT
-            or result.error_code == "TIMEOUT"
-            or "timed out" in result.message.lower()
-        )
+        timed_out = result.state == STATE_TIMEOUT or result.error_code == "TIMEOUT"
         with self._lock:
             finished_active = False
             active = self._active.get(device_id)
@@ -300,12 +298,14 @@ class SpeechAudioChunkDispatcher:
             self._queue.put_nowait(chunk)
             return True
         except queue.Full:
-            self._drop_oldest_chunk()
+            dropped = self._drop_oldest_chunk()
+            self._invalidate_dropped_chunk(dropped)
             try:
                 self._queue.put_nowait(chunk)
                 self._log_drop(chunk)
                 return True
             except queue.Full:
+                self._invalidate_dropped_chunk(chunk)
                 self._count_drop()
                 self._log_drop(chunk)
                 return False
@@ -341,14 +341,28 @@ class SpeechAudioChunkDispatcher:
             finally:
                 self._queue.task_done()
 
-    def _drop_oldest_chunk(self) -> None:
+    def _drop_oldest_chunk(self) -> AudioChunk | None:
         try:
             dropped = self._queue.get_nowait()
         except queue.Empty:
-            return
+            return None
         self._queue.task_done()
         if dropped is not None:
             self._count_drop()
+        return dropped
+
+    def _invalidate_dropped_chunk(self, chunk: AudioChunk | None) -> None:
+        if chunk is None or chunk.direction != AUDIO_DIRECTION_CAPTURE:
+            return
+        invalidate = getattr(self._processor, "invalidate_capture_session", None)
+        if not callable(invalidate):
+            return
+        invalidate(
+            device_id=chunk.device_id,
+            command_id=chunk.command_id,
+            sequence=chunk.sequence,
+            reason="dispatcher_queue_overflow",
+        )
 
     def _count_drop(self) -> None:
         with self._drop_lock:
@@ -4127,9 +4141,10 @@ def main(args: list[str] | None = None) -> None:
             goal.sample_rate = int(request.sample_rate)
             goal.channels = int(request.channels)
             goal.duration_ms = int(request.duration_ms)
-            timeout_sec = max(
-                self._device_media_action_timeout_sec,
-                (goal.duration_ms / 1000.0) + 2.0,
+            timeout_sec = (
+                (goal.duration_ms / 1000.0)
+                + FIRMWARE_AUDIO_CAPTURE_SESSION_TIMEOUT_GRACE_SEC
+                + AUDIO_CAPTURE_ACTION_RESULT_MARGIN_SEC
             )
             label = "audio capture"
             gate_result = self._begin_device_media_action(

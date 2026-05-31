@@ -6126,7 +6126,23 @@ bool capture_audio_goal_valid(
   return true;
 }
 
+void recover_capture_mic_after_abort(const char* stage) {
+  if (!stackchan_audio_capture_initialized) {
+    return;
+  }
+  stackchan_diag_print("stackchan audio_capture_diag stage=");
+  stackchan_diag_print(stage == nullptr ? "mic_recover" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_println(audio_capture_command_id);
+  M5.Mic.end();
+  delay(5);
+  stackchan_audio_capture_initialized = M5.Mic.begin();
+  stackchan_diag_print("stackchan audio_capture_diag stage=mic_recovered available=");
+  stackchan_diag_println(stackchan_audio_capture_initialized ? "true" : "false");
+}
+
 void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_status) {
+  const bool recover_mic = !result.ok && audio_capture_session_active;
   if (capture_audio_goal_active && capture_audio_active_goal_handle != nullptr) {
     rcl_ok(
         rcl_action_update_goal_state(
@@ -6143,6 +6159,9 @@ void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_st
   capture_audio_result_ready = true;
   capture_audio_goal_active = false;
   capture_audio_active_goal_handle = nullptr;
+  if (recover_mic) {
+    recover_capture_mic_after_abort("capture_abort");
+  }
   audio_capture_session_active = false;
   audio_capture_recording_chunk = false;
   char finished_command_id[37]{};
@@ -6462,8 +6481,12 @@ void reset_play_audio_speaker_buffers() {
 }
 
 stackchan::Result prepare_play_audio_speaker() {
-  while (M5.Mic.isRecording()) {
-    delay(1);
+  if (M5.Mic.isRecording()) {
+    recover_capture_mic_after_abort("playback_prepare_mic_busy");
+    return stackchan::Result::rejected(
+        "FIRMWARE_BUSY",
+        "microphone capture did not stop before playback",
+        true);
   }
   M5.Mic.end();
   if (!M5.Speaker.begin()) {
