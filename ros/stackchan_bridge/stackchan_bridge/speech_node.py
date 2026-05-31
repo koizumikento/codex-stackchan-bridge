@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
+from time import monotonic
 
 from stackchan_bridge.asr import AsrError, AsrResult, LocalAsrWorker
 from stackchan_bridge.audio_session import (
@@ -34,6 +35,8 @@ class SpeechEvent:
 
 
 EventSink = Callable[[SpeechEvent], None]
+Clock = Callable[[], float]
+INVALID_CAPTURE_SESSION_TTL_SEC = 300.0
 
 
 class SpeechSessionProcessor:
@@ -49,6 +52,7 @@ class SpeechSessionProcessor:
         confidence_threshold: float = 0.75,
         vad_config: VadConfig | None = None,
         event_sink: EventSink | None = None,
+        clock: Clock = monotonic,
     ) -> None:
         self.echo_controller = echo_controller or NullEchoController()
         self.asr_worker = asr_worker or LocalAsrWorker()
@@ -57,7 +61,10 @@ class SpeechSessionProcessor:
         self.confidence_threshold = confidence_threshold
         self.vad_config = vad_config
         self.event_sink = event_sink
+        self._clock = clock
         self._vad_by_device: dict[str, VadStateMachine] = {}
+        self._invalid_capture_sessions: dict[tuple[str, str], float] = {}
+        self._pending_asr_sessions: dict[tuple[str, str], int] = {}
         self._events: list[SpeechEvent] = []
         self._events_lock = RLock()
 
@@ -71,6 +78,8 @@ class SpeechSessionProcessor:
         if chunk.direction == AUDIO_DIRECTION_PLAYBACK:
             for frame in _playback_frames(chunk):
                 self.echo_controller.process_render(frame)
+            return self._events_since(before)
+        if self._capture_session_invalidated(chunk.device_id, chunk.command_id):
             return self._events_since(before)
         try:
             frames = split_capture_chunk(chunk)
@@ -86,6 +95,8 @@ class SpeechSessionProcessor:
             return self._events_since(before)
 
         for frame in frames:
+            if self._capture_session_invalidated(frame.device_id, frame.command_id):
+                return self._events_since(before)
             capture = self.echo_controller.process_capture(frame)
             if capture.frame is None:
                 self._emit(
@@ -114,14 +125,48 @@ class SpeechSessionProcessor:
                     )
                 )
             if update.utterance is not None:
+                if self._capture_session_invalidated(
+                    update.utterance.device_id,
+                    update.utterance.command_id,
+                ):
+                    return self._events_since(before)
                 self._complete_utterance(update.utterance, echo_state=capture.state)
         return self._events_since(before)
 
+    def invalidate_capture_session(
+        self,
+        *,
+        device_id: str,
+        command_id: str,
+        sequence: int,
+        reason: str,
+    ) -> tuple[SpeechEvent, ...]:
+        before = self._event_count()
+        with self._events_lock:
+            now = self._clock()
+            self._purge_invalid_capture_sessions_locked(now)
+            self._invalid_capture_sessions[(device_id, command_id)] = now
+            self._vad_by_device.pop(device_id, None)
+        self._emit(
+            SpeechEvent(
+                device_id=device_id,
+                event_name="transcript_failed",
+                command_id=command_id,
+                payload={
+                    "error_code": "AUDIO_CHUNK_DROPPED",
+                    "sequence": sequence,
+                    "reason": reason,
+                },
+            )
+        )
+        return self._events_since(before)
+
     def _complete_utterance(self, utterance, *, echo_state: EchoState) -> None:
+        self._increment_pending_asr(utterance.device_id, utterance.command_id)
         try:
             self.asr_worker.submit(
                 utterance,
-                lambda completed, result, error: self._handle_asr_result(
+                lambda completed, result, error: self._finish_asr_result(
                     completed,
                     result=result,
                     error=error,
@@ -129,6 +174,7 @@ class SpeechSessionProcessor:
                 ),
             )
         except AsrError as exc:
+            self._decrement_pending_asr(utterance.device_id, utterance.command_id)
             self._emit(
                 SpeechEvent(
                     device_id=utterance.device_id,
@@ -138,6 +184,27 @@ class SpeechSessionProcessor:
                 )
             )
             return
+        except Exception:
+            self._decrement_pending_asr(utterance.device_id, utterance.command_id)
+            raise
+
+    def _finish_asr_result(
+        self,
+        utterance,
+        *,
+        result: AsrResult | None,
+        error: AsrError | None,
+        echo_state: EchoState,
+    ) -> None:
+        try:
+            self._handle_asr_result(
+                utterance,
+                result=result,
+                error=error,
+                echo_state=echo_state,
+            )
+        finally:
+            self._decrement_pending_asr(utterance.device_id, utterance.command_id)
 
     def _handle_asr_result(
         self,
@@ -147,6 +214,8 @@ class SpeechSessionProcessor:
         error: AsrError | None,
         echo_state: EchoState,
     ) -> None:
+        if self._capture_session_invalidated(utterance.device_id, utterance.command_id):
+            return
         if error is not None or result is None:
             exc = error or AsrError("ASR_WORKER_FAILED", "local ASR worker failed")
             self._emit(
@@ -215,6 +284,36 @@ class SpeechSessionProcessor:
             self._events.append(event)
         if self.event_sink is not None:
             self.event_sink(event)
+
+    def _capture_session_invalidated(self, device_id: str, command_id: str) -> bool:
+        with self._events_lock:
+            self._purge_invalid_capture_sessions_locked(self._clock())
+            return (device_id, command_id) in self._invalid_capture_sessions
+
+    def _increment_pending_asr(self, device_id: str, command_id: str) -> None:
+        key = (device_id, command_id)
+        with self._events_lock:
+            self._pending_asr_sessions[key] = self._pending_asr_sessions.get(key, 0) + 1
+
+    def _decrement_pending_asr(self, device_id: str, command_id: str) -> None:
+        key = (device_id, command_id)
+        with self._events_lock:
+            pending = self._pending_asr_sessions.get(key, 0) - 1
+            if pending > 0:
+                self._pending_asr_sessions[key] = pending
+            else:
+                self._pending_asr_sessions.pop(key, None)
+            self._purge_invalid_capture_sessions_locked(self._clock())
+
+    def _purge_invalid_capture_sessions_locked(self, now: float) -> None:
+        expired = [
+            key
+            for key, invalidated_at in self._invalid_capture_sessions.items()
+            if now - invalidated_at >= INVALID_CAPTURE_SESSION_TTL_SEC
+            and self._pending_asr_sessions.get(key, 0) <= 0
+        ]
+        for key in expired:
+            self._invalid_capture_sessions.pop(key, None)
 
     def wait_asr_idle(self, timeout_sec: float = 1.0) -> bool:
         return self.asr_worker.wait_idle(timeout_sec=timeout_sec)

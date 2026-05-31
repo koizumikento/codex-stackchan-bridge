@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,7 +69,9 @@ from stackchan_bridge.ros_node import (
     _relay_telemetry_message,
     _status_matches_device_id,
     MediaActionGate,
+    SpeechAudioChunkDispatcher,
 )
+from stackchan_bridge.audio_session import AUDIO_DIRECTION_CAPTURE, AUDIO_FORMAT_PCM_S16LE, AudioChunk
 from stackchan_bridge.models import CapabilitySnapshot, Result, StatusSnapshot
 from stackchan_bridge.registry import DeviceAvailability, DeviceRecord, DeviceRegistry
 from stackchan_bridge.telemetry import HeadPoseSnapshot, PowerStatusSnapshot
@@ -78,6 +82,131 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RosNodeHelperTests(unittest.TestCase):
+    def test_speech_audio_dispatcher_does_not_process_in_enqueue_callback(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        processed: list[int] = []
+
+        class BlockingProcessor:
+            def handle_audio_chunk(self, chunk: AudioChunk) -> None:
+                started.set()
+                release.wait(timeout=1.0)
+                processed.append(chunk.sequence)
+
+        dispatcher = SpeechAudioChunkDispatcher(BlockingProcessor(), max_chunks=2)
+        try:
+            first = AudioChunk(
+                device_id="default",
+                command_id="cmd-1",
+                direction=AUDIO_DIRECTION_CAPTURE,
+                sequence=1,
+                format=AUDIO_FORMAT_PCM_S16LE,
+                sample_rate=16000,
+                channels=1,
+                pcm=b"\0" * 640,
+            )
+            second = AudioChunk(
+                device_id="default",
+                command_id="cmd-1",
+                direction=AUDIO_DIRECTION_CAPTURE,
+                sequence=2,
+                format=AUDIO_FORMAT_PCM_S16LE,
+                sample_rate=16000,
+                channels=1,
+                pcm=b"\0" * 640,
+            )
+
+            self.assertTrue(dispatcher.enqueue(first))
+            self.assertTrue(started.wait(timeout=1.0))
+            begin = time.monotonic()
+            self.assertTrue(dispatcher.enqueue(second))
+            self.assertLess(time.monotonic() - begin, 0.2)
+        finally:
+            release.set()
+            dispatcher.close()
+
+        self.assertIn(1, processed)
+
+    def test_speech_audio_dispatcher_drops_oldest_when_queue_is_full(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        processed: list[int] = []
+
+        class BlockingProcessor:
+            def handle_audio_chunk(self, chunk: AudioChunk) -> None:
+                started.set()
+                release.wait(timeout=1.0)
+                processed.append(chunk.sequence)
+
+        def chunk(sequence: int) -> AudioChunk:
+            return AudioChunk(
+                device_id="default",
+                command_id="cmd-1",
+                direction=AUDIO_DIRECTION_CAPTURE,
+                sequence=sequence,
+                format=AUDIO_FORMAT_PCM_S16LE,
+                sample_rate=16000,
+                channels=1,
+                pcm=b"\0" * 640,
+            )
+
+        dispatcher = SpeechAudioChunkDispatcher(BlockingProcessor(), max_chunks=1)
+        try:
+            self.assertTrue(dispatcher.enqueue(chunk(1)))
+            self.assertTrue(started.wait(timeout=1.0))
+            self.assertTrue(dispatcher.enqueue(chunk(2)))
+            self.assertTrue(dispatcher.enqueue(chunk(3)))
+            self.assertEqual(dispatcher.dropped_chunks, 1)
+        finally:
+            release.set()
+            dispatcher.close()
+
+        self.assertIn(1, processed)
+
+    def test_speech_audio_dispatcher_invalidates_dropped_capture_chunk(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        invalidated: list[tuple[str, str, int, str]] = []
+
+        class BlockingProcessor:
+            def handle_audio_chunk(self, chunk: AudioChunk) -> None:
+                started.set()
+                release.wait(timeout=1.0)
+
+            def invalidate_capture_session(
+                self,
+                *,
+                device_id: str,
+                command_id: str,
+                sequence: int,
+                reason: str,
+            ) -> None:
+                invalidated.append((device_id, command_id, sequence, reason))
+
+        def chunk(sequence: int) -> AudioChunk:
+            return AudioChunk(
+                device_id="default",
+                command_id="cmd-1",
+                direction=AUDIO_DIRECTION_CAPTURE,
+                sequence=sequence,
+                format=AUDIO_FORMAT_PCM_S16LE,
+                sample_rate=16000,
+                channels=1,
+                pcm=b"\0" * 640,
+            )
+
+        dispatcher = SpeechAudioChunkDispatcher(BlockingProcessor(), max_chunks=1)
+        try:
+            self.assertTrue(dispatcher.enqueue(chunk(1)))
+            self.assertTrue(started.wait(timeout=1.0))
+            self.assertTrue(dispatcher.enqueue(chunk(2)))
+            self.assertTrue(dispatcher.enqueue(chunk(3)))
+        finally:
+            release.set()
+            dispatcher.close()
+
+        self.assertEqual(invalidated, [("default", "cmd-1", 2, "dispatcher_queue_overflow")])
+
     def test_select_playback_chunk_for_pull_is_idempotent_for_same_sequence(self) -> None:
         queue = [
             SimpleNamespace(sequence=4, pcm=b"old"),
@@ -540,6 +669,19 @@ class RosNodeHelperTests(unittest.TestCase):
         )
 
         self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
+
+    def test_media_action_gate_releases_structured_firmware_timeout_failure(self) -> None:
+        gate = MediaActionGate(3.0, clock=lambda: 10.0)
+
+        self.assertIsNone(gate.begin("default", "cmd-1", "audio capture"))
+        gate.finish(
+            "default",
+            "cmd-1",
+            "audio capture",
+            Result(False, 3, "AUDIO_CAPTURE_FAILED", "audio capture session timed out", True),
+        )
+
+        self.assertIsNone(gate.begin("default", "cmd-2", "camera capture"))
 
     def test_media_action_gate_releases_audio_when_status_reports_idle(self) -> None:
         now = 20.0
@@ -1242,7 +1384,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "_call_device_motion_run",
             "_send_device_action_goal",
             "timeout_sec=self._device_media_action_timeout_sec",
-            "(goal.duration_ms / 1000.0) + 2.0",
+            "FIRMWARE_AUDIO_CAPTURE_SESSION_TIMEOUT_GRACE_SEC = 5.0",
+            "AUDIO_CAPTURE_ACTION_RESULT_MARGIN_SEC = 2.0",
             "/events/list",
             "/events/next",
             "/events/clear_cursor",

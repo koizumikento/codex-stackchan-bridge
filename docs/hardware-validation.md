@@ -2266,6 +2266,31 @@ KOIZUMI-112 diagnostic firmware update:
   `OK_SEEN=1`, `FIRMWARE_BUSY_SEEN=0`, and
   `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`; the audio capture WAV
   was 684 bytes and the camera JPEG was 6393 bytes.
+- KOIZUMI-195 on 2026-06-01 keeps microphone capture observation-only while
+  making the receive path terminal. The bridge now queues speech audio chunks
+  onto a bounded worker so ROS callbacks do not wait on VAD, echo control, or
+  local ASR. Firmware capture feedback is throttled and a capture-session
+  watchdog emits structured `AUDIO_CAPTURE_FAILED` / `audio_capture_failed`
+  instead of letting accepted goals hang until the bridge reports a generic
+  timeout. After COM3 upload, a 0.02 s audio-capture-only smoke still completed
+  with `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OK_SEEN=1`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_OUTPUT_BYTES=684`,
+  `STACKCHAN_SENSOR_SWEEP_AUDIO_CAPTURE_FIRMWARE_BUSY_SEEN=0`, and
+  `STACKCHAN_SENSOR_SWEEP_LOG_SENSITIVE_PAYLOAD_SEEN=0`. A 1.0 s quiet capture
+  no longer surfaced a generic bridge timeout; it returned recoverable
+  `AUDIO_CAPTURE_FAILED` with `message=audio capture session timed out` and an
+  `audio_capture_failed` event. A camera-only run after that failure completed
+  with `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_EXIT=0`,
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_OK_SEEN=1`, and
+  `STACKCHAN_SENSOR_SWEEP_CAMERA_CAPTURE_FIRMWARE_BUSY_SEEN=0`, proving the
+  failure path releases media arbitration. A follow-up bridge smoke with
+  `--face-check happy` cleared `last_error` and observed
+  `STACKCHAN_BRIDGE_SOAK_ERROR_SEEN_1=0`, but still exited non-zero because the
+  initial connected-observe wait missed the already connected public status;
+  treat that as existing host serial TCP bridge startup flakiness, not as an
+  audio-capture terminal-state failure. The remaining non-empty 1.0 s WAV
+  success risk is tracked separately as KOIZUMI-196.
 
 ## Cleanup
 

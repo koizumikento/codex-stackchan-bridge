@@ -289,6 +289,8 @@ constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
     kAudioPlaybackSpeakerFrameBytes / 2;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
 constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
+constexpr uint32_t kAudioCaptureSessionTimeoutGraceMs = 5000;
+constexpr uint32_t kAudioCaptureFeedbackEveryChunks = 10;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
@@ -6124,7 +6126,23 @@ bool capture_audio_goal_valid(
   return true;
 }
 
+void recover_capture_mic_after_abort(const char* stage) {
+  if (!stackchan_audio_capture_initialized) {
+    return;
+  }
+  stackchan_diag_print("stackchan audio_capture_diag stage=");
+  stackchan_diag_print(stage == nullptr ? "mic_recover" : stage);
+  stackchan_diag_print(" command_id=");
+  stackchan_diag_println(audio_capture_command_id);
+  M5.Mic.end();
+  delay(5);
+  stackchan_audio_capture_initialized = M5.Mic.begin();
+  stackchan_diag_print("stackchan audio_capture_diag stage=mic_recovered available=");
+  stackchan_diag_println(stackchan_audio_capture_initialized ? "true" : "false");
+}
+
 void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_status) {
+  const bool recover_mic = !result.ok && audio_capture_session_active;
   if (capture_audio_goal_active && capture_audio_active_goal_handle != nullptr) {
     rcl_ok(
         rcl_action_update_goal_state(
@@ -6141,6 +6159,9 @@ void finish_capture_audio_goal(const stackchan::Result& result, int8_t action_st
   capture_audio_result_ready = true;
   capture_audio_goal_active = false;
   capture_audio_active_goal_handle = nullptr;
+  if (recover_mic) {
+    recover_capture_mic_after_abort("capture_abort");
+  }
   audio_capture_session_active = false;
   audio_capture_recording_chunk = false;
   char finished_command_id[37]{};
@@ -6234,12 +6255,18 @@ bool publish_capture_audio_chunk(const int16_t* samples, size_t sample_count) {
   }
   ++audio_capture_sequence;
   ++audio_capture_published_chunks;
-  const float progress =
-      audio_capture_target_chunks == 0
-          ? 1.0f
-          : static_cast<float>(audio_capture_published_chunks) /
-                static_cast<float>(audio_capture_target_chunks);
-  publish_capture_audio_feedback(progress > 1.0f ? 1.0f : progress, "capturing");
+  const bool publish_progress =
+      audio_capture_published_chunks == 1 ||
+      audio_capture_published_chunks >= audio_capture_target_chunks ||
+      audio_capture_published_chunks % kAudioCaptureFeedbackEveryChunks == 0;
+  if (publish_progress) {
+    const float progress =
+        audio_capture_target_chunks == 0
+            ? 1.0f
+            : static_cast<float>(audio_capture_published_chunks) /
+                  static_cast<float>(audio_capture_target_chunks);
+    publish_capture_audio_feedback(progress > 1.0f ? 1.0f : progress, "capturing");
+  }
   return true;
 }
 
@@ -6278,6 +6305,20 @@ void step_capture_audio_session() {
     audio_capture_recording_chunk = false;
   }
   const uint32_t now_ms = millis();
+  if (now_ms - audio_capture_started_ms >=
+      audio_capture_duration_ms + kAudioCaptureSessionTimeoutGraceMs) {
+    stackchan_diag_print("stackchan audio_capture_diag stage=session_timeout command_id=");
+    stackchan_diag_print(audio_capture_command_id);
+    stackchan_diag_print(" published_chunks=");
+    stackchan_diag_print(audio_capture_published_chunks);
+    stackchan_diag_print(" target_chunks=");
+    stackchan_diag_println(audio_capture_target_chunks);
+    finish_capture_audio_goal(
+        audio_capture_failed_result("audio capture session timed out"),
+        GOAL_STATE_ABORTED);
+    send_capture_audio_result_if_ready();
+    return;
+  }
   if (audio_capture_recording_chunk &&
       now_ms - audio_capture_last_chunk_ms >= kAudioCaptureChunkTimeoutMs) {
     finish_capture_audio_goal(
@@ -6440,8 +6481,12 @@ void reset_play_audio_speaker_buffers() {
 }
 
 stackchan::Result prepare_play_audio_speaker() {
-  while (M5.Mic.isRecording()) {
-    delay(1);
+  if (M5.Mic.isRecording()) {
+    recover_capture_mic_after_abort("playback_prepare_mic_busy");
+    return stackchan::Result::rejected(
+        "FIRMWARE_BUSY",
+        "microphone capture did not stop before playback",
+        true);
   }
   M5.Mic.end();
   if (!M5.Speaker.begin()) {

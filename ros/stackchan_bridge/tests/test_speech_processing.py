@@ -187,6 +187,46 @@ class SpeechProcessingTests(unittest.TestCase):
         self.assertTrue(processor.wait_asr_idle(timeout_sec=1.0))
         worker.close()
 
+    def test_dropped_capture_chunk_invalidates_session_before_transcript(self) -> None:
+        processor = SpeechSessionProcessor(
+            asr_worker=LocalAsrWorker(StaticAsrEngine(AsrResult("hidden", 0.95)), timeout_ms=1000),
+            speech_detector=lambda frame: True,
+            vad_config=self.short_vad(),
+        )
+
+        events = processor.invalidate_capture_session(
+            device_id="default",
+            command_id="cmd-1",
+            sequence=2,
+            reason="dispatcher_queue_overflow",
+        )
+        for _ in range(4):
+            processor.handle_audio_chunk(chunk(AUDIO_DIRECTION_CAPTURE))
+        self.assertTrue(processor.wait_asr_idle())
+
+        self.assertEqual(events[0].event_name, "transcript_failed")
+        self.assertEqual(events[0].payload["error_code"], "AUDIO_CHUNK_DROPPED")
+        self.assertEqual(events[0].payload["sequence"], 2)
+        self.assertFalse([event for event in processor.events if event.event_name == "transcript_ready"])
+        self.assertFalse([event for event in processor.events if event.event_name == "voice_semantic_event"])
+
+    def test_invalidated_capture_session_expires_only_after_pending_asr_finishes(self) -> None:
+        now = 0.0
+        processor = SpeechSessionProcessor(clock=lambda: now)
+
+        processor.invalidate_capture_session(
+            device_id="default",
+            command_id="cmd-1",
+            sequence=2,
+            reason="dispatcher_queue_overflow",
+        )
+        processor._increment_pending_asr("default", "cmd-1")
+        now = 301.0
+
+        self.assertTrue(processor._capture_session_invalidated("default", "cmd-1"))
+        processor._decrement_pending_asr("default", "cmd-1")
+        self.assertFalse(processor._capture_session_invalidated("default", "cmd-1"))
+
     def test_asr_worker_failure_is_structured(self) -> None:
         worker = LocalAsrWorker(FailingEngine(), timeout_ms=1000)
         processor = SpeechSessionProcessor(
