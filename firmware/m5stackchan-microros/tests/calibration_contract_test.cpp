@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "stackchan/calibration.hpp"
@@ -6,7 +8,8 @@ namespace {
 
 void require(bool condition, const char* message) {
   if (!condition) {
-    __builtin_trap();
+    fprintf(stderr, "calibration contract failed: %s\n", message);
+    exit(1);
   }
   (void)message;
 }
@@ -26,7 +29,7 @@ int main() {
 
   const stackchan::ServoCalibration valid_servo{
       0,
-      0,
+      45,
       2,
       -2,
       0,
