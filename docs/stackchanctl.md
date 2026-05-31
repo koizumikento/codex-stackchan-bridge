@@ -229,6 +229,9 @@ stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500
 stackchanctl motion home --speed 500
 stackchanctl motion status --json
 stackchanctl led progress
+stackchanctl mood done
+stackchanctl demo --json
+stackchanctl doctor --json
 stackchanctl observe
 stackchanctl events next --json
 stackchanctl speech transcript mock-utt-001 --json
@@ -425,6 +428,97 @@ Rules:
 - Unknown patterns return `UNKNOWN_COMMAND`.
 - `HIGH` may preempt lower-priority LED state. External `SAFETY` priority is
   rejected with `INVALID_PRIORITY`.
+
+### `mood`
+
+Requests a fixed Codex work-state preset as a bounded combination of existing
+face, LED, and named motion commands.
+
+Expected examples:
+
+- `coding`
+- `thinking`
+- `blocked`
+- `done`
+- `idle`
+
+Rules:
+
+- `mood` does not introduce a firmware-owned mood state, a generic behavior
+  DSL, raw servo pose, waypoint list, or maintenance path.
+- The bridge backend uses the existing facade resources such as
+  `/stackchan/<device_id>/cmd/face/set`,
+  `/stackchan/<device_id>/cmd/led/set`, and, when needed,
+  `/stackchan/<device_id>/cmd/motion/run`.
+- The JSON `command` includes a metadata-only `steps` summary. It does not
+  include speech text, PCM bytes, image bytes, raw NFC tag IDs, raw IR codes, or
+  secrets.
+- Unknown moods return `UNKNOWN_COMMAND`. External `SAFETY` priority is
+  rejected with `INVALID_PRIORITY`.
+
+Initial preset mapping:
+
+```text
+coding   -> face thinking, LED progress
+thinking -> face thinking, LED progress, motion look-user
+blocked  -> face error, LED warning
+done     -> face happy, LED success, motion cheerful
+idle     -> face neutral, LED off, motion idle
+```
+
+### `demo`
+
+Runs a short human bring-up or showcase sequence against the configured backend.
+The default demo is intentionally small and avoids TTS and media unless the
+operator opts in.
+
+```bash
+stackchanctl demo
+stackchanctl demo --include-say --voice default
+stackchanctl demo --include-media --output-dir tmp/demo
+```
+
+Rules:
+
+- The MVP implementation uses existing CLI/backend orchestration. It does not
+  use the reserved `/stackchan/<device_id>/cmd/perform` contract.
+- The default sequence checks `observe`, then runs short face, LED, and named
+  motion steps. `--include-say` enables a short local `say` check.
+  `--include-media` enables bounded audio capture and camera capture output
+  files under `--output-dir`.
+- Unsupported media capabilities are represented as skipped/degraded steps with
+  structured error codes, not payload dumps.
+- `--json` returns a step summary with `completed`, `skipped`, `degraded`, or
+  `failed` step states. It must not inline speech text, transcript text, PCM
+  bytes, JPEG bytes/base64, raw NFC tag IDs, raw IR codes, or secrets.
+- Audio/TTS completion is software transport evidence only. Audible quality
+  still requires an operator-listening result.
+
+### `doctor`
+
+Builds a read-only diagnostic report from existing bridge facade/public status
+surfaces.
+
+```bash
+stackchanctl doctor --json
+```
+
+Rules:
+
+- `doctor` does not actuate hardware. It does not call `face`, `motion`, `led`,
+  `say`, audio capture, camera capture, raw telemetry streams, or maintenance
+  writes.
+- The bridge backend uses existing bounded sources such as status/capabilities,
+  power status, motion status, and events. It does not directly consume
+  `/stackchan/<device_id>/device/...` resources as the normal CLI path.
+- `ok=true` means the diagnostic command completed. Degraded capabilities or
+  stale telemetry are reported through `overall_state=degraded` and individual
+  checks, rather than being collapsed into command failure.
+- JSON reports include `device_id`, `backend`, `connected`, `overall_state`,
+  `device_state`, `firmware_version`, `capabilities`, and `checks`.
+- The report is metadata-only and must not include speech text, transcript
+  text, PCM/audio bytes, image bytes/base64, raw NFC tag IDs, raw IR codes,
+  protocol dumps, provider request bodies, or secrets.
 
 ### `observe`
 

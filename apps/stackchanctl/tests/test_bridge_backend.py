@@ -53,9 +53,12 @@ class FakeBridgeClient:
         self.next_event_args = None
         self.clear_events_args = None
         self.power_status_args = None
+        self.get_head_pose_args = None
         self.move_head_pose_args = None
         self.home_head_pose_args = None
         self.run_motion_args = None
+        self.set_face_args = []
+        self.set_led_args = []
         self.say_args = None
         self.play_audio_args = None
         self.capture_audio_args = None
@@ -82,9 +85,11 @@ class FakeBridgeClient:
         )
 
     def set_face(self, meta, name: str, timeout: float) -> BridgeCommandResponse:
+        self.set_face_args.append((meta.device_id, name, timeout))
         return self._accepted()
 
     def set_led(self, meta, pattern: str, timeout: float) -> BridgeCommandResponse:
+        self.set_led_args.append((meta.device_id, pattern, timeout))
         return self._accepted()
 
     def run_motion(
@@ -253,6 +258,22 @@ class FakeBridgeClient:
             meta=meta,
         )
 
+    def get_head_pose(self, meta, timeout: float):
+        self.get_head_pose_args = (meta.device_id, meta.command_id, timeout)
+        from stackchanctl.contract import HeadPoseResult
+
+        return HeadPoseResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=meta.device_id,
+            pan_deg=0.0,
+            tilt_deg=0.0,
+            moving=False,
+            stale=False,
+            stamp="2026-05-16T00:00:00Z",
+            meta=meta,
+        )
+
     @staticmethod
     def _accepted() -> BridgeCommandResponse:
         return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
@@ -402,6 +423,105 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["command"], {"type": "motion", "name": "cheerful"})
         self.assertEqual(client.run_motion_args, ("default", "cheerful", False, 5.0))
+
+    def test_bridge_mood_runs_existing_facade_steps(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "--device", "desk", "mood", "done", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result_state"], "ACCEPTED")
+        self.assertEqual(payload["command"]["type"], "mood")
+        self.assertEqual(payload["command"]["name"], "done")
+        self.assertEqual(client.set_face_args, [("desk", "happy", 5.0)])
+        self.assertEqual(client.set_led_args, [("desk", "success", 5.0)])
+        self.assertEqual(client.run_motion_args, ("desk", "cheerful", False, 5.0))
+
+    def test_bridge_mood_wait_passes_wait_to_motion(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "mood", "done", "--wait", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["result_state"], "COMPLETED")
+        self.assertEqual(client.run_motion_args, ("default", "cheerful", True, 5.0))
+
+    def test_bridge_demo_runs_default_non_media_steps(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "demo", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        steps = {step["name"]: step for step in payload["command"]["steps"]}
+        self.assertEqual(payload["result_state"], "ACCEPTED")
+        self.assertEqual(steps["observe"]["state"], "completed")
+        self.assertEqual(steps["say"]["state"], "skipped")
+        self.assertEqual(steps["audio.capture"]["state"], "skipped")
+        self.assertEqual(client.set_face_args[-1], ("default", "thinking", 5.0))
+        self.assertEqual(client.set_led_args[-1], ("default", "off", 5.0))
+        self.assertEqual(client.run_motion_args, ("default", "nod", False, 5.0))
+        self.assertIsNone(client.say_args)
+        self.assertIsNone(client.capture_audio_args)
+        self.assertIsNone(client.capture_camera_args)
+
+    def test_bridge_demo_include_media_reports_unsupported_as_skipped(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "demo",
+                "--include-media",
+                "--output-dir",
+                str(Path(tempfile.gettempdir()) / "stackchan-demo-test"),
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        steps = {step["name"]: step for step in payload["command"]["steps"]}
+        self.assertEqual(steps["audio.capture"]["state"], "skipped")
+        self.assertEqual(steps["audio.capture"]["error_code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(steps["camera.capture"]["state"], "skipped")
+        self.assertEqual(steps["camera.capture"]["error_code"], "UNSUPPORTED_FEATURE")
+        self.assertIsNotNone(client.capture_audio_args)
+        self.assertIsNotNone(client.capture_camera_args)
+
+    def test_bridge_doctor_uses_status_and_capabilities(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            ["--backend", "bridge", "doctor", "--json"],
+            client,
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["backend"], "bridge")
+        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(payload["device_state"], "idle")
+        self.assertEqual(payload["firmware_version"], "bridge-test")
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertEqual(checks["connection"]["state"], "ok")
+        self.assertEqual(checks["power"]["state"], "ok")
+        self.assertEqual(checks["motion_pose"]["state"], "ok")
+        self.assertEqual(checks["capability.camera_snapshot"]["state"], "degraded")
+        self.assertEqual(checks["capability.camera_snapshot"]["detail_code"], "UNSUPPORTED_FEATURE")
+        self.assertEqual(client.power_status_args, ("default", "cmd-test-0001", 5.0))
+        self.assertEqual(client.get_head_pose_args, ("default", "cmd-test-0001", 5.0))
+        self.assertEqual(client.list_events_args, ("default", 5, None, 5.0))
+        self.assertIsNone(client.say_args)
+        self.assertIsNone(client.capture_audio_args)
+        self.assertIsNone(client.capture_camera_args)
 
     def test_bridge_motion_pose_passes_absolute_pose_to_client(self) -> None:
         client = FakeBridgeClient()

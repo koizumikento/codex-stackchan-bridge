@@ -28,6 +28,9 @@ class CommandType(StrEnum):
     MOTION_HOME = "motion-home"
     MOTION_STATUS = "motion-status"
     LED = "led"
+    MOOD = "mood"
+    DEMO = "demo"
+    DOCTOR = "doctor"
     OBSERVE = "observe"
     EVENTS_LIST = "events-list"
     EVENTS_NEXT = "events-next"
@@ -154,6 +157,62 @@ class DeviceStatus:
             "firmware_version": self.firmware_version,
             "capabilities": [capability.to_dict() for capability in self.capabilities],
         }
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    name: str
+    state: str
+    detail_code: str = ""
+    message: str = ""
+    recoverable: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": self.name, "state": self.state}
+        if self.detail_code:
+            payload["detail_code"] = self.detail_code
+        if self.message:
+            payload["message"] = self.message
+        if self.recoverable is not None:
+            payload["recoverable"] = self.recoverable
+        return payload
+
+
+@dataclass(frozen=True)
+class DoctorResult:
+    ok: bool
+    result_state: ResultState
+    device_id: str
+    backend: str
+    connected: bool
+    overall_state: str
+    checks: tuple[DoctorCheck, ...]
+    device_state: str = "unknown"
+    firmware_version: str = ""
+    last_error: ErrorDetail | None = None
+    capabilities: tuple[CapabilityStatus, ...] = ()
+    meta: CommandMeta | None = None
+    error: ErrorDetail | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "result_state": self.result_state.value,
+            "device_id": self.device_id,
+            "command_id": None if self.meta is None else self.meta.command_id,
+            "metadata": None if self.meta is None else self.meta.to_dict(),
+            "backend": self.backend,
+            "connected": self.connected,
+            "overall_state": self.overall_state,
+            "device_state": self.device_state,
+            "firmware_version": self.firmware_version,
+            "last_error": None if self.last_error is None else self.last_error.to_dict(),
+            "capabilities": [capability.to_dict() for capability in self.capabilities],
+            "checks": [check.to_dict() for check in self.checks],
+        }
+        if self.error is not None:
+            payload["error"] = self.error.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)

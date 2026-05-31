@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable, Mapping, TextIO
 
 from stackchanctl.backends import create_backend
@@ -18,6 +19,7 @@ from stackchanctl.contract import (
     CommandResult,
     CommandType,
     DeviceStatus,
+    DoctorResult,
     EventListResult,
     HeadPoseResult,
     PowerStatusResult,
@@ -156,6 +158,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     led = subparsers.add_parser("led")
     led.add_argument("pattern")
+
+    mood = subparsers.add_parser("mood")
+    mood.add_argument("name")
+
+    demo = subparsers.add_parser("demo")
+    demo.add_argument("--include-say", action="store_true")
+    demo.add_argument("--voice", default="")
+    demo.add_argument("--include-media", action="store_true")
+    demo.add_argument("--output-dir", default="tmp/stackchan_demo")
+
+    subparsers.add_parser("doctor")
 
     mcp = subparsers.add_parser("mcp")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
@@ -320,6 +333,20 @@ def build_request(
         command_args = {}
     elif command_type is CommandType.LED:
         command_args = {"pattern": args.pattern.strip()}
+    elif command_type is CommandType.MOOD:
+        command_args = {"name": args.name.strip()}
+    elif command_type is CommandType.DEMO:
+        output_dir = Path(args.output_dir)
+        command_args = {
+            "include_say": bool(args.include_say),
+            "voice": args.voice.strip(),
+            "include_media": bool(args.include_media),
+            "output_dir": str(output_dir),
+            "audio_output": str(output_dir / "demo_capture.wav"),
+            "camera_output": str(output_dir / "demo_frame.jpg"),
+        }
+    elif command_type is CommandType.DOCTOR:
+        command_args = {}
     elif command_type is CommandType.AUDIO_PLAY:
         command_args = {"path": args.path.strip()}
     elif command_type is CommandType.AUDIO_CAPTURE:
@@ -378,7 +405,7 @@ def build_request(
 
 
 def render(
-    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
+    result: CommandResult | DeviceStatus | DoctorResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
     *,
     json_output: bool,
     stdout: TextIO,
@@ -415,6 +442,19 @@ def render(
                 f"{event.stamp} {event.event_name} event_id={event_id} device={event.device_id} "
                 f"command_id={command_id} payload={payload}\n"
             )
+        return
+
+    if isinstance(result, DoctorResult):
+        if not result.ok:
+            _render_error_result(result.device_id, result.error, stderr)
+            return
+        stdout.write(
+            f"doctor device={result.device_id} backend={result.backend} "
+            f"overall={result.overall_state} connected={str(result.connected).lower()}\n"
+        )
+        for check in result.checks:
+            detail = f" detail={check.detail_code}" if check.detail_code else ""
+            stdout.write(f"{check.state} {check.name}{detail}\n")
         return
 
     if isinstance(result, TranscriptResult):
@@ -471,9 +511,9 @@ def render(
 
 
 def _is_failed_result(
-    result: CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
+    result: CommandResult | DeviceStatus | DoctorResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult,
 ) -> bool:
-    return isinstance(result, (CommandResult, EventListResult, TranscriptResult, PowerStatusResult, HeadPoseResult)) and not result.ok
+    return isinstance(result, (CommandResult, DoctorResult, EventListResult, TranscriptResult, PowerStatusResult, HeadPoseResult)) and not result.ok
 
 
 def _render_error_result(device_id: str, error, stderr: TextIO) -> None:

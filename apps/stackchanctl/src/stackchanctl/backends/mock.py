@@ -11,6 +11,8 @@ from stackchanctl.contract import (
     CommandResult,
     CommandType,
     DeviceStatus,
+    DoctorCheck,
+    DoctorResult,
     ErrorDetail,
     Event,
     EventListResult,
@@ -26,6 +28,31 @@ DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 ALLOWED_FACES = {"neutral", "happy", "thinking", "surprised", "sleepy", "error"}
 ALLOWED_MOTIONS = {"nod", "shake", "cheerful", "look-left", "look-right", "look-user", "idle"}
 ALLOWED_LEDS = {"off", "progress", "success", "warning", "error", "listening"}
+MOOD_PRESETS: dict[str, tuple[dict[str, str], ...]] = {
+    "coding": (
+        {"type": "face", "name": "thinking"},
+        {"type": "led", "pattern": "progress"},
+    ),
+    "thinking": (
+        {"type": "face", "name": "thinking"},
+        {"type": "led", "pattern": "progress"},
+        {"type": "motion", "name": "look-user"},
+    ),
+    "blocked": (
+        {"type": "face", "name": "error"},
+        {"type": "led", "pattern": "warning"},
+    ),
+    "done": (
+        {"type": "face", "name": "happy"},
+        {"type": "led", "pattern": "success"},
+        {"type": "motion", "name": "cheerful"},
+    ),
+    "idle": (
+        {"type": "face", "name": "neutral"},
+        {"type": "led", "pattern": "off"},
+        {"type": "motion", "name": "idle"},
+    ),
+}
 BASELINE_AUDIO_FORMAT = "pcm_s16le"
 BASELINE_AUDIO_SAMPLE_RATE = 16000
 BASELINE_AUDIO_CHANNELS = 1
@@ -65,7 +92,7 @@ class MockBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
+    ) -> CommandResult | DeviceStatus | DoctorResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -93,6 +120,9 @@ class MockBackend:
 
         if request.command_type is CommandType.MOTION_STATUS:
             return _head_pose_status(request)
+
+        if request.command_type is CommandType.DOCTOR:
+            return self._doctor(request)
 
         if request.command_type is CommandType.MAINTENANCE_CALIBRATION_STATUS:
             return CommandResult(
@@ -194,6 +224,55 @@ class MockBackend:
                 ),
             )
         return replace(transcript, meta=request.meta)
+
+    def _doctor(self, request: CommandRequest) -> DoctorResult:
+        status = _observe(request)
+        power = _power_status(request)
+        pose = _head_pose_status(request)
+        events = self._list_events(
+            replace(request, command_type=CommandType.EVENTS_LIST, args={"limit": 5, "since_event_id": None})
+        )
+        checks: list[DoctorCheck] = [
+            DoctorCheck(
+                "connection",
+                "ok" if status.connected else "failed",
+                detail_code="" if status.last_error is None else status.last_error.code,
+                message="" if status.last_error is None else status.last_error.message,
+                recoverable=None if status.last_error is None else status.last_error.recoverable,
+            )
+        ]
+        for capability in status.capabilities:
+            checks.append(
+                DoctorCheck(
+                    f"capability.{capability.name}",
+                    "ok" if capability.state == "available" else "degraded",
+                    detail_code=capability.detail_code,
+                )
+            )
+        checks.append(_check_from_result("power", power))
+        checks.append(_check_from_result("motion_pose", pose))
+        checks.append(
+            DoctorCheck(
+                "events",
+                "ok" if events.ok else "degraded",
+                detail_code="" if events.error is None else events.error.code,
+            )
+        )
+        overall_state = "ok" if all(check.state == "ok" for check in checks) else "degraded"
+        return DoctorResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            backend="mock",
+            connected=status.connected,
+            overall_state=overall_state,
+            checks=tuple(checks),
+            device_state=status.device_state,
+            firmware_version=status.firmware_version,
+            last_error=status.last_error,
+            capabilities=status.capabilities,
+            meta=request.meta,
+        )
 
     def _events_for(self, device_id: str) -> list[Event]:
         if device_id not in self._events_by_device:
@@ -308,6 +387,13 @@ def validate_common_request(request: CommandRequest) -> ErrorDetail | None:
         return ErrorDetail(
             code="UNKNOWN_COMMAND",
             message=f"unknown LED pattern {request.args['pattern']!r}",
+            recoverable=False,
+        )
+
+    if request.command_type is CommandType.MOOD and request.args["name"] not in MOOD_PRESETS:
+        return ErrorDetail(
+            code="UNKNOWN_COMMAND",
+            message=f"unknown mood {request.args['name']!r}",
             recoverable=False,
         )
 
@@ -445,6 +531,19 @@ def _validate_motion_timing(request: CommandRequest) -> ErrorDetail | None:
             recoverable=True,
         )
     return None
+
+
+def _check_from_result(name: str, result: PowerStatusResult | HeadPoseResult) -> DoctorCheck:
+    if result.ok:
+        return DoctorCheck(name, "ok")
+    error = result.error
+    return DoctorCheck(
+        name,
+        "degraded",
+        detail_code="" if error is None else error.code,
+        message="" if error is None else error.message,
+        recoverable=None if error is None else error.recoverable,
+    )
 
 
 def _observe(request: CommandRequest) -> DeviceStatus:
@@ -931,6 +1030,21 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
         return {"type": "motion.status", "frame": "home"}
     if request.command_type is CommandType.LED:
         return {"type": "led", "pattern": request.args["pattern"]}
+    if request.command_type is CommandType.MOOD:
+        name = str(request.args["name"])
+        steps = MOOD_PRESETS.get(name, ())
+        return {
+            "type": "mood",
+            "name": name,
+            "steps": [dict(step) for step in steps],
+        }
+    if request.command_type is CommandType.DEMO:
+        return {
+            "type": "demo",
+            "include_say": bool(request.args.get("include_say")),
+            "include_media": bool(request.args.get("include_media")),
+            "steps": _demo_steps(request),
+        }
     if request.command_type is CommandType.AUDIO_PLAY:
         return {
             "type": "audio.play",
@@ -1017,6 +1131,46 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "write": True,
         }
     return {"type": request.command_type.value}
+
+
+def _demo_steps(request: CommandRequest) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = [
+        {"name": "observe", "state": "completed"},
+        {"name": "face.neutral", "state": "completed"},
+        {"name": "face.happy", "state": "completed"},
+        {"name": "face.thinking", "state": "completed"},
+        {"name": "led.progress", "state": "completed"},
+        {"name": "led.success", "state": "completed"},
+        {"name": "led.off", "state": "completed"},
+        {"name": "motion.nod", "state": "completed"},
+    ]
+    if bool(request.args.get("include_say")):
+        step: dict[str, Any] = {"name": "say", "state": "completed", "text_length": 2}
+        voice = str(request.args.get("voice", "")).strip()
+        if voice:
+            step["voice_profile"] = voice
+        steps.append(step)
+    else:
+        steps.append({"name": "say", "state": "skipped", "reason": "not_requested"})
+    if bool(request.args.get("include_media")):
+        steps.append(
+            {
+                "name": "audio.capture",
+                "state": "completed",
+                "output": request.args["audio_output"],
+            }
+        )
+        steps.append(
+            {
+                "name": "camera.capture",
+                "state": "completed",
+                "output": request.args["camera_output"],
+            }
+        )
+    else:
+        steps.append({"name": "audio.capture", "state": "skipped", "reason": "not_requested"})
+        steps.append({"name": "camera.capture", "state": "skipped", "reason": "not_requested"})
+    return steps
 
 
 def _events_after(events: list[Event], event_id: str) -> list[Event]:

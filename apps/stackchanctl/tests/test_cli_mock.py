@@ -97,6 +97,85 @@ class MockCliTests(unittest.TestCase):
                 self.assertEqual(payload["command"], {"type": "motion", "name": name})
                 self.assertEqual(payload["result_state"], "ACCEPTED")
 
+    def test_mood_mock_json_reports_step_summary(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["mood", "done", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result_state"], "ACCEPTED")
+        self.assertEqual(payload["command"]["type"], "mood")
+        self.assertEqual(payload["command"]["name"], "done")
+        self.assertEqual(
+            payload["command"]["steps"],
+            [
+                {"type": "face", "name": "happy"},
+                {"type": "led", "pattern": "success"},
+                {"type": "motion", "name": "cheerful"},
+            ],
+        )
+
+    def test_unknown_mood_is_rejected_by_mock_contract(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["mood", "party", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["result_state"], "REJECTED")
+        self.assertEqual(payload["error"]["code"], "UNKNOWN_COMMAND")
+
+    def test_demo_mock_json_has_metadata_only_contract(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["demo", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"]["type"], "demo")
+        self.assertFalse(payload["command"]["include_say"])
+        self.assertFalse(payload["command"]["include_media"])
+        steps = {step["name"]: step for step in payload["command"]["steps"]}
+        self.assertEqual(steps["say"]["state"], "skipped")
+        self.assertEqual(steps["camera.capture"]["state"], "skipped")
+        forbidden = json.dumps(payload, ensure_ascii=False).lower()
+        self.assertNotIn("pcm", forbidden)
+        self.assertNotIn("jpeg", forbidden)
+        self.assertNotIn("speech_text", forbidden)
+
+    def test_demo_mock_include_flags_add_bounded_steps(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "demo",
+                "--include-say",
+                "--voice",
+                "default",
+                "--include-media",
+                "--output-dir",
+                "tmp/demo",
+                "--json",
+            ],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        steps = {step["name"]: step for step in payload["command"]["steps"]}
+        self.assertEqual(steps["say"]["state"], "completed")
+        self.assertEqual(steps["say"]["voice_profile"], "default")
+        self.assertEqual(steps["say"]["text_length"], 2)
+        self.assertEqual(steps["audio.capture"]["output"], str(Path("tmp/demo") / "demo_capture.wav"))
+        self.assertEqual(steps["camera.capture"]["output"], str(Path("tmp/demo") / "demo_frame.jpg"))
+        self.assertNotIn("はい", stdout)
+
     def test_say_can_include_expression_hints(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             [
@@ -730,6 +809,42 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(capabilities["camera_snapshot"]["detail_code"], "UNSUPPORTED_FEATURE")
         self.assertNotIn("image_payload", stdout)
         self.assertNotIn("base64", stdout)
+
+    def test_doctor_mock_json_reports_checks_without_sensitive_payloads(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["doctor", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result_state"], "COMPLETED")
+        self.assertEqual(payload["backend"], "mock")
+        self.assertEqual(payload["overall_state"], "ok")
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertEqual(checks["connection"]["state"], "ok")
+        self.assertEqual(checks["power"]["state"], "ok")
+        self.assertEqual(checks["motion_pose"]["state"], "ok")
+        forbidden = stdout.lower()
+        self.assertNotIn("pcm", forbidden)
+        self.assertNotIn("base64", forbidden)
+        self.assertNotIn("speech_text", forbidden)
+        self.assertNotIn("raw_ir", forbidden)
+
+    def test_doctor_mock_reports_overall_degraded_with_ok_true(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["--device", "unsupported_camera", "doctor", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock"},
+        )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["overall_state"], "degraded")
+        checks = {check["name"]: check for check in payload["checks"]}
+        self.assertEqual(checks["capability.camera_snapshot"]["state"], "degraded")
+        self.assertEqual(checks["capability.camera_snapshot"]["detail_code"], "UNSUPPORTED_FEATURE")
 
     def test_human_output_is_compact(self) -> None:
         code, stdout, stderr = run_stackchanctl(

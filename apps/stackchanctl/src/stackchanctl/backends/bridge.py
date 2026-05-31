@@ -11,6 +11,7 @@ import time
 from typing import Any, Protocol
 import wave
 
+from stackchanctl.backends.mock import MOOD_PRESETS
 from stackchanctl.backends.mock import validate_common_request
 from stackchanctl.contract import (
     CapabilityStatus,
@@ -19,6 +20,8 @@ from stackchanctl.contract import (
     CommandResult,
     CommandType,
     DeviceStatus,
+    DoctorCheck,
+    DoctorResult,
     ErrorDetail,
     Event,
     EventListResult,
@@ -411,7 +414,7 @@ class BridgeBackend:
 
     def execute(
         self, request: CommandRequest
-    ) -> CommandResult | DeviceStatus | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
+    ) -> CommandResult | DeviceStatus | DoctorResult | EventListResult | TranscriptResult | PowerStatusResult | HeadPoseResult:
         validation_error = validate_common_request(request)
         if validation_error is not None:
             return _rejected(request, validation_error)
@@ -423,6 +426,8 @@ class BridgeBackend:
                     client.get_status(request.meta, request.timeout),
                     meta=request.meta,
                 )
+            if request.command_type is CommandType.DOCTOR:
+                return self._execute_doctor_result(request, client)
             if request.command_type in {
                 CommandType.EVENTS_LIST,
                 CommandType.EVENTS_NEXT,
@@ -432,6 +437,8 @@ class BridgeBackend:
                 CommandType.MOTION_STATUS,
             }:
                 return self._execute_observation(request, client)
+            if request.command_type is CommandType.DEMO:
+                return self._execute_demo_result(request, client)
             response = self._execute_command(request, client)
         except BridgeBackendTimeout:
             return _timeout_result(request)
@@ -477,6 +484,8 @@ class BridgeBackend:
             return client.set_led(
                 request.meta, str(request.args["pattern"]), request.timeout
             )
+        if request.command_type is CommandType.MOOD:
+            return self._execute_mood(request, client)
         if request.command_type is CommandType.MOTION:
             return client.run_motion(
                 request.meta,
@@ -557,6 +566,217 @@ class BridgeBackend:
             "UNSUPPORTED_FEATURE",
             f"bridge backend does not support {request.command_type.value!r} yet",
             recoverable=False,
+        )
+
+    def _execute_mood(
+        self, request: CommandRequest, client: BridgeClient
+    ) -> BridgeCommandResponse:
+        name = str(request.args["name"])
+        final_state = ResultState.COMPLETED if request.wait else ResultState.ACCEPTED
+        for step in MOOD_PRESETS[name]:
+            step_type = step["type"]
+            if step_type == "face":
+                response = client.set_face(request.meta, step["name"], request.timeout)
+            elif step_type == "led":
+                response = client.set_led(request.meta, step["pattern"], request.timeout)
+            elif step_type == "motion":
+                response = client.run_motion(
+                    request.meta,
+                    step["name"],
+                    wait=request.wait,
+                    timeout=request.timeout,
+                )
+            else:  # pragma: no cover - preset table guard
+                return BridgeCommandResponse(
+                    ok=False,
+                    result_state=ResultState.REJECTED,
+                    error=ErrorDetail(
+                        code="UNKNOWN_COMMAND",
+                        message=f"unsupported mood step {step_type!r}",
+                        recoverable=False,
+                    ),
+                )
+            if not response.ok or response.result_state in {
+                ResultState.REJECTED,
+                ResultState.TIMEOUT,
+            }:
+                return response
+        return BridgeCommandResponse(ok=True, result_state=final_state)
+
+    def _execute_demo_result(
+        self, request: CommandRequest, client: BridgeClient
+    ) -> CommandResult:
+        steps: list[dict[str, object]] = []
+
+        def command() -> dict[str, object]:
+            payload = _command_payload(request)
+            payload["steps"] = steps
+            return payload
+
+        status = client.get_status(request.meta, request.timeout)
+        if not status.connected:
+            error = status.last_error or ErrorDetail(
+                code="TRANSPORT_DISCONNECTED",
+                message="device is disconnected",
+                recoverable=True,
+            )
+            steps.append({"name": "observe", "state": "failed", "error_code": error.code})
+            return CommandResult(
+                ok=False,
+                result_state=ResultState.REJECTED,
+                meta=request.meta,
+                command=command(),
+                error=error,
+            )
+        steps.append({"name": "observe", "state": "completed"})
+
+        face_steps = (("face.neutral", "neutral"), ("face.happy", "happy"), ("face.thinking", "thinking"))
+        for step_name, face in face_steps:
+            response = client.set_face(request.meta, face, request.timeout)
+            failed = _append_demo_step(steps, step_name, response)
+            if failed is not None:
+                return _demo_failed_result(request, command(), failed)
+
+        for step_name, led in (("led.progress", "progress"), ("led.success", "success"), ("led.off", "off")):
+            response = client.set_led(request.meta, led, request.timeout)
+            failed = _append_demo_step(steps, step_name, response)
+            if failed is not None:
+                return _demo_failed_result(request, command(), failed)
+
+        motion_response = client.run_motion(
+            request.meta,
+            "nod",
+            wait=request.wait,
+            timeout=request.timeout,
+        )
+        failed = _append_demo_step(steps, "motion.nod", motion_response, degraded_codes={"CALIBRATION_INVALID"})
+        if failed is not None:
+            return _demo_failed_result(request, command(), failed)
+
+        if bool(request.args.get("include_say")):
+            say_response = client.say(
+                request.meta,
+                "OK",
+                str(request.args.get("voice", "")),
+                "happy",
+                "cheerful",
+                "happy",
+                wait=request.wait,
+                timeout=request.timeout,
+            )
+            failed = _append_demo_step(steps, "say", say_response)
+            if failed is not None:
+                return _demo_failed_result(request, command(), failed)
+        else:
+            steps.append({"name": "say", "state": "skipped", "reason": "not_requested"})
+
+        if bool(request.args.get("include_media")):
+            output_dir = Path(str(request.args["output_dir"]))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            capture_audio_response = client.capture_audio(
+                request.meta,
+                1.0,
+                str(request.args["audio_output"]),
+                wait=True,
+                timeout=request.timeout,
+            )
+            failed = _append_demo_step(
+                steps,
+                "audio.capture",
+                capture_audio_response,
+                skipped_codes={"UNSUPPORTED_FEATURE"},
+            )
+            if failed is not None:
+                return _demo_failed_result(request, command(), failed)
+            capture_camera_response = client.capture_camera(
+                request.meta,
+                str(request.args["camera_output"]),
+                80,
+                wait=True,
+                timeout=request.timeout,
+            )
+            failed = _append_demo_step(
+                steps,
+                "camera.capture",
+                capture_camera_response,
+                skipped_codes={"UNSUPPORTED_FEATURE"},
+            )
+            if failed is not None:
+                return _demo_failed_result(request, command(), failed)
+        else:
+            steps.append({"name": "audio.capture", "state": "skipped", "reason": "not_requested"})
+            steps.append({"name": "camera.capture", "state": "skipped", "reason": "not_requested"})
+
+        return CommandResult(
+            ok=True,
+            result_state=ResultState.COMPLETED if request.wait else ResultState.ACCEPTED,
+            meta=request.meta,
+            command=command(),
+        )
+
+    def _execute_doctor_result(
+        self, request: CommandRequest, client: BridgeClient
+    ) -> DoctorResult:
+        status = replace(client.get_status(request.meta, request.timeout), meta=request.meta)
+        checks: list[DoctorCheck] = [
+            DoctorCheck(
+                "connection",
+                "ok" if status.connected else "degraded",
+                detail_code="" if status.last_error is None else status.last_error.code,
+                message="" if status.last_error is None else status.last_error.message,
+                recoverable=None if status.last_error is None else status.last_error.recoverable,
+            )
+        ]
+        for capability in status.capabilities:
+            checks.append(
+                DoctorCheck(
+                    f"capability.{capability.name}",
+                    "ok" if capability.state == "available" else "degraded",
+                    detail_code=capability.detail_code,
+                )
+            )
+
+        try:
+            power = client.get_power_status(request.meta, request.timeout)
+        except BridgeBackendError as exc:
+            checks.append(
+                DoctorCheck("power", "degraded", detail_code=exc.code, message=str(exc), recoverable=exc.recoverable)
+            )
+        else:
+            checks.append(_doctor_check_from_result("power", power))
+
+        try:
+            pose = client.get_head_pose(request.meta, request.timeout)
+        except BridgeBackendError as exc:
+            checks.append(
+                DoctorCheck("motion_pose", "degraded", detail_code=exc.code, message=str(exc), recoverable=exc.recoverable)
+            )
+        else:
+            checks.append(_doctor_check_from_result("motion_pose", pose))
+
+        try:
+            events = client.list_events(request.meta, 5, None, request.timeout)
+        except BridgeBackendError as exc:
+            checks.append(
+                DoctorCheck("events", "degraded", detail_code=exc.code, message=str(exc), recoverable=exc.recoverable)
+            )
+        else:
+            checks.append(_doctor_check_from_result("events", events))
+
+        overall_state = "ok" if all(check.state == "ok" for check in checks) else "degraded"
+        return DoctorResult(
+            ok=True,
+            result_state=ResultState.COMPLETED,
+            device_id=request.meta.device_id,
+            backend="bridge",
+            connected=status.connected,
+            overall_state=overall_state,
+            checks=tuple(checks),
+            device_state=status.device_state,
+            firmware_version=status.firmware_version,
+            last_error=status.last_error,
+            capabilities=status.capabilities,
+            meta=request.meta,
         )
 
     def _execute_observation(
@@ -1638,6 +1858,62 @@ def _error_result(
     )
 
 
+def _append_demo_step(
+    steps: list[dict[str, object]],
+    name: str,
+    response: BridgeCommandResponse,
+    *,
+    degraded_codes: set[str] | None = None,
+    skipped_codes: set[str] | None = None,
+) -> ErrorDetail | None:
+    degraded_codes = degraded_codes or set()
+    skipped_codes = skipped_codes or set()
+    error = response.error
+    if response.ok:
+        steps.append({"name": name, "state": "completed"})
+        return None
+    error_code = "UNKNOWN_COMMAND" if error is None else error.code
+    if error_code in skipped_codes:
+        steps.append({"name": name, "state": "skipped", "error_code": error_code})
+        return None
+    if error_code in degraded_codes:
+        steps.append({"name": name, "state": "degraded", "error_code": error_code})
+        return None
+    steps.append({"name": name, "state": "failed", "error_code": error_code})
+    return error or ErrorDetail(
+        code=error_code,
+        message=f"demo step {name} failed",
+        recoverable=True,
+    )
+
+
+def _doctor_check_from_result(
+    name: str, result: EventListResult | PowerStatusResult | HeadPoseResult
+) -> DoctorCheck:
+    if result.ok:
+        return DoctorCheck(name, "ok")
+    error = result.error
+    return DoctorCheck(
+        name,
+        "degraded",
+        detail_code="" if error is None else error.code,
+        message="" if error is None else error.message,
+        recoverable=None if error is None else error.recoverable,
+    )
+
+
+def _demo_failed_result(
+    request: CommandRequest, command: dict[str, object], error: ErrorDetail
+) -> CommandResult:
+    return CommandResult(
+        ok=False,
+        result_state=ResultState.REJECTED,
+        meta=request.meta,
+        command=command,
+        error=error,
+    )
+
+
 def _command_payload(request: CommandRequest) -> dict[str, object]:
     if request.command_type is CommandType.FACE:
         return {"type": "face", "name": request.args["name"]}
@@ -1663,6 +1939,21 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
         return {"type": "motion.status", "frame": "home"}
     if request.command_type is CommandType.LED:
         return {"type": "led", "pattern": request.args["pattern"]}
+    if request.command_type is CommandType.MOOD:
+        name = str(request.args["name"])
+        steps = MOOD_PRESETS.get(name, ())
+        return {
+            "type": "mood",
+            "name": name,
+            "steps": [dict(step) for step in steps],
+        }
+    if request.command_type is CommandType.DEMO:
+        return {
+            "type": "demo",
+            "include_say": bool(request.args.get("include_say")),
+            "include_media": bool(request.args.get("include_media")),
+            "steps": [],
+        }
     if request.command_type is CommandType.SAY:
         payload: dict[str, Any] = {
             "type": "say",

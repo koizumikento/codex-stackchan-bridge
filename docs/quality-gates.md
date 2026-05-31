@@ -61,6 +61,19 @@ Required for CLI changes:
 - Face/LED tests cover unknown expression/pattern, timeout, idempotency,
   no unbounded queue growth, `HIGH` preempt behavior, and external `SAFETY`
   rejection.
+- Mood command tests cover deterministic mock presets, unknown mood rejection,
+  bridge use of existing face/LED/motion facade calls, metadata preservation,
+  disconnected/unknown device errors, external `SAFETY` rejection, and absence
+  of speech text, PCM, image bytes, raw NFC tag IDs, raw IR codes, and secrets.
+- Demo command tests cover default non-media behavior, opt-in say/media flags,
+  structured step summaries, unsupported/degraded step handling, media-busy
+  diagnostics without payload exposure, bridge/mock parity, and the distinction
+  between transport completion and operator-listening audible quality.
+- Doctor command tests cover read-only behavior, mock healthy/degraded reports,
+  bridge status/capability aggregation, `device_state` versus `result_state`,
+  disconnected/unknown/conflict/stale classifications, no maintenance or
+  actuation calls, and redaction of speech, audio, image, NFC, IR, provider
+  request, and secret payloads.
 
 Required for MCP stdio changes:
 
