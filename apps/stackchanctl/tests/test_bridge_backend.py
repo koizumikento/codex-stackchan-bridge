@@ -786,6 +786,31 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(payload["command"]["sample_rate"], 16000)
         self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
 
+    def test_bridge_audio_capture_can_cue_operator_with_led(self) -> None:
+        client = FakeBridgeClient()
+        code, stdout, stderr = run_stackchanctl(
+            [
+                "--backend",
+                "bridge",
+                "audio",
+                "capture",
+                "--seconds",
+                "1.5",
+                "--output",
+                "mic.wav",
+                "--cue-led",
+                "--wait",
+                "--json",
+            ],
+            client,
+        )
+
+        self.assertEqual(code, 1)
+        payload = json.loads(stderr)
+        self.assertEqual(payload["command"]["cue"], "led.progress")
+        self.assertEqual(client.set_led_args, [("default", "progress", 5.0), ("default", "off", 5.0)])
+        self.assertEqual(client.capture_audio_args, ("default", 1.5, "mic.wav", True, 5.0))
+
     def test_bridge_camera_capture_is_unsupported_until_firmware_transport_exists(self) -> None:
         client = FakeBridgeClient()
         code, stdout, stderr = run_stackchanctl(

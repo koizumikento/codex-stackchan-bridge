@@ -80,10 +80,16 @@ def split_capture_chunk(chunk: AudioChunk) -> tuple[AudioFrame, ...]:
 SpeechDetector = Callable[[AudioFrame], bool]
 
 
-def energy_speech_detector(frame: AudioFrame, *, threshold: int = 8) -> bool:
+def energy_speech_detector(frame: AudioFrame, *, threshold: int = 512) -> bool:
     """Tiny deterministic VAD primitive used until a real VAD backend is configured."""
 
-    return any(abs(byte - 128) > threshold for byte in frame.pcm)
+    if len(frame.pcm) % 2 != 0:
+        return False
+    for offset in range(0, len(frame.pcm), 2):
+        sample = int.from_bytes(frame.pcm[offset : offset + 2], "little", signed=True)
+        if abs(sample) > threshold:
+            return True
+    return False
 
 
 class VadState(StrEnum):
@@ -146,7 +152,9 @@ class VadStateMachine:
             if len(self._candidate_frames) < self.config.start_frames:
                 return VadUpdate()
             self.state = VadState.SPEECH
-            self._speech_frames = list(self._pre_roll)
+            pre_roll = list(self._pre_roll)
+            candidate_prefix = [candidate for candidate in self._candidate_frames if candidate not in pre_roll]
+            self._speech_frames = candidate_prefix + pre_roll
             self._silence_frames = 0
             return VadUpdate(speech_detected=True)
 
@@ -162,13 +170,24 @@ class VadStateMachine:
 
         end_frames = self._frames(self.config.end_silence_ms)
         if self._silence_frames >= end_frames:
-            utterance_frames = self._speech_frames[: -self._trim_silence_frames()]
+            utterance_frames = self._utterance_frames()
             utterance = self._finish(frame, frames=utterance_frames)
             if utterance.duration_ms < self.config.min_utterance_ms:
                 return VadUpdate()
             return VadUpdate(utterance=utterance)
 
         return VadUpdate()
+
+    def flush(self) -> Utterance | None:
+        """Finish the current utterance when a bounded capture window ends."""
+
+        if self.state is not VadState.SPEECH or not self._speech_frames:
+            self._candidate_frames.clear()
+            return None
+        utterance = self._finish(self._speech_frames[-1], frames=self._utterance_frames())
+        if utterance.duration_ms < self.config.min_utterance_ms:
+            return None
+        return utterance
 
     def _finish(self, frame: AudioFrame, *, frames: list[AudioFrame] | None = None) -> Utterance:
         selected = list(frames if frames is not None else self._speech_frames)
@@ -190,6 +209,12 @@ class VadStateMachine:
 
     def _trim_silence_frames(self) -> int:
         return max(0, self._silence_frames - self._frames(self.config.post_roll_ms))
+
+    def _utterance_frames(self) -> list[AudioFrame]:
+        trim = self._trim_silence_frames()
+        if trim <= 0:
+            return list(self._speech_frames)
+        return self._speech_frames[:-trim]
 
     def _frames(self, milliseconds: int) -> int:
         return max(1, milliseconds // self.config.frame_ms)

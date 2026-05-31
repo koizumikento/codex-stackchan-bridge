@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -35,6 +38,12 @@ class SpeechEvent:
 EventSink = Callable[[SpeechEvent], None]
 
 
+@dataclass(frozen=True)
+class _AsrJob:
+    utterance: object
+    echo_state: EchoState
+
+
 class SpeechSessionProcessor:
     """Process audio chunks into redacted speech events and transcript lookups."""
 
@@ -48,6 +57,7 @@ class SpeechSessionProcessor:
         confidence_threshold: float = 0.75,
         vad_config: VadConfig | None = None,
         event_sink: EventSink | None = None,
+        asr_queue_capacity: int = 4,
     ) -> None:
         self.echo_controller = echo_controller or NullEchoController()
         self.asr_worker = asr_worker or LocalAsrWorker()
@@ -56,19 +66,27 @@ class SpeechSessionProcessor:
         self.confidence_threshold = confidence_threshold
         self.vad_config = vad_config
         self.event_sink = event_sink
-        self._vad_by_device: dict[str, VadStateMachine] = {}
+        self._vad_by_session: dict[tuple[str, str], VadStateMachine] = {}
+        self._echo_state_by_session: dict[tuple[str, str], EchoState] = {}
         self._events: list[SpeechEvent] = []
+        self._lock = threading.RLock()
+        self._closed = False
+        self._asr_jobs: queue.Queue[_AsrJob | None] = queue.Queue(maxsize=max(1, asr_queue_capacity))
+        self._asr_thread = threading.Thread(target=self._run_asr_jobs, name="stackchan-asr-worker", daemon=True)
+        self._asr_thread.start()
 
     @property
     def events(self) -> tuple[SpeechEvent, ...]:
-        return tuple(self._events)
+        with self._lock:
+            return tuple(self._events)
 
     def handle_audio_chunk(self, chunk: AudioChunk) -> tuple[SpeechEvent, ...]:
-        before = len(self._events)
+        with self._lock:
+            before = len(self._events)
         if chunk.direction == AUDIO_DIRECTION_PLAYBACK:
             for frame in _playback_frames(chunk):
                 self.echo_controller.process_render(frame)
-            return tuple(self._events[before:])
+            return self._events_since(before)
         try:
             frames = split_capture_chunk(chunk)
         except AudioSessionError as exc:
@@ -80,7 +98,7 @@ class SpeechSessionProcessor:
                     payload={"error_code": exc.code},
                 )
             )
-            return tuple(self._events[before:])
+            return self._events_since(before)
 
         for frame in frames:
             capture = self.echo_controller.process_capture(frame)
@@ -101,7 +119,10 @@ class SpeechSessionProcessor:
                     )
                 )
                 continue
-            vad = self._vad_by_device.setdefault(frame.device_id, VadStateMachine(config=self.vad_config))
+            session_key = (frame.device_id, frame.command_id)
+            with self._lock:
+                self._echo_state_by_session[session_key] = capture.state
+                vad = self._vad_by_session.setdefault(session_key, VadStateMachine(config=self.vad_config))
             update = vad.feed(capture.frame, is_speech=self.speech_detector(capture.frame))
             if update.speech_detected:
                 self._emit(
@@ -113,8 +134,78 @@ class SpeechSessionProcessor:
                     )
                 )
             if update.utterance is not None:
-                self._complete_utterance(update.utterance, echo_state=capture.state)
-        return tuple(self._events[before:])
+                self._queue_utterance(update.utterance, echo_state=capture.state)
+                with self._lock:
+                    self._vad_by_session.pop(session_key, None)
+                    self._echo_state_by_session.pop(session_key, None)
+        return self._events_since(before)
+
+    def flush_session(self, device_id: str, command_id: str) -> tuple[SpeechEvent, ...]:
+        """Close a bounded capture/listen session without waiting for ASR."""
+
+        with self._lock:
+            before = len(self._events)
+            vad = self._vad_by_session.pop((device_id, command_id), None)
+            echo_state = self._echo_state_by_session.pop((device_id, command_id), EchoState.AEC_ACTIVE)
+        if vad is None:
+            return self._events_since(before)
+        utterance = vad.flush()
+        if utterance is not None:
+            self._queue_utterance(utterance, echo_state=echo_state)
+        return self._events_since(before)
+
+    def flush_device(self, device_id: str) -> tuple[SpeechEvent, ...]:
+        """Close all open speech sessions for a device."""
+
+        with self._lock:
+            before = len(self._events)
+            keys = [key for key in self._vad_by_session if key[0] == device_id]
+        for _, command_id in keys:
+            self.flush_session(device_id, command_id)
+        return self._events_since(before)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            try:
+                self._asr_jobs.put(None, timeout=0.1)
+                break
+            except queue.Full:
+                continue
+        self._asr_thread.join(timeout=1.0)
+        self.asr_worker.close()
+
+    def _events_since(self, before: int) -> tuple[SpeechEvent, ...]:
+        with self._lock:
+            return tuple(self._events[before:])
+
+    def _queue_utterance(self, utterance, *, echo_state: EchoState) -> None:
+        with self._lock:
+            closed = self._closed
+        if closed:
+            return
+        try:
+            self._asr_jobs.put_nowait(_AsrJob(utterance=utterance, echo_state=echo_state))
+        except queue.Full:
+            self._emit(
+                SpeechEvent(
+                    device_id=utterance.device_id,
+                    event_name="transcript_failed",
+                    command_id=utterance.command_id,
+                    payload={"utterance_id": utterance.utterance_id, "error_code": "ASR_WORKER_FAILED"},
+                )
+            )
+
+    def _run_asr_jobs(self) -> None:
+        while True:
+            job = self._asr_jobs.get()
+            if job is None:
+                return
+            self._complete_utterance(job.utterance, echo_state=job.echo_state)
 
     def _complete_utterance(self, utterance, *, echo_state: EchoState) -> None:
         try:
@@ -189,7 +280,10 @@ class SpeechSessionProcessor:
         )
 
     def _emit(self, event: SpeechEvent) -> None:
-        self._events.append(event)
+        with self._lock:
+            if self._closed:
+                return
+            self._events.append(event)
         if self.event_sink is not None:
             self.event_sink(event)
 

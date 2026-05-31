@@ -530,13 +530,7 @@ class BridgeBackend:
                 timeout=request.timeout,
             )
         if request.command_type is CommandType.AUDIO_CAPTURE:
-            return client.capture_audio(
-                request.meta,
-                float(request.args["seconds"]),
-                str(request.args["output"]),
-                wait=request.wait,
-                timeout=request.timeout,
-            )
+            return self._execute_audio_capture(request, client)
         if request.command_type is CommandType.CAMERA_CAPTURE:
             return client.capture_camera(
                 request.meta,
@@ -567,6 +561,37 @@ class BridgeBackend:
             f"bridge backend does not support {request.command_type.value!r} yet",
             recoverable=False,
         )
+
+    def _execute_audio_capture(
+        self, request: CommandRequest, client: BridgeClient
+    ) -> BridgeCommandResponse:
+        if not bool(request.args.get("cue_led")):
+            return client.capture_audio(
+                request.meta,
+                float(request.args["seconds"]),
+                str(request.args["output"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
+
+        cue_response = client.set_led(request.meta, "progress", request.timeout)
+        if not cue_response.ok:
+            return cue_response
+        try:
+            capture_response = client.capture_audio(
+                request.meta,
+                float(request.args["seconds"]),
+                str(request.args["output"]),
+                wait=request.wait,
+                timeout=request.timeout,
+            )
+        finally:
+            off_response = client.set_led(request.meta, "off", request.timeout)
+        if not capture_response.ok:
+            return capture_response
+        if not off_response.ok:
+            return off_response
+        return capture_response
 
     def _execute_mood(
         self, request: CommandRequest, client: BridgeClient
@@ -1983,7 +2008,7 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
             "max_chunk_ms": 40,
         }
     if request.command_type is CommandType.AUDIO_CAPTURE:
-        return {
+        payload = {
             "type": "audio.capture",
             "seconds": request.args["seconds"],
             "output": request.args["output"],
@@ -1993,6 +2018,9 @@ def _command_payload(request: CommandRequest) -> dict[str, object]:
             "chunk_ms": 20,
             "max_chunk_ms": 40,
         }
+        if bool(request.args.get("cue_led")):
+            payload["cue"] = "led.progress"
+        return payload
     if request.command_type is CommandType.CAMERA_CAPTURE:
         return {
             "type": "camera.capture",

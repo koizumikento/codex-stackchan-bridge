@@ -1311,6 +1311,7 @@ def main(args: list[str] | None = None) -> None:
             )
 
         def destroy_node(self) -> bool:
+            self.speech_processor.close()
             self._asr_worker.close()
             return super().destroy_node()
 
@@ -4095,9 +4096,11 @@ def main(args: list[str] | None = None) -> None:
                     timeout_sec=timeout_sec,
                     device_id=device_id,
                     command_id=meta.command_id,
+                    cancel_on_result_timeout=True,
                 )
                 return device_result
             finally:
+                self.speech_processor.flush_session(device_id, meta.command_id)
                 self._finish_device_media_action(
                     device_id,
                     meta.command_id,
@@ -4182,6 +4185,7 @@ def main(args: list[str] | None = None) -> None:
             on_accepted=None,
             on_finished=None,
             completion_result: Callable[[], Result | None] | None = None,
+            cancel_on_result_timeout: bool = False,
         ) -> Result:
             if not client.wait_for_server(timeout_sec=0.1):
                 return _make_transport_result(f"firmware {label} is unavailable")
@@ -4226,6 +4230,13 @@ def main(args: list[str] | None = None) -> None:
                 )
                 if wait_result is not None:
                     if not wait_result.ok:
+                        if cancel_on_result_timeout:
+                            self._cancel_device_action_goal(
+                                device_goal_handle,
+                                label,
+                                device_id=device_id,
+                                command_id=command_id,
+                            )
                         self._log_late_device_action_future(
                             result_future,
                             device_id=device_id,
@@ -4242,6 +4253,50 @@ def main(args: list[str] | None = None) -> None:
             finally:
                 if on_finished is not None:
                     on_finished()
+
+        def _cancel_device_action_goal(
+            self,
+            device_goal_handle: object,
+            label: str,
+            *,
+            device_id: str,
+            command_id: str,
+        ) -> None:
+            if not hasattr(device_goal_handle, "cancel_goal_async"):
+                self.get_logger().warning(
+                    "firmware media action goal handle cannot be cancelled "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r}"
+                )
+                return
+            try:
+                cancel_future = device_goal_handle.cancel_goal_async()
+            except Exception as exc:  # pragma: no cover - defensive ROS boundary.
+                self.get_logger().warning(
+                    "firmware media action cancel request failed "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r} error={exc!r}"
+                )
+                return
+            if cancel_future is None:
+                self.get_logger().warning(
+                    "firmware media action cancel request returned no future "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r}"
+                )
+                return
+            wait_result = self._wait_for_future(
+                cancel_future,
+                f"{label} cancel",
+                timeout_sec=1.0,
+                cancel_on_timeout=True,
+            )
+            if wait_result is not None:
+                self.get_logger().warning(
+                    "firmware media action cancel timed out "
+                    f"device_id={device_id!r} command_id={command_id!r} "
+                    f"label={label!r}"
+                )
 
         def _wait_for_future(
             self,

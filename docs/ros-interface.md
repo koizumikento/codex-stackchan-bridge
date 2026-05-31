@@ -1765,7 +1765,7 @@ Feedback fields:
 - `progress`
 - `message`
 
-Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`.
+Microphone capture uses this action for duration, progress, cancellation, and overrun behavior. Captured chunks are published on `/stackchan/<device_id>/device/audio/chunks`. Firmware should end capture after the requested duration once it has published at least one PCM chunk, and should return a structured failure if the microphone produces no chunks or stalls past the bounded session timeout.
 The bridge accepts and forwards the public action to
 `/stackchan/<device_id>/device/audio/capture` only after firmware status reports
 `audio_capture` as available. Missing device action servers return structured
@@ -1783,6 +1783,8 @@ Baseline chunk policy:
 - 20 ms chunks by default.
 - 40 ms chunks are allowed when transport overhead matters.
 - Mic overrun drops the current chunk, publishes an overrun event/error, and keeps capture recoverable.
+- A stalled microphone capture session aborts after the requested duration plus
+  a firmware-owned guard margin and publishes `audio_capture_failed`.
 - Playback underrun stops playback, publishes an error, and returns to a neutral speaking state.
 - Same-direction concurrent playback/capture sessions are rejected with
   `FIRMWARE_BUSY`.
