@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "stackchan/motion_safety.hpp"
@@ -6,7 +8,8 @@ namespace {
 
 void require(bool condition, const char* message) {
   if (!condition) {
-    __builtin_trap();
+    fprintf(stderr, "motion safety contract failed: %s\n", message);
+    exit(1);
   }
   (void)message;
 }
