@@ -49,8 +49,8 @@ the standard implementation.
 
 ASR runs only after VAD has produced an utterance. The baseline keeps cloud ASR
 out of the default path and stores transcripts only in memory with TTL.
-Audio chunk callbacks enqueue bounded ASR work and must not wait for a slow or
-unavailable ASR provider.
+Audio chunk callbacks enqueue bounded speech-processing work and must not wait
+for VAD, echo control, a slow ASR provider, or an unavailable ASR provider.
 
 `transcript_ready` contains only `utterance_id`. Full text is returned only from
 `GetTranscript`. Event payloads, normal logs, and MCP/CLI event results must not

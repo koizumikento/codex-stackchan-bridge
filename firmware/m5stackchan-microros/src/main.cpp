@@ -289,6 +289,8 @@ constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
     kAudioPlaybackSpeakerFrameBytes / 2;
 constexpr uint32_t kAudioCaptureMaxDurationMs = 15000;
 constexpr uint32_t kAudioCaptureChunkTimeoutMs = 250;
+constexpr uint32_t kAudioCaptureSessionTimeoutGraceMs = 5000;
+constexpr uint32_t kAudioCaptureFeedbackEveryChunks = 10;
 constexpr uint32_t kAudioCaptureChunkMs = stackchan::kAudioChunkMs;
 constexpr uint32_t kAudioCaptureChunkSamples = stackchan::kAudioChunkBytes / 2;
 constexpr uint32_t kCameraCaptureTimeoutMs = 2500;
@@ -6234,12 +6236,18 @@ bool publish_capture_audio_chunk(const int16_t* samples, size_t sample_count) {
   }
   ++audio_capture_sequence;
   ++audio_capture_published_chunks;
-  const float progress =
-      audio_capture_target_chunks == 0
-          ? 1.0f
-          : static_cast<float>(audio_capture_published_chunks) /
-                static_cast<float>(audio_capture_target_chunks);
-  publish_capture_audio_feedback(progress > 1.0f ? 1.0f : progress, "capturing");
+  const bool publish_progress =
+      audio_capture_published_chunks == 1 ||
+      audio_capture_published_chunks >= audio_capture_target_chunks ||
+      audio_capture_published_chunks % kAudioCaptureFeedbackEveryChunks == 0;
+  if (publish_progress) {
+    const float progress =
+        audio_capture_target_chunks == 0
+            ? 1.0f
+            : static_cast<float>(audio_capture_published_chunks) /
+                  static_cast<float>(audio_capture_target_chunks);
+    publish_capture_audio_feedback(progress > 1.0f ? 1.0f : progress, "capturing");
+  }
   return true;
 }
 
@@ -6278,6 +6286,20 @@ void step_capture_audio_session() {
     audio_capture_recording_chunk = false;
   }
   const uint32_t now_ms = millis();
+  if (now_ms - audio_capture_started_ms >=
+      audio_capture_duration_ms + kAudioCaptureSessionTimeoutGraceMs) {
+    stackchan_diag_print("stackchan audio_capture_diag stage=session_timeout command_id=");
+    stackchan_diag_print(audio_capture_command_id);
+    stackchan_diag_print(" published_chunks=");
+    stackchan_diag_print(audio_capture_published_chunks);
+    stackchan_diag_print(" target_chunks=");
+    stackchan_diag_println(audio_capture_target_chunks);
+    finish_capture_audio_goal(
+        audio_capture_failed_result("audio capture session timed out"),
+        GOAL_STATE_ABORTED);
+    send_capture_audio_result_if_ready();
+    return;
+  }
   if (audio_capture_recording_chunk &&
       now_ms - audio_capture_last_chunk_ms >= kAudioCaptureChunkTimeoutMs) {
     finish_capture_audio_goal(

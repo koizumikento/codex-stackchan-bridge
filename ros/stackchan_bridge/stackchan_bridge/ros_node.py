@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -75,6 +76,7 @@ AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES = 32 * 1024
 AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES"
 )
+SPEECH_AUDIO_CHUNK_QUEUE_MAX = 64
 MEDIA_ACTION_SETTLE_SEC = 3.0
 TTS_SPEED_SCALE_DEFAULT = 1.0
 TTS_PRE_PHONEME_LENGTH_DEFAULT = 0.03
@@ -261,6 +263,107 @@ class MediaActionGate:
                 self._settling.pop(device_id, None)
                 return None
             return str(settling.command_id)
+
+
+class SpeechAudioChunkDispatcher:
+    """Move speech chunk processing off ROS callbacks with bounded backpressure."""
+
+    def __init__(
+        self,
+        processor: SpeechSessionProcessor,
+        *,
+        max_chunks: int = SPEECH_AUDIO_CHUNK_QUEUE_MAX,
+        logger: object | None = None,
+    ) -> None:
+        self._processor = processor
+        self._logger = logger
+        self._queue: queue.Queue[AudioChunk | None] = queue.Queue(maxsize=max(1, max_chunks))
+        self._closed = threading.Event()
+        self._drop_lock = threading.Lock()
+        self._dropped_chunks = 0
+        self._thread = threading.Thread(
+            target=self._run,
+            name="stackchan-speech-audio-dispatcher",
+            daemon=True,
+        )
+        self._thread.start()
+
+    @property
+    def dropped_chunks(self) -> int:
+        with self._drop_lock:
+            return self._dropped_chunks
+
+    def enqueue(self, chunk: AudioChunk) -> bool:
+        if self._closed.is_set():
+            return False
+        try:
+            self._queue.put_nowait(chunk)
+            return True
+        except queue.Full:
+            self._drop_oldest_chunk()
+            try:
+                self._queue.put_nowait(chunk)
+                self._log_drop(chunk)
+                return True
+            except queue.Full:
+                self._count_drop()
+                self._log_drop(chunk)
+                return False
+
+    def close(self, timeout_sec: float = 1.0) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        while True:
+            try:
+                self._queue.put_nowait(None)
+                break
+            except queue.Full:
+                self._drop_oldest_chunk()
+        self._thread.join(timeout=timeout_sec)
+
+    def _run(self) -> None:
+        while not self._closed.is_set():
+            try:
+                chunk = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                if chunk is None:
+                    return
+                self._processor.handle_audio_chunk(chunk)
+            except Exception as exc:  # pragma: no cover - defensive worker boundary.
+                if self._logger is not None:
+                    self._logger.warning(
+                        "speech audio chunk processing failed "
+                        f"error_type={type(exc).__name__}"
+                    )
+            finally:
+                self._queue.task_done()
+
+    def _drop_oldest_chunk(self) -> None:
+        try:
+            dropped = self._queue.get_nowait()
+        except queue.Empty:
+            return
+        self._queue.task_done()
+        if dropped is not None:
+            self._count_drop()
+
+    def _count_drop(self) -> None:
+        with self._drop_lock:
+            self._dropped_chunks += 1
+
+    def _log_drop(self, chunk: AudioChunk) -> None:
+        if self._logger is None:
+            return
+        dropped = self.dropped_chunks
+        if dropped == 1 or dropped % SPEECH_AUDIO_CHUNK_QUEUE_MAX == 0:
+            self._logger.warning(
+                "speech audio chunk queue dropped capture metadata "
+                f"device_id={chunk.device_id!r} command_id={chunk.command_id!r} "
+                f"sequence={chunk.sequence} dropped_chunks={dropped}"
+            )
 
 
 def _audio_playback_chunk_bytes() -> int:
@@ -1244,6 +1347,10 @@ def main(args: list[str] | None = None) -> None:
             self.speech_processor = SpeechSessionProcessor(
                 transcript_store=self.transcript_store,
                 event_sink=self._handle_speech_event,
+            )
+            self.speech_audio_dispatcher = SpeechAudioChunkDispatcher(
+                self.speech_processor,
+                logger=self.get_logger(),
             )
             self.power_store = PowerTelemetryStore()
             self.head_pose_store = HeadPoseTelemetryStore()
@@ -3018,7 +3125,17 @@ def main(args: list[str] | None = None) -> None:
                 channels=int(getattr(message, "channels", 0)),
                 pcm=bytes(getattr(message, "pcm", b"")),
             )
-            self.speech_processor.handle_audio_chunk(chunk)
+            if not self.speech_audio_dispatcher.enqueue(chunk):
+                self.get_logger().warning(
+                    "speech audio chunk queue closed; dropping capture metadata "
+                    f"device_id={chunk.device_id!r} command_id={chunk.command_id!r} "
+                    f"sequence={chunk.sequence}"
+                )
+
+        def destroy_node(self) -> bool:
+            self.speech_audio_dispatcher.close()
+            self.speech_processor.close()
+            return super().destroy_node()
 
         def _handle_speech_event(self, event: SpeechEvent) -> None:
             record = self.event_aggregator.add(

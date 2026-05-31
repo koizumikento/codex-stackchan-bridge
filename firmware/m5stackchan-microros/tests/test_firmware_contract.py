@@ -764,8 +764,13 @@ class FirmwareContractTests(unittest.TestCase):
         events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
 
         self.assertIn("kAudioCaptureChunkTimeoutMs", main)
+        self.assertIn("kAudioCaptureSessionTimeoutGraceMs = 5000", main)
+        self.assertIn("kAudioCaptureFeedbackEveryChunks = 10", main)
         self.assertIn("kAudioCaptureChunkMs = stackchan::kAudioChunkMs", main)
         self.assertIn("stackchan::kAudioChunkBytes", main)
+        self.assertIn("audio capture session timed out", main)
+        self.assertIn("stage=session_timeout", main)
+        self.assertIn("audio_capture_published_chunks % kAudioCaptureFeedbackEveryChunks == 0", main)
         self.assertIn("kAudioPlaybackNoChunkTimeoutMs = 6000", main)
         self.assertIn("kAudioPlaybackMaxSpeakerDrainMs", main)
         self.assertIn("kAudioPlaybackPendingGapTimeoutMs = 5000", main)
