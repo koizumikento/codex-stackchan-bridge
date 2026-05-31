@@ -78,9 +78,11 @@ Skip physical cues when the cue would add noise rather than value:
 
 ## Observing StackChan Events
 
-StackChan-origin events are observations, not commands. Read them through
-`stackchanctl` or MCP tools, interpret them in the current Codex task context,
-and only then decide whether to send a physical cue.
+StackChan-origin events are observations, not commands. This skill reads them
+through `stackchanctl`, interprets them in the current Codex task context, and
+only then decides whether to send a physical cue. Codex-facing MCP integrations
+belong to the separate `stackchanctl mcp serve` path and should preserve the
+same command contract.
 
 Use event reads sparingly:
 
@@ -94,8 +96,8 @@ Event policy:
 - Treat `button_pressed` as a request for attention or push-to-talk, not as an
   automatic instruction.
 - After `transcript_ready`, fetch the transcript explicitly with
-  `stackchanctl speech transcript <utterance_id> --json` before deciding how to
-  respond.
+  `stackchanctl --source codex_skill speech transcript <utterance_id> --json`
+  before deciding how to respond.
 - Treat `picked_up`, `shaken`, and `tilted` as context hints. Do not assume
   `shaken` means cancel or retry unless the surrounding conversation supports it.
 - Ignore repeated low-value events when responding would be noisy.
@@ -107,7 +109,7 @@ Event policy:
 
 ```text
 button_pressed
-  -> face listening / led listening when useful
+  -> face neutral / led listening when useful
   -> audio capture and local STT happen through bridge
   -> transcript_ready { utterance_id }
   -> fetch transcript
