@@ -51,6 +51,22 @@ Use the permissive, library-shaped parts of the ecosystem as dependencies. Treat
   provider IDs, as the normal CLI/MCP selector. The bridge may map a profile to
   a VOICEVOX `speaker_id` locally.
 
+### Local Whisper ASR services
+
+- Role: optional local ASR service for bridge-owned speech recognition after
+  VAD has produced a bounded utterance.
+- License shape: external runtime service plus separately licensed model
+  weights and caches. Server images, model weights, Hugging Face caches, and
+  generated transcripts are not repository artifacts.
+- Usage: OK to call as an operator-provided local HTTP service. Do not vendor
+  ASR servers, model weights, downloaded caches, or generated transcript/audio
+  data into this repository without a separate documented license and
+  distribution decision.
+- Project stance: keep provider endpoints and raw model identifiers inside
+  bridge-local configuration. CLI, MCP, public events, and normal logs should
+  expose only bounded metadata such as `utterance_id`, confidence, language,
+  duration, command id, and structured result/error codes.
+
 ### Local audio codec candidates
 
 - Role: optional local compression between the bridge and firmware for

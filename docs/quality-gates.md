@@ -144,6 +144,13 @@ Required for bridge event changes:
   ASR worker timeout/failure, transcript redaction, low-confidence suppression,
   immediate safety command positive/negative cases, and queue overflow/drop
   behavior.
+- Local ASR provider adapter tests cover provider-disabled behavior,
+  OpenAI-compatible transcription success, HTTP timeout, HTTP/server failure,
+  invalid response shape, empty transcript, invalid confidence, endpoint/model
+  redaction, and keeping transcript text only in the memory transcript store.
+  Optional GPU compose smoke checks may prove local provider availability, but
+  they are not required in CI or on hosts without Docker Desktop/WSL 2/NVIDIA
+  GPU support.
 - Power telemetry tests cover latest snapshot storage, stale detection, public
   topic naming, and `device_id` preservation while relaying telemetry.
 - Audio routing tests cover command_id/direction separation, no per-chunk ACK
