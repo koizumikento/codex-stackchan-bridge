@@ -103,25 +103,6 @@ hardware bring-up issue complete.
   comments or normal logs; record only profile names, command IDs, result
   codes, and audible observations.
 
-- For local ASR validation, start the optional Whisper helper only when testing
-  the bridge-owned speech recognition path:
-
-  ```powershell
-  docker compose --profile asr-gpu up -d whisper-asr
-  ```
-
-  The default host diagnostic endpoint is
-  `http://localhost:8000/v1/audio/transcriptions`. The bridge ASR adapter takes
-  the base URL and appends `/v1/audio/transcriptions`; use
-  `STACKCHAN_ASR_ENABLED=1` and
-  `STACKCHAN_ASR_ENDPOINT=http://host.docker.internal:8000` when the bridge runs
-  in repository Python Docker helpers, or
-  `STACKCHAN_ASR_ENDPOINT=http://whisper-asr:8000` from a compose-attached
-  bridge container. Keep transcript text, provider endpoints, model
-  identifiers, request bodies, and audio bytes out of Linear comments and
-  normal logs; record only command IDs, result codes, bounded metadata, and
-  whether the local ASR service was reachable.
-
   The same-container smoke can run a TTS-backed `say` check with local TTS
   enabled on the bridge:
 

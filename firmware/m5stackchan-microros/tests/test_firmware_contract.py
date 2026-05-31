@@ -727,7 +727,6 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertNotIn("publish_synthetic_telemetry", main)
 
     def test_audio_policy_uses_baseline_chunk_contract(self) -> None:
-        main = (ROOT / "src" / "main.cpp").read_text()
         audio = (ROOT / "include" / "stackchan" / "audio.hpp").read_text()
         audio_msg = (
             ROOT.parent.parent / "ros" / "stackchan_msgs" / "msg" / "AudioChunk.msg"
@@ -755,9 +754,6 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("AudioCaptureEvent::Started", audio)
         self.assertIn("AudioCaptureEvent::Finished", audio)
         self.assertIn("AudioCaptureEvent::Failed", audio)
-        self.assertIn("M5.Speaker.end();", main)
-        self.assertIn("stackchan_audio_capture_initialized = M5.Mic.begin();", main)
-        self.assertNotIn("if (stackchan_audio_capture_initialized) {\n    M5.Speaker.end();", main)
         self.assertIn("AudioPlaybackChunkGuard", audio)
         self.assertIn('"audio playback chunk arrived without an accepted session"', audio)
         self.assertIn('"AUDIO_UNDERRUN"', audio)
@@ -768,12 +764,7 @@ class FirmwareContractTests(unittest.TestCase):
         events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
 
         self.assertIn("kAudioCaptureChunkTimeoutMs", main)
-        self.assertIn("kAudioCaptureSessionTimeoutMarginMs = 2000", main)
         self.assertIn("kAudioCaptureChunkMs = stackchan::kAudioChunkMs", main)
-        self.assertIn('"microphone capture session timed out"', main)
-        self.assertIn('"microphone capture produced no chunks"', main)
-        self.assertIn("audio_capture_requested_duration_elapsed", main)
-        self.assertIn("audio_capture_duration_ms + kAudioCaptureSessionTimeoutMarginMs", main)
         self.assertIn("stackchan::kAudioChunkBytes", main)
         self.assertIn("kAudioPlaybackNoChunkTimeoutMs = 6000", main)
         self.assertIn("kAudioPlaybackMaxSpeakerDrainMs", main)

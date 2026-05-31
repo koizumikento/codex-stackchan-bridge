@@ -11,7 +11,6 @@ from stackchan_bridge.audio_session import (
     BoundedDropQueue,
     VadConfig,
     VadStateMachine,
-    energy_speech_detector,
     split_capture_chunk,
 )
 
@@ -19,10 +18,6 @@ from stackchan_bridge.audio_session import (
 def frame(speech: bool, index: int = 0) -> AudioFrame:
     byte = b"\xff" if speech else b"\x80"
     return AudioFrame("default", "cmd-1", 1, index, byte * 320)
-
-
-def pcm_frame(sample: int) -> AudioFrame:
-    return AudioFrame("default", "cmd-1", 1, 0, int(sample).to_bytes(2, "little", signed=True) * 160)
 
 
 class AudioSessionTests(unittest.TestCase):
@@ -52,12 +47,6 @@ class AudioSessionTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "MALFORMED_AUDIO_CHUNK")
 
-    def test_energy_speech_detector_treats_pcm_s16le_zero_as_silence(self) -> None:
-        self.assertFalse(energy_speech_detector(pcm_frame(0)))
-        self.assertFalse(energy_speech_detector(pcm_frame(256)))
-        self.assertTrue(energy_speech_detector(pcm_frame(1024)))
-        self.assertTrue(energy_speech_detector(pcm_frame(-1024)))
-
     def test_vad_emits_detected_then_utterance(self) -> None:
         vad = VadStateMachine(
             config=VadConfig(start_frames=2, end_silence_ms=20, pre_roll_ms=10, post_roll_ms=10, min_utterance_ms=20)
@@ -72,20 +61,6 @@ class AudioSessionTests(unittest.TestCase):
         self.assertIsNotNone(utterance)
         self.assertEqual(utterance.device_id, "default")
         self.assertGreaterEqual(utterance.duration_ms, 20)
-
-    def test_vad_flushes_open_utterance_when_capture_window_ends(self) -> None:
-        vad = VadStateMachine(
-            config=VadConfig(start_frames=2, end_silence_ms=200, pre_roll_ms=10, post_roll_ms=10, min_utterance_ms=20)
-        )
-
-        vad.feed(frame(True, 1), is_speech=True)
-        vad.feed(frame(True, 2), is_speech=True)
-        utterance = vad.flush()
-
-        self.assertIsNotNone(utterance)
-        self.assertEqual(utterance.command_id, "cmd-1")
-        self.assertGreaterEqual(utterance.duration_ms, 20)
-        self.assertIsNone(vad.flush())
 
     def test_bounded_queue_drops_oldest(self) -> None:
         queue: BoundedDropQueue[int] = BoundedDropQueue(2)

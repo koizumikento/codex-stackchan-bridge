@@ -1056,7 +1056,7 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "max_chunk_ms": 40,
         }
     if request.command_type is CommandType.AUDIO_CAPTURE:
-        payload = {
+        return {
             "type": "audio.capture",
             "seconds": request.args["seconds"],
             "output": request.args["output"],
@@ -1066,9 +1066,6 @@ def _command_payload(request: CommandRequest) -> dict[str, Any]:
             "chunk_ms": 20,
             "max_chunk_ms": 40,
         }
-        if bool(request.args.get("cue_led")):
-            payload["cue"] = "led.progress"
-        return payload
     if request.command_type is CommandType.CAMERA_CAPTURE:
         return {
             "type": "camera.capture",

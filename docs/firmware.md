@@ -604,18 +604,6 @@ Baseline audio path:
   sequence that is monotonic per command and direction.
 - At most one playback and one capture session may be active per device.
   Same-direction concurrency is rejected with `FIRMWARE_BUSY`.
-- Capture has a firmware-owned hard session timeout of requested duration plus
-  a short guard margin, so a stalled microphone adapter returns a structured
-  failure and releases the audio resource instead of blocking later media
-  commands.
-- Firmware completes capture after the requested duration once at least one
-  PCM chunk has been published; it does not require the nominal 20 ms chunk
-  count before ending the session because real microphone adapters may deliver
-  chunks more slowly under load.
-- During normal idle/capture readiness, firmware gives the shared CoreS3 audio
-  peripheral to the microphone by ending speaker use and beginning the mic.
-  Playback explicitly takes the speaker and returns ownership to the mic after
-  speaker drain.
 - Audio queues and callbacks must be bounded so audio work cannot block safety,
   fault handling, or motion-neutral work.
 - The K151 firmware speaker adapter uses M5Unified `M5.Speaker.playRaw()`.

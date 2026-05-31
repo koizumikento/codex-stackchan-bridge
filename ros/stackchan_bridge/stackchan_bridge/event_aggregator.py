@@ -6,7 +6,6 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping
-from threading import RLock
 from typing import Any
 
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
@@ -43,7 +42,6 @@ class EventAggregator:
         self.max_debounce_entries = max_debounce_entries
         self._clock = clock
         self._last_emit: dict[tuple[str, str, str, str], float] = {}
-        self._lock = RLock()
 
     def add(
         self,
@@ -61,28 +59,27 @@ class EventAggregator:
         Returns ``None`` when a duplicate falls inside the debounce window.
         """
 
-        with self._lock:
-            normalized_name = normalize_event_name(event_name)
-            normalized_payload = normalize_payload(payload)
-            now = self._clock()
-            self._prune_debounce(now)
-            fingerprint = _fingerprint(normalized_payload)
-            debounce_key = (device_id, normalized_name, command_id, fingerprint)
-            last_emit = self._last_emit.get(debounce_key)
-            if last_emit is not None and now - last_emit < self.debounce_seconds:
-                return None
+        normalized_name = normalize_event_name(event_name)
+        normalized_payload = normalize_payload(payload)
+        now = self._clock()
+        self._prune_debounce(now)
+        fingerprint = _fingerprint(normalized_payload)
+        debounce_key = (device_id, normalized_name, command_id, fingerprint)
+        last_emit = self._last_emit.get(debounce_key)
+        if last_emit is not None and now - last_emit < self.debounce_seconds:
+            return None
 
-            self._last_emit[debounce_key] = now
-            self._reserve_debounce_slot()
-            return self.buffer.append(
-                device_id,
-                normalized_name,
-                command_id=command_id,
-                source=source,
-                event_id=event_id,
-                payload=normalized_payload,
-                stamp=stamp,
-            )
+        self._last_emit[debounce_key] = now
+        self._reserve_debounce_slot()
+        return self.buffer.append(
+            device_id,
+            normalized_name,
+            command_id=command_id,
+            source=source,
+            event_id=event_id,
+            payload=normalized_payload,
+            stamp=stamp,
+        )
 
     def _prune_debounce(self, now: float) -> None:
         if self.debounce_seconds == 0:
