@@ -6,7 +6,7 @@ Codex should not talk to StackChan through a cloud account, mobile app, or ad ho
 
 ```mermaid
 flowchart LR
-    Codex["Codex App"] --> Skill["Agent Skill"]
+    Codex["Codex App"] --> Skill["Product Skill"]
     Codex --> MCP["MCP Host\noptional stdio"]
     Skill --> CLI["stackchanctl"]
     MCP --> MCPServer["stackchanctl mcp serve"]
@@ -47,7 +47,7 @@ The split is:
 
 ## Responsibility split
 
-- Codex agent skill decides when a physical expression is useful.
+- Codex-facing product skill decides when a restrained physical expression is useful.
 - `stackchanctl` provides a small, stable command surface.
 - `stackchanctl mcp serve` provides an optional stdio MCP adapter over the same command surface.
 - ROS 2 nodes own routing, observation, and PC-side integration.
@@ -142,7 +142,7 @@ Example namespaces:
 ```mermaid
 flowchart TB
     subgraph CodexLayer["Codex side"]
-        Skill["Agent Skill\n- decide when expression is useful\n- call stackchanctl only"]
+        Skill["Product Skill\n- decide when expression is useful\n- call stackchanctl only"]
         MCPHost["MCP Host\n- optional local stdio client"]
     end
 

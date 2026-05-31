@@ -2,11 +2,11 @@
 
 Codex AppからROS 2経由でM5Stack版ｽﾀｯｸﾁｬﾝを制御するための実験リポジトリです。
 
-目標は、ｽﾀｯｸﾁｬﾝを単なる通知端末ではなく、Codexのローカルな物理アバターとして扱えるようにすることです。CodexのエージェントスキルからローカルCLIを呼び出し、そのCLIがPC側のROS 2 bridge facadeへ命令を送り、bridgeがmicro-ROS経由でｽﾀｯｸﾁｬﾝ本体へ転送します。
+目標は、ｽﾀｯｸﾁｬﾝを単なる通知端末ではなく、Codexのローカルな物理アバターとして扱えるようにすることです。Codex-facing product skill からローカルCLIを呼び出し、そのCLIがPC側のROS 2 bridge facadeへ命令を送り、bridgeがmicro-ROS経由でｽﾀｯｸﾁｬﾝ本体へ転送します。
 
 ```text
 Codex App
-  -> Agent Skill
+  -> Product Skill
   -> stackchanctl
   -> ROS 2 nodes
   -> micro-ROS Agent
@@ -23,7 +23,7 @@ or bridge backend.
 - `stackchanctl mcp serve`: MCP host向けのローカルstdio adapter
 - ROS 2 bridge nodes: 表情、発話、首振り、LED、センサー入力をROSの語彙にのせるPC側ノード
 - micro-ROS firmware: ｽﾀｯｸﾁｬﾝ本体でROS 2からの指示を受けて、表情・サーボ・LEDなどを制御するファームウェア
-- Codex agent skill: 作業開始、テスト成功/失敗、ユーザー待ち、完了などの場面で自然にｽﾀｯｸﾁｬﾝへ振る舞いを送るスキル
+- Codex product skill: 作業開始、テスト成功/失敗、ユーザー待ち、完了などの場面で控えめな振る舞いを送り、StackChan-origin events を観測として扱うスキル
 - Shared message definitions: CLI、ROSノード、ファームウェア間で共有する命令や状態の型
 
 ## Direction
@@ -45,7 +45,7 @@ MCPを使う場合も、Codex/MCP hostがローカルの `stackchanctl mcp serve
 │   ├── stackchan_bridge/      # PC-side ROS 2 nodes
 │   └── stackchan_msgs/        # ROS 2 message/service/action definitions
 ├── skills/
-│   └── codex-stackchan/       # Codex agent skill
+│   └── codex-stackchan/       # Codex product skill
 ├── docs/
 │   ├── README.md              # Documentation map
 │   ├── architecture.md        # Architecture notes
@@ -88,7 +88,7 @@ This repository currently contains the first MVP scaffold:
 - A Python `stackchanctl` CLI with mock backend and bridge backend skeleton.
 - A hardware-free `stackchan_bridge` facade core with a lazy ROS node adapter.
 - A PlatformIO firmware scaffold with safety, audio, and sensor policy headers.
-- A Codex skill that calls `stackchanctl`.
+- A Codex-facing product skill that calls `stackchanctl`, keeps routine cues restrained, and treats StackChan-origin events as observations rather than direct commands.
 
 ROS 2 Jazzy `colcon` builds, micro-ROS firmware build/flash, and hardware behavior validation still need to run in the prepared ROS/PlatformIO environment.
 

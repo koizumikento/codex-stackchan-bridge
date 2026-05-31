@@ -4,7 +4,7 @@
 
 ## Goals
 
-- Provide commands that are easy to use from both a shell and a Codex agent skill.
+- Provide commands that are easy to use from both a shell and a Codex-facing product skill.
 - Hide ROS 2 command details behind a small interface.
 - Support a mock backend so skill behavior can be tested without hardware.
 - Keep command names stable even if ROS 2 message details change.

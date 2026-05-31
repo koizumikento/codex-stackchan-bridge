@@ -222,6 +222,12 @@ The firmware package also includes hardware-free contract checks:
 uv run python -m unittest discover -s firmware/m5stackchan-microros/tests
 ```
 
+When a native C++ compiler is available, these tests compile and run small
+contract harnesses for calibration, motion safety, ROS publisher, audio, and
+sensor policy headers. The harnesses use safe nominal inputs and report failed
+contract assertions on stderr, so CI logs point to the contract mismatch instead
+of surfacing only a CPU trap signal.
+
 Current dependency pins:
 
 - `StackChan-BSP`: `1.1.0`

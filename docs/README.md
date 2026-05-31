@@ -29,7 +29,7 @@ This directory is the map for the project. Start here when you want to understan
 - [../ros/stackchan_bridge](../ros/stackchan_bridge/README.md): PC-side ROS 2 bridge nodes.
 - [../ros/stackchan_msgs](../ros/stackchan_msgs/README.md): ROS 2 interface definitions.
 - [../firmware/m5stackchan-microros](../firmware/m5stackchan-microros/README.md): M5StackChan firmware.
-- [../skills/codex-stackchan](../skills/codex-stackchan/README.md): Codex agent skill.
+- [../skills/codex-stackchan](../skills/codex-stackchan/README.md): Codex-facing product skill for restrained work-state cues and StackChan-origin observations.
 
 ## Quality gates
 

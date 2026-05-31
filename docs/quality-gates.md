@@ -170,6 +170,9 @@ Required for firmware changes:
   PlatformIO/micro-ROS-capable environment is available; otherwise run the
   hardware-free firmware contract checks and mark the PlatformIO build
   unavailable in the change notes.
+- Firmware C++ contract harnesses must use safe nominal sample data and fail
+  with readable stderr diagnostics rather than CPU trap instructions, so CI
+  reports the violated contract instead of only a signal such as `SIGILL`.
 - Safety limits remain firmware-owned.
 - Calibration storage remains firmware NVS unless a documented decision changes it.
 - Disconnect, audio underrun, mic overrun, camera failure, NFC failure, and servo/safety failure behavior remains documented.
@@ -248,7 +251,9 @@ in CI:
 - `uv run --no-project python scripts/check_ros_interfaces.py` for
   `stackchan_msgs` contract shape when a full ROS 2 build is unavailable.
 - `uv run python -m unittest discover -s firmware/m5stackchan-microros/tests`
-  for firmware contract checks that do not need a board.
+  for firmware contract checks that do not need a board. In CI this includes
+  native C++ contract harnesses compiled with the runner toolchain; their
+  assertion failures should identify the contract that failed.
 - `uv run --no-project python scripts/ros2_container.py smoke` when Docker is
   available, to build `stackchan_msgs` and `stackchan_bridge` in ROS 2 Jazzy and
   verify the no-device bridge path.
