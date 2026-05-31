@@ -14,6 +14,7 @@ from stackchan_bridge.audio_codec import (
     EncodedAudioPayload,
     encode_ima_adpcm_4bit,
 )
+from stackchan_bridge.asr import DEFAULT_ASR_TIMEOUT_SEC, LocalAsrWorker, WhisperHttpAsrEngine
 from stackchan_bridge.audio_session import AudioChunk
 from stackchan_bridge.event_aggregator import EventAggregator
 from stackchan_bridge.event_buffer import EventBuffer, EventRecord
@@ -121,6 +122,12 @@ AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES"
 )
 MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
+ASR_ENABLED_ENV = "STACKCHAN_ASR_ENABLED"
+ASR_PROVIDER_ENV = "STACKCHAN_ASR_PROVIDER"
+ASR_ENDPOINT_ENV = "STACKCHAN_ASR_ENDPOINT"
+ASR_MODEL_ENV = "STACKCHAN_ASR_MODEL"
+ASR_LANGUAGE_ENV = "STACKCHAN_ASR_LANGUAGE"
+ASR_TIMEOUT_SEC_ENV = "STACKCHAN_ASR_TIMEOUT_SEC"
 
 
 class MediaActionGate:
@@ -439,6 +446,13 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, str(default)))
     except ValueError:
         return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _audio_playback_ack_republish_min_interval_sec() -> float:
@@ -1241,9 +1255,11 @@ def main(args: list[str] | None = None) -> None:
             self.event_buffer = EventBuffer()
             self.event_aggregator = EventAggregator(self.event_buffer)
             self.transcript_store = SpeechTranscriptStore()
+            self._asr_worker = self._configure_asr_worker()
             self.speech_processor = SpeechSessionProcessor(
                 transcript_store=self.transcript_store,
                 event_sink=self._handle_speech_event,
+                asr_worker=self._asr_worker,
             )
             self.power_store = PowerTelemetryStore()
             self.head_pose_store = HeadPoseTelemetryStore()
@@ -1292,6 +1308,52 @@ def main(args: list[str] | None = None) -> None:
             self._liveness_timer = self.create_timer(
                 LIVENESS_CHECK_INTERVAL_SEC,
                 self._expire_stale_devices,
+            )
+
+        def destroy_node(self) -> bool:
+            self._asr_worker.close()
+            return super().destroy_node()
+
+        def _configure_asr_worker(self) -> LocalAsrWorker:
+            self.declare_parameter("asr_enabled", _env_bool(ASR_ENABLED_ENV, False))
+            if not bool(self.get_parameter("asr_enabled").value):
+                return LocalAsrWorker()
+
+            self.declare_parameter(
+                "asr_provider",
+                os.environ.get(ASR_PROVIDER_ENV, "whisper_http"),
+            )
+            provider = str(self.get_parameter("asr_provider").value or "").strip()
+            if provider != "whisper_http":
+                self.get_logger().warning("ASR is enabled but the provider is unsupported")
+                return LocalAsrWorker()
+
+            self.declare_parameter("asr_endpoint", os.environ.get(ASR_ENDPOINT_ENV, ""))
+            endpoint = str(self.get_parameter("asr_endpoint").value or "").strip()
+            self.declare_parameter("asr_model", os.environ.get(ASR_MODEL_ENV, ""))
+            model = str(self.get_parameter("asr_model").value or "").strip()
+            self.declare_parameter("asr_language", os.environ.get(ASR_LANGUAGE_ENV, ""))
+            language = str(self.get_parameter("asr_language").value or "").strip()
+            self.declare_parameter(
+                "asr_timeout_sec",
+                _env_float(ASR_TIMEOUT_SEC_ENV, DEFAULT_ASR_TIMEOUT_SEC),
+            )
+            timeout_sec = (
+                _optional_positive_float(self.get_parameter("asr_timeout_sec").value)
+                or DEFAULT_ASR_TIMEOUT_SEC
+            )
+            if not endpoint:
+                self.get_logger().warning("ASR is enabled but no endpoint is configured")
+                return LocalAsrWorker()
+
+            return LocalAsrWorker(
+                WhisperHttpAsrEngine(
+                    endpoint=endpoint,
+                    model=model,
+                    language=language,
+                    timeout_sec=timeout_sec,
+                ),
+                timeout_ms=max(1, int((timeout_sec + 1.0) * 1000)),
             )
 
         def _configure_tts_provider(self) -> None:
