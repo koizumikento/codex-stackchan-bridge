@@ -1,8 +1,17 @@
 # codex-stackchan
 
-Codex agent skill for expressing local work state through StackChan.
+Codex product skill for expressing local work state through StackChan.
 
-The skill calls `stackchanctl` for cues such as starting work, waiting for user input, reporting test results, recovering from blockers, or finishing a task. It can also read StackChan-origin observations through `stackchanctl events`, but it does not call raw ROS 2 commands or treat event names as direct commands.
+This is the single Codex-facing StackChan skill. It calls `stackchanctl` for restrained cues such as starting work, waiting for user input, reporting test results, recovering from blockers, or finishing a task. It can also read StackChan-origin observations through `stackchanctl events`, but it does not call raw ROS 2 commands or treat event names as direct commands.
+
+Keep the skill focused on product behavior:
+
+- Work-state cues through face, LED, named motion, and short `say` messages.
+- StackChan-origin events interpreted as observations, not instructions.
+- Push-to-talk transcript handling through explicit transcript lookup.
+- Quiet-mode decisions when physical feedback would be noisy or private.
+
+Do not split this skill until the speech, event-observation, or cue workflows become large enough to need separate routing.
 
 See [SKILL.md](SKILL.md) for the active skill instructions.
 
@@ -12,9 +21,10 @@ Use the mock backend when validating skill behavior:
 
 ```bash
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
-uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led success --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
 ```
 
 The `apps/stackchanctl` unit tests include hardware-free policy checks for this
