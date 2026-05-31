@@ -4,6 +4,12 @@ The PC bridge owns speech processing. Firmware owns reliable microphone and
 speaker I/O; the bridge owns VAD, echo control, utterance assembly, local ASR,
 transcript TTL, and `voice_semantic_event` generation.
 
+Speech input is an observation pipeline, not an action policy. The bridge may
+publish bounded speech events and store transcripts for explicit lookup, but it
+must not turn microphone audio, ASR text, or speech classification into
+`say`, `face`, `motion`, `led`, `audio`, or other `/stackchan/<device_id>/cmd/...`
+commands on its own.
+
 ## Pipeline
 
 ```text
@@ -43,6 +49,8 @@ the standard implementation.
 
 ASR runs only after VAD has produced an utterance. The baseline keeps cloud ASR
 out of the default path and stores transcripts only in memory with TTL.
+Audio chunk callbacks enqueue bounded ASR work and must not wait for a slow or
+unavailable ASR provider.
 
 `transcript_ready` contains only `utterance_id`. Full text is returned only from
 `GetTranscript`. Event payloads, normal logs, and MCP/CLI event results must not
@@ -53,15 +61,18 @@ in normal events, logs, CLI JSON, or MCP tool results. CLI/MCP may expose
 bounded metadata such as command id, path, utterance id, duration, byte count,
 sample rate, channels, and structured errors.
 
-Low-confidence ASR does not execute robot actions. It produces metadata through
-`voice_semantic_event` with `suppressed_reason=low_confidence`.
+ASR confidence, echo state, and suppression reasons are observation metadata.
+They do not authorize robot actions. `voice_semantic_event` must not carry
+execution-oriented fields such as `safety_action`, `requires_codex`, or command
+intent hints.
 
-## Safety Keywords
+## Action Boundary
 
-Immediate direct safety commands such as `止まって`, `ストップ`, `停止`, and
-`やめて` can be classified locally before Codex is consulted. Quoted,
-explanatory, command-design, or negative contexts such as `止まらないで` are not
-treated as immediate safety stops.
+The normal speech path has no safety-keyword exception. Phrases that sound like
+commands are still observations until an explicit user or operator decision
+routes a command through the documented `stackchanctl -> stackchan_bridge
+facade -> firmware` path.
 
-The bridge marks this classification in `voice_semantic_event.safety_action`;
-the firmware still owns the final hardware safety limits.
+If a future emergency-stop design needs to react directly to microphone input,
+it must be specified as a separate minimal safety contract. That design must not
+reuse ordinary transcript or semantic event fields as implicit command triggers.

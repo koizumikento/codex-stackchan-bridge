@@ -618,9 +618,12 @@ Baseline bridge/PC event names:
 text is retrieved through the speech transcript query service, not embedded in
 the event.
 
-`voice_semantic_event` carries metadata such as `utterance_id`, `confidence`,
-`intent_hint`, `requires_codex`, `safety_action`, `echo_state`, and
-`suppressed_reason`. It must not carry transcript text.
+`voice_semantic_event` carries observation metadata such as `utterance_id`,
+`confidence`, `echo_state`, and `suppressed_reason`. It must not carry
+transcript text, command intent hints, `requires_codex`, `safety_action`, or any
+field that asks bridge, MCP, Codex, or firmware policy to execute a physical
+action. Speech events may prompt explicit transcript lookup, but they are not
+command triggers.
 
 ### `/stackchan/<device_id>/device/events`
 
@@ -1770,6 +1773,11 @@ The bridge accepts and forwards the public action to
 `/stackchan/<device_id>/device/audio/capture` only after firmware status reports
 `audio_capture` as available. Missing device action servers return structured
 transport or timeout results, not synthetic success.
+
+Audio capture and firmware-origin audio chunks are observation input. The bridge
+must not convert captured audio, ASR text, or speech events into `say`, `face`,
+`motion`, `led`, `audio`, or other command resources without a separate explicit
+request entering the normal command facade.
 
 The bridge accepts microphone capture goals only when firmware status reports
 `audio_capture` as available. Otherwise it rejects capture goals with

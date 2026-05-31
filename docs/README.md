@@ -13,7 +13,7 @@ This directory is the map for the project. Start here when you want to understan
 4. [firmware.md](firmware.md)
    - Device-side responsibilities, safety limits, and supported behaviors.
 5. [speech-design.md](speech-design.md)
-   - PC bridge VAD, echo control, local ASR, transcript privacy, and speech events.
+   - PC bridge VAD, echo control, local ASR, transcript privacy, and speech observations.
 6. [license-notes.md](license-notes.md)
    - Dependency and reference policy for StackChan-related upstream code.
 7. [quality-gates.md](quality-gates.md)

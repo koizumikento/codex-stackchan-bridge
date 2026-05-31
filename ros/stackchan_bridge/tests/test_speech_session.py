@@ -45,7 +45,7 @@ class SpeechTranscriptStoreTests(unittest.TestCase):
         self.assertEqual(store.get("desk", "cmd-1"), desk)
         self.assertEqual(store.list_device("default"), (default,))
 
-    def test_transcript_metadata_keeps_confidence_language_and_intent(self) -> None:
+    def test_transcript_metadata_keeps_confidence_and_language(self) -> None:
         store = SpeechTranscriptStore(clock=MutableClock(100.0))
 
         record = store.put(
@@ -54,12 +54,10 @@ class SpeechTranscriptStoreTests(unittest.TestCase):
             "hello",
             confidence=0.82,
             language="ja",
-            intent_hint="look_at_user",
         )
 
         self.assertEqual(record.confidence, 0.82)
         self.assertEqual(record.language, "ja")
-        self.assertEqual(record.intent_hint, "look_at_user")
 
 
 if __name__ == "__main__":

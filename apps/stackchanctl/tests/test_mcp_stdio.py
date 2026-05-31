@@ -263,6 +263,7 @@ class McpStdioTests(unittest.TestCase):
             self.assertNotIn("maintenance", tool["name"])
             self.assertNotIn("calibration", tool["name"])
         schemas = {tool["name"]: tool["inputSchema"] for tool in responses[1]["result"]["tools"]}
+        descriptions = {tool["name"]: tool["description"] for tool in responses[1]["result"]["tools"]}
         self.assertIn("voice", schemas["say"]["properties"])
         self.assertIn("face", schemas["say"]["properties"])
         self.assertIn("motion", schemas["say"]["properties"])
@@ -278,6 +279,8 @@ class McpStdioTests(unittest.TestCase):
                 {"type": "integer", "minimum": 100, "maximum": 2000},
             ],
         )
+        self.assertIn("Explicitly capture microphone audio", descriptions["audio_capture"])
+        self.assertIn("Explicitly read a stored speech transcript", descriptions["speech_get_transcript"])
         self.assertEqual(
             schemas["motion_home"]["properties"]["duration_ms"]["anyOf"],
             [

@@ -646,10 +646,12 @@ def _tool_description(name: str) -> str:
     if name.startswith("events_"):
         return f"Read stackchanctl {name.replace('_', ' ')} through the configured backend."
     if name == "speech_get_transcript":
-        return "Read a speech transcript through the configured backend."
+        return "Explicitly read a stored speech transcript by utterance id through the configured backend."
     if name == "power_status":
         return "Read StackChan power telemetry through the configured backend."
-    if name in {"audio_play", "audio_capture", "camera_capture"}:
+    if name == "audio_capture":
+        return "Explicitly capture microphone audio through the configured backend without exposing media payloads."
+    if name in {"audio_play", "camera_capture"}:
         return f"Send stackchanctl {name.replace('_', ' ')} through the configured backend without exposing media payloads."
     return f"Send stackchanctl {name} through the configured backend."
 

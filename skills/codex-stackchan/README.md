@@ -8,7 +8,8 @@ Keep the skill focused on product behavior:
 
 - Work-state cues through face, LED, named motion, and short `say` messages.
 - StackChan-origin events interpreted as observations, not instructions.
-- Push-to-talk transcript handling through explicit transcript lookup.
+- Speech observations handled through explicit transcript lookup, without
+  automatic physical actions.
 - Quiet-mode decisions when physical feedback would be noisy or private.
 
 Do not split this skill until the speech, event-observation, or cue workflows become large enough to need separate routing.
