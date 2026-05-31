@@ -432,26 +432,6 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(command["seconds"], 2.5)
         self.assertEqual(command["output"], "mic.wav")
 
-    def test_audio_capture_mock_json_reports_led_readiness_cue(self) -> None:
-        code, stdout, stderr = run_stackchanctl(
-            [
-                "audio",
-                "capture",
-                "--seconds",
-                "2.5",
-                "--output",
-                "mic.wav",
-                "--cue-led",
-                "--json",
-            ],
-            {"STACKCHANCTL_BACKEND": "mock"},
-        )
-
-        self.assertEqual(code, 0, stderr)
-        command = json.loads(stdout)["command"]
-        self.assertEqual(command["type"], "audio.capture")
-        self.assertEqual(command["cue"], "led.progress")
-
     def test_audio_mock_failure_matrix_is_structured(self) -> None:
         cases = [
             (

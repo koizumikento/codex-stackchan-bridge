@@ -74,56 +74,6 @@ The normal host URL is:
 http://localhost:50021
 ```
 
-## Optional Local ASR Service
-
-Start a local Whisper ASR service when validating bridge-owned speech
-recognition flows. This service is an optional helper like VOICEVOX; it does
-not replace the Python Docker helpers, the micro-ROS Agent helpers, or the
-documented hardware validation flow.
-
-The GPU profile uses a CUDA image and Docker Compose GPU reservations:
-
-```bash
-docker compose --profile asr-gpu up -d whisper-asr
-```
-
-The service is bound to localhost by default:
-
-```bash
-http://localhost:8000/v1/audio/transcriptions
-```
-
-The bridge ASR parameter takes the provider base URL and appends
-`/v1/audio/transcriptions`. From a compose-attached bridge container, use:
-
-```bash
-STACKCHAN_ASR_ENABLED=1
-STACKCHAN_ASR_ENDPOINT=http://whisper-asr:8000
-```
-
-From the existing Python Docker helpers or another container that reaches the
-host-published port, use:
-
-```bash
-STACKCHAN_ASR_ENABLED=1
-STACKCHAN_ASR_ENDPOINT=http://host.docker.internal:8000
-```
-
-From the host, direct diagnostics use `http://localhost:8000`, but normal
-logs and issue comments should record only reachability, command IDs,
-structured error codes, and bounded metadata. Do not paste transcript text,
-audio bytes, request bodies, provider endpoints, or raw model identifiers.
-
-On Windows, GPU use requires Docker Desktop with the WSL 2 backend, a current
-Windows NVIDIA driver, and WSL updated with `wsl --update`. Do not install a
-separate Linux NVIDIA display driver inside WSL for Docker Desktop GPU access.
-If GPU access is unavailable, treat ASR service startup as a local optional
-smoke failure rather than a repository-wide validation failure.
-
-Do not commit downloaded Whisper models, Hugging Face caches, generated audio,
-transcripts, or provider runtime artifacts to this repository. The compose
-service stores model cache data in the `whisper-cache` Docker volume.
-
 The `ros2` compose profile is a convenience shell built from the same
 micro-ROS Agent Dockerfile used by `scripts/microros_agent_container.py`:
 

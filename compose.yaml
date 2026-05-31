@@ -4,23 +4,6 @@ services:
     ports:
       - "50021:50021"
 
-  whisper-asr:
-    profiles:
-      - asr-gpu
-    image: fedirz/faster-whisper-server:latest-cuda
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - whisper-cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities:
-                - gpu
-
   ros2:
     profiles:
       - ros2
@@ -40,6 +23,3 @@ services:
     stdin_open: true
     tty: true
     command: bash
-
-volumes:
-  whisper-cache:
