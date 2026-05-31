@@ -1,0 +1,6 @@
+interface:
+  display_name: "StackChan Setup Workflow"
+  short_description: "Set up local, ROS 2, TTS, or K151 hardware workflows"
+  default_prompt: "Use $stackchan-setup-workflow to set up codex-stackchan-bridge locally."
+policy:
+  allow_implicit_invocation: true

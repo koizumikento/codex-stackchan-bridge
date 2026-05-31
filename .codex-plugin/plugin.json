@@ -1,0 +1,39 @@
+{
+  "name": "codex-stackchan-bridge",
+  "version": "0.1.0",
+  "description": "Repo-local Codex plugin for setting up, developing, validating, and operating the local StackChan bridge.",
+  "author": {
+    "name": "koizumi",
+    "url": "https://github.com/koizumikento"
+  },
+  "homepage": "https://github.com/koizumikento/codex-stackchan-bridge",
+  "repository": "https://github.com/koizumikento/codex-stackchan-bridge",
+  "license": "MIT",
+  "keywords": [
+    "stackchan",
+    "ros2",
+    "micro-ros",
+    "codex",
+    "local-first"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex StackChan Bridge",
+    "shortDescription": "Set up, develop, and validate the local StackChan bridge.",
+    "longDescription": "Repo-local Codex plugin for codex-stackchan-bridge. It provides workflows for setting up local and hardware environments, routing repository development work, handling command-contract changes, and choosing quality gates while preserving the project boundaries around stackchanctl, ROS 2, micro-ROS firmware, local TTS, mock backends, redaction, and firmware-owned safety.",
+    "developerName": "koizumi",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Developer Tools",
+      "Local Setup",
+      "Validation"
+    ],
+    "websiteURL": "https://github.com/koizumikento/codex-stackchan-bridge",
+    "brandColor": "#4EA7FC",
+    "defaultPrompt": [
+      "Set up codex-stackchan-bridge locally with mock checks.",
+      "Plan a codex-stackchan-bridge change using repo guidance.",
+      "Choose the right validation gates before pushing."
+    ]
+  }
+}
