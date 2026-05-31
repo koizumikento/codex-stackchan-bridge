@@ -60,9 +60,9 @@ Low-confidence ASR does not execute robot actions. It produces metadata through
 
 Local Whisper servers may be used as operator-owned bridge-side ASR providers.
 The default compose helper exposes an OpenAI-compatible transcription endpoint
-for future bridge adapters, but it remains optional and local. The bridge must
-send only VAD-bounded utterance audio to the ASR provider, not continuous raw
-microphone streams.
+and the bridge can call it through the `whisper_http` ASR provider. The helper
+remains optional and local. The bridge sends only VAD-bounded utterance audio
+to the ASR provider, not continuous raw microphone streams.
 
 ASR provider configuration belongs to bridge-local parameters or environment
 variables. Firmware, CLI results, MCP tool results, public events, and normal
@@ -70,6 +70,20 @@ logs must not expose provider endpoints, raw model identifiers, request bodies,
 PCM bytes, or transcript text. Provider failures should be mapped into the
 existing structured ASR result codes: `ASR_UNAVAILABLE`, `ASR_TIMEOUT`,
 `ASR_WORKER_FAILED`, `ASR_EMPTY_RESULT`, and `ASR_INVALID_OUTPUT`.
+
+Bridge-local ASR parameters:
+
+- `asr_enabled`: disabled by default. Environment default:
+  `STACKCHAN_ASR_ENABLED`.
+- `asr_provider`: currently `whisper_http`. Environment default:
+  `STACKCHAN_ASR_PROVIDER`.
+- `asr_endpoint`: base URL for the local OpenAI-compatible server, such as
+  `http://whisper-asr:8000` or `http://host.docker.internal:8000`. The bridge
+  appends `/v1/audio/transcriptions`. Environment default:
+  `STACKCHAN_ASR_ENDPOINT`.
+- `asr_model`, `asr_language`, and `asr_timeout_sec`: optional provider-local
+  tuning. Environment defaults: `STACKCHAN_ASR_MODEL`,
+  `STACKCHAN_ASR_LANGUAGE`, and `STACKCHAN_ASR_TIMEOUT_SEC`.
 
 ## Safety Keywords
 
