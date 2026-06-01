@@ -157,6 +157,10 @@ class MicroRosAgentContainerTests(unittest.TestCase):
             microros_agent_container.ENV_PASSTHROUGH,
         )
         self.assertIn(
+            "STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC",
             microros_agent_container.ENV_PASSTHROUGH,
         )
@@ -178,6 +182,10 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         )
         self.assertIn(
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES",
             microros_agent_container.ENV_PASSTHROUGH,
         )
 

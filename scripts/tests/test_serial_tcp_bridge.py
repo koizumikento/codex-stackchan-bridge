@@ -66,7 +66,7 @@ class SerialTcpBridgeTests(unittest.TestCase):
         self.assertEqual(fake.port, "COM3")
         self.assertEqual(fake.baudrate, 921600)
         self.assertEqual(fake.timeout, 0)
-        self.assertEqual(fake.write_timeout, 0)
+        self.assertEqual(fake.write_timeout, 1)
         self.assertFalse(fake.open_dtr)
         self.assertFalse(fake.open_rts)
 
@@ -112,6 +112,25 @@ class SerialTcpBridgeTests(unittest.TestCase):
         self.assertFalse(fake.open_rts)
         self.assertEqual(fake.history[-2:], [("rts", True), ("rts", False)])
         self.assertFalse(fake.rts)
+
+    def test_write_all_retries_partial_serial_writes(self) -> None:
+        module = load_module()
+
+        class PartialWriter:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def write(self, data) -> int:
+                payload = bytes(data)
+                self.calls.append(payload)
+                return min(len(payload), 2)
+
+        writer = PartialWriter()
+
+        count = module.write_all(writer, b"abcdef")
+
+        self.assertEqual(count, 6)
+        self.assertEqual(writer.calls, [b"abcdef", b"cdef", b"ef"])
 
 
 if __name__ == "__main__":

@@ -658,19 +658,24 @@ Baseline audio path:
   bounded speaker volume, and releasing the speaker after drain.
 - KOIZUMI-146 tracks an experimental loaded-playback path for speech-sized
   PCM because K151 hardware smokes show the topic/pull relay is reliable only
-  for very short prompts. In that path, firmware should accept a bounded,
-  device-scoped audio load transaction on
-  `/stackchan/<device_id>/device/audio/playback/load` before playback, store
-  payload only in a fixed RAM buffer keyed by `command_id`, return ACK-only
-  metadata for each write, and then play the loaded buffer through the existing
-  playback action with the same `command_id`. The K151 bring-up buffer is
+  for very short prompts. In the default path, firmware accepts bounded loaded
+  chunks on `/stackchan/<device_id>/device/audio/playback/chunks`, stores
+  payload only in a fixed RAM buffer keyed by `command_id`, ignores duplicate
+  already-buffered chunks, and reports progress while the bridge repeats the
+  carousel until the contiguous transaction completes. The bridge then starts
+  playback with the same `command_id`, and firmware plays the loaded buffer
+  through the existing playback action result. The older
+  `/stackchan/<device_id>/device/audio/playback/load` service and firmware-pull
+  loaded path remain diagnostic fallbacks. The K151 bring-up payload buffer is
   32 KiB, and responses carry only structured result and buffered counters.
   For audible-quality TTS checks, loaded playback is preferred over the
-  topic/pull relay because M5Unified can drain the stable loaded PCM buffer
-  without depending on ROS executor timing between 20 ms speaker frames. Keep
-  load-service chunks small on serial transports; larger synchronous service
-  payloads have timed out on the Windows Docker host serial bridge during
-  hardware smoke.
+  topic/pull relay because firmware can drain a stable local buffer without
+  depending on ROS executor timing between 20 ms speaker frames. For ADPCM
+  loaded playback, firmware keeps encoded payload bytes in that buffer and
+  decodes incrementally into speaker frames during playback; it does not need
+  the full decoded PCM waveform in RAM at once. Keep load-service chunks small
+  on serial transports; larger synchronous service payloads have timed out on
+  the Windows Docker host serial bridge during hardware smoke.
   Firmware must reject overflow, format mismatch, stale command ids,
   concurrent loads, and playback without a complete loaded buffer with
   structured `Result` errors. If an incomplete load stops making progress,
@@ -683,7 +688,7 @@ Baseline audio path:
 
   | Allocation | Standard size | Purpose |
   | --- | ---: | --- |
-  | Loaded playback buffer | 32 KiB | Stable PCM buffer for local TTS playback |
+  | Loaded playback payload buffer | 32 KiB | Stable PCM or encoded ADPCM payload for local TTS playback |
   | Topic/pull future-chunk jitter buffer | about 5 KiB | Diagnostic topic relay lookahead, 8 x 640 byte PCM slots plus metadata |
   | Speaker runtime frame buffers | about 5 KiB | Rotating `playRaw()` buffers held while M5Unified drains queued frames |
   | ROS audio request/response PCM sequences | several 1280 byte sequences | Bounded micro-ROS message/service storage |
@@ -698,17 +703,18 @@ Baseline audio path:
 - KOIZUMI-162 codec direction: prefer a tiny IMA ADPCM loaded-playback decoder
   as the first compressed-audio experiment. It gives roughly 4:1 payload
   reduction for 16-bit PCM with simple integer state, so it can reduce serial
-  load-service requests without adding a large codec runtime. Firmware should
-  reserve `AudioChunk.format=IMA_ADPCM_4BIT=2` for that path, decode each
-  accepted compressed load chunk into the existing bounded loaded PCM buffer,
-  keep `total_bytes` as decoded PCM bytes, and reject compressed payloads that
-  would overflow the 32 KiB decoded buffer. The first ADPCM load chunk carries
-  a 4 byte stream header (`int16_le predictor`, `uint8 step_index`,
-  `uint8 reserved=0`); subsequent chunks continue decoder state, and only the
-  final chunk may contain one padding nibble. Keep G.711 as a possible
-  lower-risk 2:1 fallback, and defer Opus/Speex-style speech codecs until a
-  separate dependency, heap, stack, and license review proves they fit the K151
-  firmware budget.
+  transfer time without adding a large codec runtime. Firmware reserves
+  `AudioChunk.format=IMA_ADPCM_4BIT=2` for that path, stores accepted encoded
+  chunks in the existing bounded loaded payload buffer, keeps `total_bytes` as
+  decoded PCM bytes, and decodes into rotating speaker frames during playback.
+  Encoded payload bytes must fit the 32 KiB payload buffer; decoded ADPCM
+  output is bounded separately and currently capped at 128 KiB. The first ADPCM
+  load chunk carries a 4 byte stream header (`int16_le predictor`,
+  `uint8 step_index`, `uint8 reserved=0`); subsequent chunks continue decoder
+  state, and only the final chunk may contain one padding nibble. Keep G.711 as
+  a possible lower-risk 2:1 fallback, and defer Opus/Speex-style speech codecs
+  until a separate dependency, heap, stack, and license review proves they fit
+  the K151 firmware budget.
 - Playback acceptance, payload/chunk receipt, playback start, and playback
   completion are separate states. Receiving all chunks is not the same thing as
   successful speaker playback.
@@ -795,10 +801,10 @@ milliseconds, last receive gap, and decode elapsed milliseconds. It must not
 include PCM bytes, ADPCM bytes, speech text, transcripts, provider request
 bodies, images, NFC tag IDs, IR codes, or protocol dumps.
 Normal successful service-load chunks should be sampled rather than published
-for every chunk. Normal successful topic-load chunks should publish only the
-final completion observation; sequence-gap, overflow, and other rejection
-events remain publishable. This keeps event output from competing with audio
-payload input on the serial micro-ROS link. The loaded topic subscriber uses a
+for every chunk. Normal successful topic-load chunks publish payload-free
+progress observations so the bridge can wait for each bounded window and retry
+the same sequence when progress stalls. Sequence-gap, overflow, and other
+rejection events remain publishable. The loaded topic subscriber uses a
 16-sample reliable keep-last depth. The micro-ROS input reliable stream history
 stays at 8 because larger stream histories overflow CoreS3 DRAM in the full
 bring-up profile.

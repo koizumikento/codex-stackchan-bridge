@@ -27,7 +27,7 @@ def open_serial_port(args: argparse.Namespace) -> serial.Serial:
     ser.port = args.serial_port
     ser.baudrate = args.baud
     ser.timeout = 0
-    ser.write_timeout = 0
+    ser.write_timeout = 1
     if args.dtr != "unchanged":
         ser.dtr = args.dtr == "active"
     if args.rts != "unchanged":
@@ -40,6 +40,20 @@ def open_serial_port(args: argparse.Namespace) -> serial.Serial:
         args.reset_settle_seconds,
     )
     return ser
+
+
+def write_all(ser: serial.Serial, data: bytes) -> int:
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        count = ser.write(view[written:])
+        if count is None:
+            count = len(view) - written
+        if count <= 0:
+            time.sleep(0.001)
+            continue
+        written += count
+    return written
 
 
 def apply_reset_pulse(
@@ -71,7 +85,7 @@ def main() -> int:
     parser.add_argument(
         "--quiet-timeout",
         type=float,
-        default=0.2,
+        default=0.02,
         help="Selector timeout in seconds.",
     )
     parser.add_argument(
@@ -159,8 +173,7 @@ def main() -> int:
                                 data = conn.recv(4096)
                                 if not data:
                                     raise ConnectionResetError("client disconnected")
-                                ser.write(data)
-                                tcp_to_serial += len(data)
+                                tcp_to_serial += write_all(ser, data)
                         except (BrokenPipeError, ConnectionResetError):
                             print("serial_tcp_bridge client disconnected", flush=True)
                             break

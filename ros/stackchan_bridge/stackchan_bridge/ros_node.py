@@ -38,6 +38,7 @@ from stackchan_bridge.tts_provider import (
     VoiceProfile,
     VoiceVoxTtsProvider,
     default_voice_profiles,
+    trim_pcm_s16le_silence,
 )
 
 EVENT_QOS_DEPTH = 32
@@ -66,15 +67,19 @@ AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_DEFAULT = 64
 AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_DEFAULT = 128
 AUDIO_PLAYBACK_LOAD_CHUNK_BYTES_MAX = 1280
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC = 0.15
-AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.6
+AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.05
 AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC = 30.0
 AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS = 1
-AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 0.0
+AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC = 2.0
 AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES = 3
 AUDIO_PLAYBACK_COMMAND_PRELOAD_WAIT_SEC = 2.5
 AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES = 32 * 1024
+AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES = 128 * 1024
 AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES"
+)
+AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES_ENV = (
+    "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES"
 )
 SPEECH_AUDIO_CHUNK_QUEUE_MAX = 64
 FIRMWARE_AUDIO_CAPTURE_SESSION_TIMEOUT_GRACE_SEC = 5.0
@@ -106,6 +111,7 @@ AUDIO_PLAYBACK_PULL_ONLY_ENV = "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY"
 AUDIO_PLAYBACK_LOADED_TTS_ENV = "STACKCHAN_TTS_LOADED_PLAYBACK"
 AUDIO_PLAYBACK_LOADED_ADPCM_ENV = "STACKCHAN_TTS_LOADED_ADPCM"
 AUDIO_PLAYBACK_LOADED_TRANSPORT_ENV = "STACKCHAN_TTS_LOADED_TRANSPORT"
+AUDIO_PLAYBACK_LOADED_TTS_SPLIT_OVERSIZE_ENV = "STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE"
 AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC"
 )
@@ -125,6 +131,11 @@ AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES"
 )
 MEDIA_ACTION_SETTLE_SEC_ENV = "STACKCHAN_MEDIA_ACTION_SETTLE_SEC"
+TTS_TEXT_HARD_BREAK_CHARS = frozenset(
+    "\u3002\uff0e.!\uff01\uff1f?\u3001,;\uff1b\n\r\t "
+)
+TTS_TEXT_FALLBACK_BREAK_CHARS = frozenset("\u306f\u3092\u304c\u306b\u3078\u3067\u3068")
+TTS_LOADED_FIT_TRIM_THRESHOLDS = (512, 1024, 2048, 4096)
 
 
 class MediaActionGate:
@@ -508,10 +519,26 @@ def _audio_playback_loaded_adpcm() -> bool:
 
 
 def _audio_playback_loaded_transport() -> str:
-    value = os.environ.get(AUDIO_PLAYBACK_LOADED_TRANSPORT_ENV, "topic").strip().lower()
+    value = os.environ.get(AUDIO_PLAYBACK_LOADED_TRANSPORT_ENV, "carousel").strip().lower()
+    if value in {"carousel", "topic_carousel", "retry_topic"}:
+        return "carousel"
+    if value in {"pull", "chunk_pull", "next_audio_chunk"}:
+        return "pull"
     if value in {"service", "svc", "load_service"}:
         return "service"
     return "topic"
+
+
+def _audio_playback_loaded_tts_split_oversize() -> bool:
+    return os.environ.get(
+        AUDIO_PLAYBACK_LOADED_TTS_SPLIT_OVERSIZE_ENV,
+        "0",
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _loaded_audio_transfer_candidates(audio: TtsAudio) -> tuple[EncodedAudioPayload, ...]:
@@ -533,6 +560,120 @@ def _loaded_audio_transfer_candidates(audio: TtsAudio) -> tuple[EncodedAudioPayl
     except ValueError:
         return (pcm_payload,)
     return (adpcm_payload, pcm_payload)
+
+
+def _split_tts_audio_for_loaded_playback(
+    audio: TtsAudio,
+    max_decoded_bytes: int,
+) -> tuple[TtsAudio, ...]:
+    """Split synthesized PCM into firmware-loaded playback sized segments."""
+
+    segment_bytes = max(0, int(max_decoded_bytes))
+    segment_bytes -= segment_bytes % 2
+    if segment_bytes <= 0 or len(audio.pcm) % 2 != 0:
+        return ()
+    if len(audio.pcm) <= segment_bytes:
+        return (audio,)
+    return tuple(
+        TtsAudio(
+            pcm=audio.pcm[start : start + segment_bytes],
+            format=audio.format,
+            sample_rate=audio.sample_rate,
+            channels=audio.channels,
+        )
+        for start in range(0, len(audio.pcm), segment_bytes)
+    )
+
+
+def _split_tts_text_for_loaded_playback(text: str) -> tuple[str, ...]:
+    """Split TTS text on phrase-like boundaries before falling back to audio cuts."""
+
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return ()
+    fragments: list[str] = []
+    buffer = ""
+    for character in raw_text:
+        buffer += character
+        if character in TTS_TEXT_HARD_BREAK_CHARS:
+            if buffer:
+                fragments.append(buffer)
+                buffer = ""
+            continue
+    if buffer:
+        fragments.append(buffer)
+    return tuple(fragment for fragment in fragments if fragment.strip())
+
+
+def _split_tts_text_fragment_for_loaded_playback(text: str) -> tuple[str, ...]:
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return ()
+    fragments: list[str] = []
+    buffer = ""
+    for index, character in enumerate(raw_text):
+        buffer += character
+        next_character = raw_text[index + 1] if index + 1 < len(raw_text) else ""
+        if (
+            character in TTS_TEXT_FALLBACK_BREAK_CHARS
+            and len(buffer.strip()) >= 2
+            and next_character
+            and next_character not in TTS_TEXT_HARD_BREAK_CHARS
+        ):
+            fragments.append(buffer)
+            buffer = ""
+    if buffer:
+        fragments.append(buffer)
+    return tuple(fragment for fragment in fragments if fragment.strip())
+
+
+def _fit_tts_audio_for_loaded_playback(
+    audio: TtsAudio,
+    max_decoded_bytes: int,
+) -> TtsAudio:
+    if len(audio.pcm) <= max_decoded_bytes:
+        return audio
+    for threshold in TTS_LOADED_FIT_TRIM_THRESHOLDS:
+        trimmed_pcm = trim_pcm_s16le_silence(
+            audio.pcm,
+            threshold=threshold,
+            margin_samples=0,
+        )
+        if len(trimmed_pcm) <= max_decoded_bytes:
+            return TtsAudio(
+                pcm=trimmed_pcm,
+                format=audio.format,
+                sample_rate=audio.sample_rate,
+                channels=audio.channels,
+            )
+    return audio
+
+
+def _tts_segment_command_meta(meta: CommandMeta, segment_index: int) -> CommandMeta:
+    suffix = f"-s{segment_index + 1:02d}"
+    base = (meta.command_id or "tts")[: 36 - len(suffix)]
+    return CommandMeta(
+        device_id=meta.device_id,
+        command_id=f"{base}{suffix}",
+        source=meta.source,
+        created_at=meta.created_at,
+        priority=meta.priority,
+    )
+
+
+def _tts_audio_too_large_for_loaded_playback_result(
+    audio: TtsAudio,
+    max_decoded_bytes: int,
+) -> Result:
+    return Result.rejected(
+        "TTS_AUDIO_TOO_LARGE",
+        (
+            "local TTS audio is too large for one firmware loaded playback "
+            f"transaction ({len(audio.pcm)} decoded bytes > {max_decoded_bytes}); "
+            "use a shorter utterance or enable diagnostic loaded TTS splitting"
+        ),
+        recoverable=True,
+    )
 
 
 def _optional_positive_float(value: object) -> float | None:
@@ -606,7 +747,7 @@ def _audio_playback_loaded_topic_complete_timeout_sec() -> float:
             ),
             0.0,
         ),
-        60.0,
+        180.0,
     )
 
 
@@ -660,6 +801,32 @@ def _audio_playback_command_loaded_max_decoded_bytes() -> int:
         ),
         32 * 1024,
     )
+
+
+def _audio_playback_adpcm_loaded_max_decoded_bytes() -> int:
+    return min(
+        max(
+            _env_int(
+                AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES_ENV,
+                AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES,
+            ),
+            0,
+        ),
+        512 * 1024,
+    )
+
+
+def _tts_audio_fits_single_loaded_playback(audio: TtsAudio, max_payload_bytes: int) -> bool:
+    if len(audio.pcm) <= max_payload_bytes:
+        return True
+    for candidate in _loaded_audio_transfer_candidates(audio):
+        if (
+            candidate.format_id == AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT
+            and len(candidate.payload) <= max_payload_bytes
+            and candidate.decoded_bytes <= _audio_playback_adpcm_loaded_max_decoded_bytes()
+        ):
+            return True
+    return False
 
 
 def _loaded_audio_topic_buffered_chunks(payload: dict[str, object]) -> int:
@@ -821,10 +988,14 @@ def _command_playback_audio_from_complete_chunks(
 def _loaded_playback_completion_from_events(
     records: Iterable[EventRecord],
     command_id: str,
+    *,
+    after_sequence: int = 0,
 ) -> Result | None:
     if not command_id:
         return None
     for record in reversed(tuple(records)):
+        if record.sequence <= after_sequence:
+            continue
         if record.command_id != command_id:
             continue
         if record.event_name != "audio_playback_chunk":
@@ -2602,9 +2773,10 @@ def main(args: list[str] | None = None) -> None:
             ros_meta: object,
             request: object,
         ) -> object:
+            loaded_pull = _audio_playback_loaded_transport() == "pull"
             return SimpleNamespace(
                 meta=ros_meta,
-                format=AUDIO_FORMAT,
+                format="ima_adpcm_4bit" if loaded_pull else AUDIO_FORMAT,
                 sample_rate=AUDIO_SAMPLE_RATE,
                 channels=AUDIO_CHANNELS,
                 first_chunk_present=False,
@@ -2615,6 +2787,7 @@ def main(args: list[str] | None = None) -> None:
                 next_chunk_offset=0,
                 next_chunk_sequence=0,
                 loaded_playback=True,
+                loaded_pull=loaded_pull,
             )
 
         def _try_load_command_audio_playback(
@@ -2685,10 +2858,13 @@ def main(args: list[str] | None = None) -> None:
             self,
             device_id: str,
             command_id: str,
+            *,
+            after_sequence: int = 0,
         ) -> Result | None:
             return _loaded_playback_completion_from_events(
                 self.event_buffer.records(device_id),
                 command_id,
+                after_sequence=after_sequence,
             )
 
         def _load_device_audio_playback(
@@ -2698,7 +2874,16 @@ def main(args: list[str] | None = None) -> None:
             ros_meta: object,
             audio: TtsAudio,
         ) -> Result | None:
-            if _audio_playback_loaded_transport() == "topic":
+            transport = _audio_playback_loaded_transport()
+            if transport == "pull":
+                return self._buffer_loaded_audio_pull_playback(device_id, meta, audio)
+            if transport == "carousel":
+                return self._publish_loaded_audio_playback_carousel(
+                    device_id,
+                    meta,
+                    audio,
+                )
+            if transport == "topic":
                 return self._publish_loaded_audio_playback(
                     device_id,
                     meta,
@@ -2735,6 +2920,315 @@ def main(args: list[str] | None = None) -> None:
                 recoverable=True,
             )
 
+        def _play_loaded_tts_segments(
+            self,
+            device_id: str,
+            request: object,
+            meta: CommandMeta,
+            segments: tuple[TtsAudio, ...],
+            segment_metas: tuple[CommandMeta, ...],
+        ) -> Result:
+            playback_result = _make_transport_result(
+                f"firmware audio playback action for '{device_id}' did not complete"
+            )
+            for index, segment in enumerate(segments):
+                segment_meta = segment_metas[index]
+                if index > 0:
+                    loaded_result = self._load_device_audio_playback(
+                        device_id,
+                        segment_meta,
+                        request.meta,
+                        segment,
+                    )
+                    if loaded_result is None:
+                        return _make_transport_result(
+                            f"firmware audio playback load for '{device_id}' is unavailable"
+                        )
+                    if not loaded_result.ok:
+                        return loaded_result
+                if len(segments) > 1:
+                    self.get_logger().info(
+                        "tts loaded playback segment "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"segment_command_id={segment_meta.command_id!r} "
+                        f"segment={index + 1}/{len(segments)} bytes={len(segment.pcm)}"
+                    )
+                playback_result = self._call_device_audio_play(
+                    device_id,
+                    self._loaded_tts_playback_request(request.meta, request),
+                    segment_meta,
+                )
+                if not playback_result.ok:
+                    return playback_result
+            return playback_result
+
+        def _synthesize_loaded_tts_text_segments(
+            self,
+            text: str,
+            voice_profile: str,
+            max_decoded_bytes: int,
+        ) -> tuple[VoiceProfile | None, tuple[TtsAudio, ...], Result | None]:
+            text_fragments = list(_split_tts_text_for_loaded_playback(text))
+            if len(text_fragments) <= 1:
+                return None, (), None
+
+            profile: VoiceProfile | None = None
+            segments: list[TtsAudio] = []
+            current_text = ""
+            current_audio: TtsAudio | None = None
+            while text_fragments:
+                fragment = text_fragments.pop(0)
+                candidate_text = current_text + fragment
+                candidate_profile, candidate_audio = self._tts_provider.synthesize(
+                    candidate_text,
+                    voice_profile,
+                )
+                profile = candidate_profile
+                candidate_audio = _fit_tts_audio_for_loaded_playback(
+                    candidate_audio,
+                    max_decoded_bytes,
+                )
+                if (
+                    candidate_audio.format != AUDIO_FORMAT
+                    or candidate_audio.sample_rate != AUDIO_SAMPLE_RATE
+                    or candidate_audio.channels != AUDIO_CHANNELS
+                ):
+                    return profile, (), Result.rejected(
+                        "TTS_AUDIO_UNSUPPORTED",
+                        "local TTS provider returned unsupported audio format",
+                        recoverable=True,
+                    )
+                if _tts_audio_fits_single_loaded_playback(
+                    candidate_audio,
+                    max_decoded_bytes,
+                ):
+                    current_text = candidate_text
+                    current_audio = candidate_audio
+                    continue
+                if current_audio is not None:
+                    segments.append(current_audio)
+                fragment_profile, fragment_audio = self._tts_provider.synthesize(
+                    fragment,
+                    voice_profile,
+                )
+                profile = fragment_profile
+                fragment_audio = _fit_tts_audio_for_loaded_playback(
+                    fragment_audio,
+                    max_decoded_bytes,
+                )
+                if (
+                    fragment_audio.format != AUDIO_FORMAT
+                    or fragment_audio.sample_rate != AUDIO_SAMPLE_RATE
+                    or fragment_audio.channels != AUDIO_CHANNELS
+                ):
+                    return profile, (), Result.rejected(
+                        "TTS_AUDIO_UNSUPPORTED",
+                        "local TTS provider returned unsupported audio format",
+                        recoverable=True,
+                    )
+                if not _tts_audio_fits_single_loaded_playback(
+                    fragment_audio,
+                    max_decoded_bytes,
+                ):
+                    fallback_fragments = _split_tts_text_fragment_for_loaded_playback(fragment)
+                    if len(fallback_fragments) > 1:
+                        text_fragments = list(fallback_fragments) + text_fragments
+                        current_text = ""
+                        current_audio = None
+                        continue
+                    return (
+                        profile,
+                        (),
+                        _tts_audio_too_large_for_loaded_playback_result(
+                            fragment_audio,
+                            max_decoded_bytes,
+                        ),
+                    )
+                current_text = fragment
+                current_audio = fragment_audio
+            if current_audio is not None:
+                segments.append(current_audio)
+            if len(segments) <= 1:
+                return profile, (), None
+            return profile, tuple(segments), None
+
+        def _buffer_loaded_audio_pull_playback(
+            self,
+            device_id: str,
+            meta: CommandMeta,
+            audio: TtsAudio,
+        ) -> Result:
+            candidates = _loaded_audio_transfer_candidates(audio)
+            candidate = candidates[0]
+            if candidate.format_id != AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT:
+                return Result.rejected(
+                    "UNSUPPORTED_FEATURE",
+                    "loaded pull playback requires ADPCM compression",
+                    recoverable=True,
+                )
+            if candidate.decoded_bytes > _audio_playback_adpcm_loaded_max_decoded_bytes():
+                return _tts_audio_too_large_for_loaded_playback_result(
+                    audio,
+                    _audio_playback_adpcm_loaded_max_decoded_bytes(),
+                )
+            chunk_bytes = _audio_playback_load_chunk_bytes_for_format(candidate.format_id)
+            total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
+            key = (device_id, meta.command_id)
+            with self._playback_chunk_lock:
+                self._pull_only_playback_sessions.add(key)
+                self._closed_playback_sessions.discard(key)
+                self._pending_playback_chunks.pop(key, None)
+                self._playback_relay_stats[key] = {
+                    "received": 0,
+                    "buffered": 0,
+                    "published": 0,
+                    "dropped": 0,
+                }
+            for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
+                message = self._audio_chunk_type()
+                message.device_id = device_id
+                message.command_id = meta.command_id
+                message.direction = AUDIO_PLAYBACK_DIRECTION
+                message.sequence = sequence
+                _set_optional_field(message, "total_chunks", total_chunks)
+                _set_optional_field(message, "total_bytes", candidate.decoded_bytes)
+                message.format = candidate.format_id
+                message.sample_rate = audio.sample_rate
+                message.channels = audio.channels
+                _set_optional_field(message, "end_of_stream", sequence + 1 >= total_chunks)
+                message.pcm = candidate.payload[start : start + chunk_bytes]
+                self._handle_cmd_audio_chunk(device_id, message)
+            self.get_logger().info(
+                "audio playback loaded pull buffered "
+                f"device_id={device_id!r} command_id={meta.command_id!r} "
+                f"format_id={candidate.format_id} chunks={total_chunks} "
+                f"encoded_bytes={len(candidate.payload)} "
+                f"decoded_bytes={candidate.decoded_bytes} chunk_bytes={chunk_bytes}"
+            )
+            return Result.accepted("audio playback loaded pull buffered")
+
+        def _loaded_audio_topic_progress_snapshot(
+            self,
+            device_id: str,
+            command_id: str,
+            *,
+            after_sequence: int = 0,
+        ) -> tuple[int, bool, Result | None]:
+            buffered_chunks = 0
+            complete = False
+            for record in self.event_buffer.records(device_id):
+                if (
+                    record.command_id != command_id
+                    or record.sequence <= after_sequence
+                    or record.event_name != "audio_playback_load"
+                ):
+                    continue
+                payload = dict(record.payload)
+                if payload.get("stage") != "topic":
+                    continue
+                buffered_chunks = max(
+                    buffered_chunks,
+                    _loaded_audio_topic_buffered_chunks(payload),
+                )
+                complete = complete or bool(payload.get("complete", False))
+                error_code = _loaded_audio_topic_error_code(payload)
+                detail = str(payload.get("detail") or "")
+                if error_code and not (
+                    error_code == "MALFORMED_AUDIO_CHUNK"
+                    and detail == "sequence_gap"
+                ):
+                    return (
+                        buffered_chunks,
+                        complete,
+                        Result.rejected(
+                            error_code,
+                            "firmware rejected loaded audio topic payload"
+                            + (f" ({detail})" if detail else ""),
+                            recoverable=True,
+                        ),
+                    )
+            return buffered_chunks, complete, None
+
+        def _publish_loaded_audio_playback_carousel(
+            self,
+            device_id: str,
+            meta: CommandMeta,
+            audio: TtsAudio,
+        ) -> Result:
+            publisher = self._device_audio_chunk_publishers.get(device_id)
+            if publisher is None:
+                return _make_transport_result(
+                    f"firmware audio playback chunk topic for '{device_id}' is unavailable"
+                )
+            self._wait_for_device_audio_playback_subscription(device_id, meta.command_id)
+            candidate = _loaded_audio_transfer_candidates(audio)[0]
+            chunk_bytes = _audio_playback_load_chunk_bytes_for_format(candidate.format_id)
+            total_chunks = (len(candidate.payload) + chunk_bytes - 1) // chunk_bytes
+            messages = []
+            for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
+                message = self._audio_chunk_type()
+                message.device_id = device_id
+                message.command_id = meta.command_id
+                message.direction = AUDIO_PLAYBACK_DIRECTION
+                message.sequence = sequence
+                _set_optional_field(message, "total_chunks", total_chunks)
+                _set_optional_field(message, "total_bytes", candidate.decoded_bytes)
+                message.format = candidate.format_id
+                message.sample_rate = audio.sample_rate
+                message.channels = audio.channels
+                _set_optional_field(message, "end_of_stream", sequence + 1 >= total_chunks)
+                message.pcm = candidate.payload[start : start + chunk_bytes]
+                messages.append(message)
+            publish_interval_sec = max(_audio_playback_loaded_topic_publish_interval_sec(), 0.02)
+            records = self.event_buffer.records(device_id)
+            load_after_sequence = records[-1].sequence if records else 0
+            transfer_timeout_sec = max(
+                _audio_playback_loaded_topic_complete_timeout_sec(),
+                total_chunks * publish_interval_sec + 30.0,
+            )
+            deadline = time.monotonic() + transfer_timeout_sec
+            pass_count = 0
+            last_buffered = 0
+            while time.monotonic() < deadline:
+                buffered, complete, error = self._loaded_audio_topic_progress_snapshot(
+                    device_id,
+                    meta.command_id,
+                    after_sequence=load_after_sequence,
+                )
+                if error is not None:
+                    return error
+                if complete or buffered >= total_chunks:
+                    self.get_logger().info(
+                        "audio playback loaded topic carousel complete "
+                        f"device_id={device_id!r} command_id={meta.command_id!r} "
+                        f"format_id={candidate.format_id} chunks={total_chunks} "
+                        f"encoded_bytes={len(candidate.payload)} "
+                        f"decoded_bytes={candidate.decoded_bytes} passes={pass_count}"
+                    )
+                    return Result.accepted("audio playback loaded over topic carousel")
+                start_sequence = min(buffered, total_chunks - 1)
+                if buffered > last_buffered:
+                    last_buffered = buffered
+                pass_count += 1
+                for message in messages[start_sequence:]:
+                    self._publish_device_audio_chunk(device_id, message)
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(publish_interval_sec)
+            buffered, complete, error = self._loaded_audio_topic_progress_snapshot(
+                device_id,
+                meta.command_id,
+                after_sequence=load_after_sequence,
+            )
+            if error is not None:
+                return error
+            if complete or buffered >= total_chunks:
+                return Result.accepted("audio playback loaded over topic carousel")
+            return _make_timeout_result(
+                f"firmware audio playback topic carousel load for '{device_id}' "
+                f"timed out at {buffered}/{total_chunks} chunks"
+            )
+
         def _publish_loaded_audio_playback(
             self,
             device_id: str,
@@ -2754,6 +3248,8 @@ def main(args: list[str] | None = None) -> None:
             window_chunks = _audio_playback_loaded_topic_window_chunks()
             progress_timeout_sec = _audio_playback_loaded_topic_progress_timeout_sec()
             progress_retries = _audio_playback_loaded_topic_progress_retries()
+            records = self.event_buffer.records(device_id)
+            load_after_sequence = records[-1].sequence if records else 0
             publish_started_at = time.monotonic()
             for sequence, start in enumerate(range(0, len(candidate.payload), chunk_bytes)):
                 message = self._audio_chunk_type()
@@ -2780,6 +3276,7 @@ def main(args: list[str] | None = None) -> None:
                             device_id,
                             meta.command_id,
                             min_buffered_chunks=sequence + 1,
+                            after_sequence=load_after_sequence,
                             timeout_sec=progress_timeout_sec,
                         )
                         if progress_result is None:
@@ -2819,6 +3316,7 @@ def main(args: list[str] | None = None) -> None:
             complete_result = self._wait_for_loaded_audio_topic_complete(
                 device_id,
                 meta.command_id,
+                after_sequence=load_after_sequence,
                 timeout_sec=_audio_playback_loaded_topic_complete_timeout_sec(),
             )
             if complete_result is not None:
@@ -2843,6 +3341,7 @@ def main(args: list[str] | None = None) -> None:
             command_id: str,
             *,
             min_buffered_chunks: int,
+            after_sequence: int = 0,
             timeout_sec: float,
         ) -> Result | None:
             if timeout_sec <= 0:
@@ -2853,6 +3352,7 @@ def main(args: list[str] | None = None) -> None:
                     record
                     for record in self.event_buffer.records(device_id)
                     if record.command_id == command_id
+                    and record.sequence > after_sequence
                     and record.event_name == "audio_playback_load"
                 )
                 for record in records:
@@ -2883,6 +3383,7 @@ def main(args: list[str] | None = None) -> None:
             device_id: str,
             command_id: str,
             *,
+            after_sequence: int = 0,
             timeout_sec: float,
         ) -> Result | None:
             if timeout_sec <= 0:
@@ -2893,6 +3394,7 @@ def main(args: list[str] | None = None) -> None:
                     record
                     for record in self.event_buffer.records(device_id)
                     if record.command_id == command_id
+                    and record.sequence > after_sequence
                     and record.event_name == "audio_playback_load"
                 )
                 for record in records:
@@ -3603,13 +4105,83 @@ def main(args: list[str] | None = None) -> None:
                 return result
             playback_request = self._tts_playback_request(request.meta, request, audio)
             loaded_result = None
+            loaded_segments: tuple[TtsAudio, ...] = ()
+            loaded_segment_metas: tuple[CommandMeta, ...] = ()
             if _audio_playback_loaded_tts() and not _audio_playback_pull_only():
-                loaded_result = self._load_device_audio_playback(
-                    device_id,
-                    meta,
-                    request.meta,
-                    audio,
-                )
+                max_loaded_bytes = _audio_playback_command_loaded_max_decoded_bytes()
+                if _tts_audio_fits_single_loaded_playback(audio, max_loaded_bytes):
+                    loaded_segments = (audio,)
+                else:
+                    try:
+                        split_profile, text_segments, split_result = (
+                            self._synthesize_loaded_tts_text_segments(
+                                str(request.text),
+                                voice_profile,
+                                max_loaded_bytes,
+                            )
+                        )
+                    except TtsProviderError as exc:
+                        split_profile = None
+                        text_segments = ()
+                        split_result = Result.rejected(
+                            exc.code,
+                            str(exc),
+                            recoverable=exc.recoverable,
+                        )
+                    if split_profile is not None:
+                        profile = split_profile
+                    if split_result is not None:
+                        loaded_result = split_result
+                    elif text_segments:
+                        loaded_segments = text_segments
+                        self.get_logger().info(
+                            "tts loaded playback text split "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"segments={len(loaded_segments)} bytes={len(audio.pcm)}"
+                        )
+                    elif _audio_playback_loaded_tts_split_oversize():
+                        loaded_segments = _split_tts_audio_for_loaded_playback(
+                            audio,
+                            max_loaded_bytes,
+                        )
+                        self.get_logger().info(
+                            "tts loaded playback diagnostic audio split "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"segments={len(loaded_segments)} bytes={len(audio.pcm)}"
+                        )
+                    else:
+                        loaded_result = _tts_audio_too_large_for_loaded_playback_result(
+                            audio,
+                            max_loaded_bytes,
+                        )
+                        self.get_logger().info(
+                            "tts loaded playback oversized "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"bytes={len(audio.pcm)} max_decoded_bytes={max_loaded_bytes}"
+                        )
+                if loaded_segments:
+                    if len(loaded_segments) > 1:
+                        loaded_segment_metas = tuple(
+                            _tts_segment_command_meta(meta, index)
+                            for index in range(len(loaded_segments))
+                        )
+                    else:
+                        loaded_segment_metas = (meta,)
+                    if (
+                        len(loaded_segments) > 1
+                        and _audio_playback_loaded_tts_split_oversize()
+                    ):
+                        self.get_logger().info(
+                            "tts loaded playback split "
+                            f"device_id={device_id!r} command_id={meta.command_id!r} "
+                            f"segments={len(loaded_segments)} bytes={len(audio.pcm)}"
+                        )
+                    loaded_result = self._load_device_audio_playback(
+                        device_id,
+                        loaded_segment_metas[0],
+                        request.meta,
+                        loaded_segments[0],
+                    )
             if loaded_result is None:
                 self._buffer_synthesized_playback_chunks(
                     device_id,
@@ -3674,11 +4246,20 @@ def main(args: list[str] | None = None) -> None:
                 )
                 goal_handle.abort()
                 return result
-            playback_result = self._call_device_audio_play(
-                device_id,
-                playback_request,
-                meta,
-            )
+            if loaded_result is not None and loaded_result.ok:
+                playback_result = self._play_loaded_tts_segments(
+                    device_id,
+                    request,
+                    meta,
+                    loaded_segments,
+                    loaded_segment_metas,
+                )
+            else:
+                playback_result = self._call_device_audio_play(
+                    device_id,
+                    playback_request,
+                    meta,
+                )
             after_face_result = self._run_say_after_face(
                 device_id,
                 request,
@@ -4040,6 +4621,7 @@ def main(args: list[str] | None = None) -> None:
                     )
                     return preload_result
             loaded_playback = bool(getattr(request, "loaded_playback", False))
+            loaded_pull = bool(getattr(request, "loaded_pull", False))
             goal = PlayAudio.Goal()
             _copy_command_meta(
                 goal.meta,
@@ -4065,18 +4647,34 @@ def main(args: list[str] | None = None) -> None:
                 if not loaded_playback:
                     self._prepare_playback_chunk_relay(device_id, meta.command_id)
                 if loaded_playback:
+                    records = self.event_buffer.records(device_id)
+                    completion_after_sequence = records[-1].sequence if records else 0
+
                     def accepted_callback() -> None:
                         self._media_action_gate.mark_busy_seen(
                             device_id,
                             meta.command_id,
                         )
+                        if loaded_pull:
+                            self._activate_playback_chunk_relay(
+                                device_id,
+                                meta.command_id,
+                            )
 
-                    finished_callback = None
+                    if loaded_pull:
+                        def finished_callback() -> None:
+                            self._finish_playback_chunk_relay(
+                                device_id,
+                                meta.command_id,
+                            )
+                    else:
+                        finished_callback = None
 
-                    def completion_result() -> Result:
+                    def completion_result() -> Result | None:
                         return self._loaded_playback_completion_result(
                             device_id,
                             meta.command_id,
+                            after_sequence=completion_after_sequence,
                         )
                 else:
                     def accepted_callback() -> None:

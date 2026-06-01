@@ -114,16 +114,17 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='256'
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='30.0'
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
-  $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
+  $env:STACKCHAN_TTS_LOADED_TRANSPORT='carousel'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='128'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.6'
+  $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES='131072'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.05'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='0'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='2'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
   # Optional CLI audio-play experiment only:
   # $env:STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES='32768'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC='0.15'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='30'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC='90'
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default --say-face happy --say-motion cheerful --say-after-face happy
   ```
 
@@ -137,27 +138,29 @@ hardware bring-up issue complete.
   expression and motion timing. Also record whether the operator heard the
   speaker output; `tts_finished` alone is not an audible-playback pass. For
   audible-quality checks, prefer loaded playback
-  (`STACKCHAN_TTS_LOADED_PLAYBACK=1`) so firmware can pass a stable loaded PCM
-  buffer to M5Unified. The current default sends loaded ADPCM over the playback
-  chunk topic and uses the final playback action result, not per-chunk service
-  ACKs. Use `STACKCHAN_TTS_LOADED_TRANSPORT=service` only when comparing
-  against the older synchronous load service. Keep
+  (`STACKCHAN_TTS_LOADED_PLAYBACK=1`) so firmware can play a stable loaded
+  buffer. The current default sends loaded ADPCM as a bounded topic carousel
+  until firmware reports the contiguous loaded transaction complete, then starts
+  normal playback for that stable buffer. Use
+  `STACKCHAN_TTS_LOADED_TRANSPORT=pull` only when comparing against firmware
+  pull-loaded transfer, and `STACKCHAN_TTS_LOADED_TRANSPORT=service` only when
+  comparing against the older synchronous load service. Keep
   `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES=128` on the current COM3
-  host serial TCP bridge when using the loaded topic path. The previous
-  service-load path completed short ADPCM TTS at 96 bytes while 128, 256, and
-  512 byte synchronous compressed service-load requests timed out before the
-  first firmware callback response; use 96 bytes only when specifically
-  diagnosing the synchronous service-load path.
-  Keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
-  host-serial TCP path, but leave
-  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=0` for normal
-  audible checks. That keeps loaded topic transfer as paced publish plus one
-  final transaction completion observation instead of a per-chunk ACK-like
-  round trip on serial. Set the progress timeout above zero only when
-  explicitly tuning transport diagnostics; then the bridge republishes the same
-  loaded topic chunk after progress stalls, and firmware treats same-command
-  duplicate loaded chunks as idempotent observations instead of decoding them
-  twice. The current firmware keeps the loaded topic subscriber at 16 samples
+  host serial TCP bridge for the loaded carousel path. The previous service-load
+  path completed short ADPCM TTS at 96 bytes while 128, 256, and 512 byte
+  synchronous compressed service-load requests timed out before the first
+  firmware callback response; use 96 bytes only when specifically diagnosing
+  the synchronous service-load path.
+  For one-shot diagnostic loaded-topic path, keep
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
+  host-serial TCP path and
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=2` for normal
+  audible checks. The bridge now waits for payload-free firmware progress for
+  each loaded topic chunk and republishes the same sequence after progress
+  stalls; firmware treats same-command duplicate loaded chunks as idempotent
+  observations instead of decoding them twice. Set the progress timeout to `0`
+  only when explicitly tuning fire-and-wait transport diagnostics. The current
+  firmware keeps the loaded topic subscriber at 16 samples
   and the micro-ROS input reliable stream at 8 samples; if a smoke still reports
   `sequence_gap`, check that the rebuilt `libmicroros` cache picked up the
   matching `microros_stackchan.meta` values before changing TTS timing.
@@ -2232,9 +2235,18 @@ KOIZUMI-112 diagnostic firmware update:
   `rx_ms` about 20.8 s, with final completion about 0.36 s after bridge publish
   completion. A 0.6 s run showed bridge publish elapsed about 13.9 s,
   firmware `rx_ms` about 14.0 s, `gap_ms` about 690 ms, and final completion
-  about 0.32 s after bridge publish completion. Keep 128 byte ADPCM chunks and
-  30 s final completion wait, and lower the loaded-topic publish interval
-  default to 0.6 s.
+  about 0.32 s after bridge publish completion. At that point, 128 byte ADPCM
+  chunks, a 30 s final completion wait, and 0.6 s loaded-topic publish pacing
+  were the conservative validated defaults.
+- KOIZUMI-180 follow-up on 2026-06-01 fixed host serial TCP partial writes and
+  firmware loaded-playback speaker queue handling, then revalidated the same
+  target phrase `今日は電気をたべたよ` over COM3. With 128 byte ADPCM chunks
+  and `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC=0.05`, both
+  the one-shot topic path and the default carousel path completed. The target
+  phrase used 106 chunks, 13,493 encoded bytes, 53,958 decoded bytes, and
+  completed in about 10-11 s instead of the previous 68 s paced run. Keep the
+  loaded-topic publish interval default at 0.05 s for this validated host
+  serial path; slower values remain useful only for transport diagnostics.
 - KOIZUMI-178 focused playback follow-up on 2026-05-29 found that the current
   bridge can convert a 500 ms `stackchanctl audio play --wait` tone into the
   loaded playback transaction before starting firmware playback. The run used

@@ -283,6 +283,7 @@ constexpr size_t kAudioPlaybackPendingChunkSlots = 8;
 #endif
 constexpr size_t kAudioPlaybackPendingChunkBytes = stackchan::kAudioChunkBytes;
 constexpr size_t kAudioPlaybackLoadBufferBytes = 32 * 1024;
+constexpr size_t kAudioPlaybackAdpcmMaxDecodedBytes = 128 * 1024;
 constexpr uint8_t kAudioPlaybackSpeakerVolume = 192;
 constexpr uint32_t kAudioPlaybackSpeakerFrameBytes = stackchan::kAudioChunkBytes;
 constexpr uint32_t kAudioPlaybackSpeakerFrameSamples =
@@ -613,10 +614,12 @@ uint8_t play_audio_pending_chunk_count = 0;
 alignas(int16_t) uint8_t play_audio_loaded_buffer[kAudioPlaybackLoadBufferBytes]{};
 char play_audio_loaded_command_id[37] = "";
 uint32_t play_audio_loaded_total_bytes = 0;
+uint32_t play_audio_loaded_encoded_bytes = 0;
 uint32_t play_audio_loaded_total_chunks = 0;
 uint32_t play_audio_loaded_expected_sequence = 0;
 uint8_t play_audio_loaded_format = stackchan_msgs__msg__AudioChunk__PCM_S16LE;
 uint32_t play_audio_loaded_play_offset = 0;
+uint32_t play_audio_loaded_decoded_play_bytes = 0;
 uint32_t play_audio_loaded_last_write_ms = 0;
 uint32_t play_audio_loaded_first_rx_ms = 0;
 uint32_t play_audio_loaded_last_rx_ms = 0;
@@ -625,8 +628,10 @@ uint32_t play_audio_loaded_decode_total_ms = 0;
 uint32_t play_audio_loaded_last_decode_ms = 0;
 bool play_audio_loaded_complete = false;
 bool play_audio_loaded_playing = false;
+bool play_audio_loaded_pull_loading = false;
 uint32_t play_audio_loaded_direct_playback_ms = 0;
 stackchan::ImaAdpcmDecoderState play_audio_loaded_adpcm_state;
+stackchan::ImaAdpcmDecoderState play_audio_loaded_play_adpcm_state;
 
 void publish_status_heartbeat();
 void finish_play_audio_goal(const stackchan::Result& result, int8_t action_status);
@@ -717,10 +722,12 @@ void reset_play_audio_pending_chunks() {
 void reset_play_audio_loaded_buffer() {
   play_audio_loaded_command_id[0] = '\0';
   play_audio_loaded_total_bytes = 0;
+  play_audio_loaded_encoded_bytes = 0;
   play_audio_loaded_total_chunks = 0;
   play_audio_loaded_expected_sequence = 0;
   play_audio_loaded_format = stackchan_msgs__msg__AudioChunk__PCM_S16LE;
   play_audio_loaded_play_offset = 0;
+  play_audio_loaded_decoded_play_bytes = 0;
   play_audio_loaded_last_write_ms = 0;
   play_audio_loaded_first_rx_ms = 0;
   play_audio_loaded_last_rx_ms = 0;
@@ -729,8 +736,10 @@ void reset_play_audio_loaded_buffer() {
   play_audio_loaded_last_decode_ms = 0;
   play_audio_loaded_complete = false;
   play_audio_loaded_playing = false;
+  play_audio_loaded_pull_loading = false;
   play_audio_loaded_direct_playback_ms = 0;
   play_audio_loaded_adpcm_state = stackchan::ImaAdpcmDecoderState{};
+  play_audio_loaded_play_adpcm_state = stackchan::ImaAdpcmDecoderState{};
 }
 
 int find_play_audio_pending_chunk(uint32_t sequence) {
@@ -965,6 +974,7 @@ void log_play_audio_load_diagnostic(
   const bool should_log =
       complete ||
       !result.ok ||
+      (topic_stage && result.ok) ||
       (!topic_stage &&
        (sequence <= 1 ||
         (kAudioPlaybackChunkDiagnosticSampleInterval > 0 &&
@@ -6535,7 +6545,7 @@ bool queue_play_audio_speaker_frame(
           "OK");
       play_audio_speaker_queue_full_logged = true;
     }
-    return true;
+    play_audio_last_chunk_ms = millis();
   }
   int16_t* samples = play_audio_buffers[play_audio_buffer_index];
   const size_t sample_count = play_audio_buffer_fill_samples;
@@ -6656,6 +6666,28 @@ bool append_play_audio_pcm_to_speaker_frames(
           "AUDIO_UNDERRUN");
       return false;
     }
+  }
+  return true;
+}
+
+bool append_play_audio_sample_to_speaker_frames(
+    const char* command_id,
+    uint32_t sequence,
+    int16_t sample) {
+  if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples) {
+    if (!queue_play_audio_speaker_frame(command_id, sequence, false)) {
+      return false;
+    }
+    if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples) {
+      return true;
+    }
+  }
+  int16_t* frame = play_audio_buffers[play_audio_buffer_index];
+  frame[play_audio_buffer_fill_samples] = sample;
+  ++play_audio_buffer_fill_samples;
+  if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples &&
+      !queue_play_audio_speaker_frame(command_id, sequence, false)) {
+    return false;
   }
   return true;
 }
@@ -6903,7 +6935,11 @@ bool play_audio_goal_valid(
     }
     return false;
   }
-  if (strcmp(goal_format, "pcm_s16le") != 0 ||
+  const bool pcm_goal = strcmp(goal_format, "pcm_s16le") == 0;
+  const bool loaded_adpcm_pull_goal =
+      strcmp(goal_format, "ima_adpcm_4bit") == 0 &&
+      !goal.first_chunk_present;
+  if ((!pcm_goal && !loaded_adpcm_pull_goal) ||
       goal.sample_rate != stackchan::kAudioSampleRate ||
       goal.channels != stackchan::kAudioChannels) {
     if (result != nullptr) {
@@ -7060,6 +7096,7 @@ void request_next_play_audio_chunk() {
   const bool waiting_for_gap = play_audio_pending_chunk_count > 0;
   publish_play_audio_ack_window(waiting_for_gap);
   if (!waiting_for_gap &&
+      !play_audio_loaded_pull_loading &&
       play_audio_received_chunk &&
       !play_audio_end_of_stream_seen &&
       now_ms - play_audio_last_chunk_ms < kAudioPlaybackPullFallbackIdleMs) {
@@ -7133,34 +7170,134 @@ void step_loaded_play_audio_playback() {
   if (!play_audio_goal_active || !play_audio_loaded_playing) {
     return;
   }
-  if (!play_audio_speaker_queue_has_room()) {
-    return;
-  }
-  const uint32_t remaining =
-      play_audio_loaded_total_bytes - play_audio_loaded_play_offset;
-  if (remaining == 0) {
-    play_audio_end_of_stream_seen = true;
-    return;
-  }
-  const uint32_t bytes_to_append =
-      remaining < kAudioPlaybackSpeakerFrameBytes
-          ? remaining
-          : kAudioPlaybackSpeakerFrameBytes;
-  if (!append_play_audio_pcm_to_speaker_frames(
+  uint32_t bytes_appended = 0;
+  if (play_audio_loaded_format == stackchan_msgs__msg__AudioChunk__PCM_S16LE) {
+    const uint32_t remaining =
+        play_audio_loaded_total_bytes - play_audio_loaded_play_offset;
+    if (remaining == 0) {
+      play_audio_end_of_stream_seen = true;
+      return;
+    }
+    const uint32_t bytes_to_append =
+        remaining < kAudioPlaybackSpeakerFrameBytes
+            ? remaining
+            : kAudioPlaybackSpeakerFrameBytes;
+    if (!append_play_audio_pcm_to_speaker_frames(
+            play_audio_diagnostic_command_id,
+            play_audio_next_pull_sequence,
+            play_audio_loaded_buffer + play_audio_loaded_play_offset,
+            bytes_to_append)) {
+      finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+      return;
+    }
+    play_audio_loaded_play_offset += bytes_to_append;
+    bytes_appended = bytes_to_append;
+  } else if (
+      play_audio_loaded_format ==
+      stackchan_msgs__msg__AudioChunk__IMA_ADPCM_4BIT) {
+    if (!play_audio_loaded_play_adpcm_state.initialized) {
+      if (play_audio_loaded_encoded_bytes < stackchan::kImaAdpcmHeaderBytes ||
+          play_audio_loaded_total_bytes < 2) {
+        log_play_audio_chunk_diagnostic(
+            "loaded_playback_decode_failed",
+            play_audio_diagnostic_command_id,
+            play_audio_next_pull_sequence,
+            play_audio_loaded_encoded_bytes,
+            "MALFORMED_AUDIO_CHUNK");
+        finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+        return;
+      }
+      const uint8_t step_index = play_audio_loaded_buffer[2];
+      if (step_index > 88 || play_audio_loaded_buffer[3] != 0) {
+        log_play_audio_chunk_diagnostic(
+            "loaded_playback_decode_failed",
+            play_audio_diagnostic_command_id,
+            play_audio_next_pull_sequence,
+            play_audio_loaded_encoded_bytes,
+            "MALFORMED_AUDIO_CHUNK");
+        finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+        return;
+      }
+      play_audio_loaded_play_adpcm_state.predictor = static_cast<int16_t>(
+          static_cast<uint16_t>(play_audio_loaded_buffer[0]) |
+          (static_cast<uint16_t>(play_audio_loaded_buffer[1]) << 8));
+      play_audio_loaded_play_adpcm_state.step_index = step_index;
+      play_audio_loaded_play_adpcm_state.initialized = true;
+      play_audio_loaded_play_offset = stackchan::kImaAdpcmHeaderBytes;
+      if (!append_play_audio_sample_to_speaker_frames(
+              play_audio_diagnostic_command_id,
+              play_audio_next_pull_sequence,
+              play_audio_loaded_play_adpcm_state.predictor)) {
+        finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+        return;
+      }
+      play_audio_loaded_decoded_play_bytes += 2;
+      bytes_appended += 2;
+    }
+    while (
+        play_audio_loaded_decoded_play_bytes < play_audio_loaded_total_bytes &&
+        play_audio_loaded_play_offset < play_audio_loaded_encoded_bytes &&
+        play_audio_buffer_fill_samples < kAudioPlaybackSpeakerFrameSamples) {
+      const uint8_t value =
+          play_audio_loaded_buffer[play_audio_loaded_play_offset++];
+      for (uint8_t nibble_index = 0; nibble_index < 2; ++nibble_index) {
+        if (play_audio_loaded_decoded_play_bytes >=
+            play_audio_loaded_total_bytes) {
+          break;
+        }
+        const uint8_t nibble =
+            nibble_index == 0 ? (value & 0x0f) : ((value >> 4) & 0x0f);
+        const int16_t sample = stackchan::decode_ima_adpcm_nibble(
+            play_audio_loaded_play_adpcm_state,
+            nibble);
+        if (!append_play_audio_sample_to_speaker_frames(
+                play_audio_diagnostic_command_id,
+                play_audio_next_pull_sequence,
+                sample)) {
+          finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+          return;
+        }
+        play_audio_loaded_decoded_play_bytes += 2;
+        bytes_appended += 2;
+        if (play_audio_buffer_fill_samples >= kAudioPlaybackSpeakerFrameSamples) {
+          break;
+        }
+      }
+    }
+    if (bytes_appended == 0 &&
+        play_audio_loaded_decoded_play_bytes < play_audio_loaded_total_bytes &&
+        play_audio_loaded_play_offset >= play_audio_loaded_encoded_bytes) {
+      log_play_audio_chunk_diagnostic(
+          "loaded_playback_decode_failed",
           play_audio_diagnostic_command_id,
           play_audio_next_pull_sequence,
-          play_audio_loaded_buffer + play_audio_loaded_play_offset,
-          bytes_to_append)) {
-    finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+          play_audio_loaded_encoded_bytes,
+          "MALFORMED_AUDIO_CHUNK");
+      finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
+      return;
+    }
+  } else {
+    finish_play_audio_goal(
+        stackchan::Result::rejected(
+            "UNSUPPORTED_FEATURE",
+            "loaded audio format is unsupported",
+            false),
+        GOAL_STATE_ABORTED);
     return;
   }
-  play_audio_loaded_play_offset += bytes_to_append;
+  if (bytes_appended == 0) {
+    return;
+  }
   play_audio_received_chunk = true;
   play_audio_last_chunk_ms = millis();
   ++play_audio_chunks_seen;
   ++play_audio_chunks_accepted;
   ++play_audio_next_pull_sequence;
-  if (play_audio_loaded_play_offset >= play_audio_loaded_total_bytes) {
+  const bool decoded_complete =
+      play_audio_loaded_format == stackchan_msgs__msg__AudioChunk__PCM_S16LE
+          ? play_audio_loaded_play_offset >= play_audio_loaded_total_bytes
+          : play_audio_loaded_decoded_play_bytes >= play_audio_loaded_total_bytes;
+  if (decoded_complete) {
     play_audio_end_of_stream_seen = true;
     log_play_audio_chunk_diagnostic(
         "loaded_playback_drained",
@@ -7171,20 +7308,45 @@ void step_loaded_play_audio_playback() {
   }
 }
 
+void start_loaded_play_audio_playback(const char* command_id) {
+  if (command_id == nullptr) {
+    command_id = "";
+  }
+  play_audio_loaded_pull_loading = false;
+  play_audio_loaded_playing = true;
+  play_audio_loaded_play_offset = 0;
+  play_audio_loaded_decoded_play_bytes = 0;
+  play_audio_loaded_play_adpcm_state = stackchan::ImaAdpcmDecoderState{};
+  play_audio_received_chunk = false;
+  play_audio_end_of_stream_seen = false;
+  play_audio_last_chunk_ms = millis();
+  play_audio_chunks_seen = 0;
+  play_audio_chunks_accepted = 0;
+  play_audio_next_pull_sequence = 0;
+  log_play_audio_chunk_diagnostic(
+      "loaded_playback_started",
+      command_id,
+      0,
+      play_audio_loaded_total_bytes,
+      "OK");
+}
+
 void maybe_finish_play_audio_session() {
   if (!play_audio_goal_active) {
     send_play_audio_result_if_ready();
     return;
   }
-  const uint32_t now_ms = millis();
   step_loaded_play_audio_playback();
   if (!play_audio_goal_active) {
     send_play_audio_result_if_ready();
     return;
   }
+  const uint32_t now_ms = millis();
   clear_stale_play_audio_chunk_request();
   if (play_audio_received_chunk &&
       !play_audio_end_of_stream_seen &&
+      !play_audio_loaded_playing &&
+      !play_audio_loaded_pull_loading &&
       now_ms - play_audio_last_chunk_ms >= kAudioPlaybackInterChunkTimeoutMs) {
     log_play_audio_session_diagnostic(
         "inter_chunk_timeout",
@@ -7218,6 +7380,7 @@ void maybe_finish_play_audio_session() {
     send_play_audio_result_if_ready();
     return;
   } else if (!play_audio_received_chunk &&
+      !play_audio_loaded_pull_loading &&
       now_ms - play_audio_started_ms >= kAudioPlaybackNoChunkTimeoutMs) {
     log_play_audio_session_diagnostic(
         "no_chunk_timeout",
@@ -7315,40 +7478,39 @@ void start_play_audio_goal(
   play_audio_last_ack_publish_ms = 0;
   play_audio_started_ms = millis();
   play_audio_last_chunk_ms = play_audio_started_ms;
+  const char* goal_format =
+      request.goal.format.data != nullptr ? request.goal.format.data : "";
+  const bool use_loaded_pull =
+      !request.goal.first_chunk_present &&
+      strcmp(goal_format, "ima_adpcm_4bit") == 0;
   const bool use_loaded_playback =
       !request.goal.first_chunk_present &&
+      !use_loaded_pull &&
       play_audio_loaded_complete &&
       strcmp(play_audio_loaded_command_id, command_id) == 0;
   if (!use_loaded_playback &&
+      !use_loaded_pull &&
       (play_audio_loaded_complete ||
        play_audio_loaded_expected_sequence != 0 ||
        play_audio_loaded_total_bytes != 0)) {
     reset_play_audio_loaded_buffer();
   }
   if (use_loaded_playback) {
-    play_audio_loaded_playing = true;
-    play_audio_loaded_play_offset = play_audio_loaded_total_bytes;
-    play_audio_received_chunk = true;
-    play_audio_end_of_stream_seen = true;
+    start_loaded_play_audio_playback(command_id);
+  } else if (use_loaded_pull) {
+    reset_play_audio_loaded_buffer();
+    copy_bounded(
+        play_audio_loaded_command_id,
+        sizeof(play_audio_loaded_command_id),
+        command_id);
+    play_audio_loaded_format = stackchan_msgs__msg__AudioChunk__IMA_ADPCM_4BIT;
+    play_audio_loaded_pull_loading = true;
     play_audio_last_chunk_ms = millis();
-    play_audio_chunks_seen = play_audio_loaded_total_chunks;
-    play_audio_chunks_accepted = play_audio_loaded_total_chunks;
-    play_audio_next_pull_sequence = play_audio_loaded_total_chunks;
     log_play_audio_chunk_diagnostic(
-        "loaded_playback_started",
+        "loaded_pull_started",
         command_id,
         0,
-        play_audio_loaded_total_bytes,
-        "OK");
-    if (!queue_loaded_play_audio_buffer(command_id)) {
-      finish_play_audio_goal(stackchan::audio_underrun(), GOAL_STATE_ABORTED);
-      return;
-    }
-    log_play_audio_chunk_diagnostic(
-        "loaded_playback_drained",
-        command_id,
-        play_audio_next_pull_sequence,
-        play_audio_loaded_total_bytes,
+        0,
         "OK");
   } else if (request.goal.first_chunk_present) {
     log_play_audio_action_diagnostic(
@@ -7604,6 +7766,126 @@ void handle_audio_chunk_subscription(const void* message) {
       chunk->pcm.size);
 }
 
+stackchan::Result accept_loaded_audio_pull_chunk(
+    const stackchan_msgs__msg__AudioChunk* chunk) {
+  if (chunk == nullptr) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded pull chunk is null",
+        true);
+  }
+  if (!play_audio_loaded_pull_loading) {
+    return stackchan::Result::rejected(
+        "UNKNOWN_COMMAND",
+        "loaded pull chunk arrived without an active loaded pull session",
+        true);
+  }
+  if (!request_matches_device_id(chunk->device_id)) {
+    return stackchan::Result::rejected(
+        "INVALID_DEVICE_ID",
+        "loaded pull chunk device_id mismatch",
+        false);
+  }
+  const char* command_id =
+      chunk->command_id.data != nullptr ? chunk->command_id.data : "";
+  if (strcmp(command_id, play_audio_diagnostic_command_id) != 0 ||
+      strcmp(command_id, play_audio_loaded_command_id) != 0) {
+    return stackchan::Result::rejected(
+        "UNKNOWN_COMMAND",
+        "loaded pull chunk command_id mismatch",
+        true);
+  }
+  if (chunk->direction != stackchan_msgs__msg__AudioChunk__PLAYBACK ||
+      chunk->format != stackchan_msgs__msg__AudioChunk__IMA_ADPCM_4BIT ||
+      chunk->sample_rate != stackchan::kAudioSampleRate ||
+      chunk->channels != stackchan::kAudioChannels) {
+    return stackchan::Result::rejected(
+        "UNSUPPORTED_FEATURE",
+        "loaded pull chunk format is unsupported",
+        false);
+  }
+  if (chunk->pcm.size == 0 ||
+      chunk->pcm.size > stackchan::kAudioMaxChunkBytes ||
+      chunk->pcm.data == nullptr) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded pull chunk byte length is invalid",
+        true);
+  }
+  if (chunk->sequence == 0 &&
+      chunk->pcm.size < stackchan::kImaAdpcmHeaderBytes) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded pull ADPCM header is missing",
+        true);
+  }
+  if (chunk->total_bytes == 0 ||
+      chunk->total_bytes % 2 != 0 ||
+      chunk->total_bytes > kAudioPlaybackAdpcmMaxDecodedBytes ||
+      chunk->total_chunks == 0) {
+    return stackchan::Result::rejected(
+        "AUDIO_BUFFER_OVERFLOW",
+        "loaded pull total size exceeds firmware buffer",
+        false);
+  }
+  if (chunk->sequence != play_audio_loaded_expected_sequence) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded pull sequence is not contiguous",
+        true);
+  }
+  if (chunk->sequence == 0) {
+    play_audio_loaded_total_bytes = chunk->total_bytes;
+    play_audio_loaded_encoded_bytes = 0;
+    play_audio_loaded_total_chunks = chunk->total_chunks;
+    play_audio_loaded_format = chunk->format;
+    play_audio_loaded_first_rx_ms = millis();
+    play_audio_loaded_last_rx_gap_ms = 0;
+  } else if (chunk->total_bytes != play_audio_loaded_total_bytes ||
+             chunk->total_chunks != play_audio_loaded_total_chunks ||
+             chunk->format != play_audio_loaded_format) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded pull declared totals changed during active load",
+        true);
+  } else if (play_audio_loaded_last_rx_ms > 0 &&
+             millis() >= play_audio_loaded_last_rx_ms) {
+    play_audio_loaded_last_rx_gap_ms = millis() - play_audio_loaded_last_rx_ms;
+  }
+  play_audio_loaded_last_rx_ms = millis();
+  if (play_audio_loaded_encoded_bytes + chunk->pcm.size >
+      kAudioPlaybackLoadBufferBytes) {
+    return stackchan::Result::rejected(
+        "AUDIO_BUFFER_OVERFLOW",
+        "loaded pull encoded buffer overflow",
+        false);
+  }
+  memcpy(
+      play_audio_loaded_buffer + play_audio_loaded_encoded_bytes,
+      chunk->pcm.data,
+      chunk->pcm.size);
+  play_audio_loaded_encoded_bytes += chunk->pcm.size;
+  play_audio_loaded_expected_sequence = chunk->sequence + 1;
+  play_audio_loaded_last_write_ms = millis();
+  play_audio_received_chunk = true;
+  play_audio_last_chunk_ms = millis();
+  ++play_audio_chunks_seen;
+  ++play_audio_chunks_accepted;
+  play_audio_next_pull_sequence = chunk->sequence + 1;
+  if (chunk->end_of_stream) {
+    play_audio_loaded_complete = true;
+    if (play_audio_loaded_expected_sequence != chunk->total_chunks) {
+      reset_play_audio_loaded_buffer();
+      return stackchan::Result::rejected(
+          "MALFORMED_AUDIO_CHUNK",
+          "loaded pull final counters do not match declared totals",
+          true);
+    }
+    start_loaded_play_audio_playback(command_id);
+  }
+  return stackchan::Result::accepted("loaded pull chunk accepted");
+}
+
 void handle_audio_playback_chunk_response(const void* response) {
   play_audio_chunk_request_pending = false;
   if (response == nullptr) {
@@ -7638,6 +7920,47 @@ void handle_audio_playback_chunk_response(const void* response) {
         0,
         result.error_code);
     if (strcmp(result.error_code, "FIRMWARE_BUSY") != 0) {
+      finish_play_audio_goal(result, GOAL_STATE_ABORTED);
+    }
+    return;
+  }
+  if (play_audio_loaded_pull_loading) {
+    if (!chunk_response->has_chunk) {
+      if (chunk_response->end_of_stream) {
+        const stackchan::Result result = stackchan::Result::rejected(
+            "MALFORMED_AUDIO_CHUNK",
+            "loaded pull ended before audio was complete",
+            true);
+        log_play_audio_chunk_diagnostic(
+            "loaded_pull_incomplete",
+            play_audio_diagnostic_command_id,
+            play_audio_next_pull_sequence,
+            0,
+            result.error_code);
+        finish_play_audio_goal(result, GOAL_STATE_ABORTED);
+        return;
+      }
+      log_play_audio_chunk_diagnostic(
+          "loaded_pull_empty",
+          play_audio_diagnostic_command_id,
+          play_audio_next_pull_sequence,
+          0,
+          "OK");
+      return;
+    }
+    const stackchan::Result result =
+        accept_loaded_audio_pull_chunk(&chunk_response->chunk);
+    log_play_audio_load_diagnostic(
+        "pull",
+        play_audio_diagnostic_command_id,
+        chunk_response->chunk.sequence,
+        chunk_response->chunk.pcm.size,
+        chunk_response->chunk.total_chunks,
+        play_audio_loaded_total_bytes,
+        play_audio_loaded_expected_sequence,
+        play_audio_loaded_complete,
+        result);
+    if (!result.ok) {
       finish_play_audio_goal(result, GOAL_STATE_ABORTED);
     }
     return;
@@ -7722,9 +8045,12 @@ stackchan::Result validate_loaded_audio_request(
         "loaded ADPCM header is missing",
         true);
   }
+  const size_t decoded_limit =
+      adpcm_format ? kAudioPlaybackAdpcmMaxDecodedBytes
+                   : kAudioPlaybackLoadBufferBytes;
   if (request->total_bytes == 0 ||
       request->total_bytes % 2 != 0 ||
-      request->total_bytes > kAudioPlaybackLoadBufferBytes ||
+      request->total_bytes > decoded_limit ||
       request->total_chunks == 0) {
     return stackchan::Result::rejected(
         "AUDIO_BUFFER_OVERFLOW",
@@ -7750,6 +8076,13 @@ stackchan::Result validate_loaded_audio_request(
     return stackchan::Result::rejected(
         "UNSUPPORTED_FEATURE",
         "loaded audio format changed during active load",
+        true);
+  }
+  if (request->total_bytes != play_audio_loaded_total_bytes ||
+      request->total_chunks != play_audio_loaded_total_chunks) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded audio declared totals changed during active load",
         true);
   }
   if (request->sequence != play_audio_loaded_expected_sequence) {
@@ -7829,9 +8162,12 @@ stackchan::Result validate_loaded_audio_topic_chunk(
         "loaded audio topic ADPCM header is missing",
         true);
   }
+  const size_t decoded_limit =
+      adpcm_format ? kAudioPlaybackAdpcmMaxDecodedBytes
+                   : kAudioPlaybackLoadBufferBytes;
   if (chunk->total_bytes == 0 ||
       chunk->total_bytes % 2 != 0 ||
-      chunk->total_bytes > kAudioPlaybackLoadBufferBytes ||
+      chunk->total_bytes > decoded_limit ||
       chunk->total_chunks == 0) {
     return stackchan::Result::rejected(
         "AUDIO_BUFFER_OVERFLOW",
@@ -7861,6 +8197,13 @@ stackchan::Result validate_loaded_audio_topic_chunk(
     return stackchan::Result::rejected(
         "UNSUPPORTED_FEATURE",
         "loaded audio topic format changed during active load",
+        true);
+  }
+  if (chunk->total_bytes != play_audio_loaded_total_bytes ||
+      chunk->total_chunks != play_audio_loaded_total_chunks) {
+    return stackchan::Result::rejected(
+        "MALFORMED_AUDIO_CHUNK",
+        "loaded audio topic declared totals changed during active load",
         true);
   }
   if (chunk->sequence != play_audio_loaded_expected_sequence) {
@@ -7903,6 +8246,8 @@ void handle_loaded_audio_topic_chunk(
           play_audio_loaded_command_id,
           sizeof(play_audio_loaded_command_id),
           command_id);
+      play_audio_loaded_total_bytes = chunk->total_bytes;
+      play_audio_loaded_encoded_bytes = 0;
       play_audio_loaded_total_chunks = chunk->total_chunks;
       play_audio_loaded_format = chunk->format;
       play_audio_loaded_first_rx_ms = received_ms;
@@ -7915,7 +8260,7 @@ void handle_loaded_audio_topic_chunk(
     play_audio_loaded_last_rx_ms = received_ms;
     const uint32_t decode_started_ms = millis();
     if (chunk->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE &&
-        play_audio_loaded_total_bytes + chunk->pcm.size >
+        play_audio_loaded_encoded_bytes + chunk->pcm.size >
             kAudioPlaybackLoadBufferBytes) {
       result = stackchan::Result::rejected(
           "AUDIO_BUFFER_OVERFLOW",
@@ -7923,28 +8268,23 @@ void handle_loaded_audio_topic_chunk(
           false);
     } else if (chunk->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE) {
       memcpy(
-          play_audio_loaded_buffer + play_audio_loaded_total_bytes,
+          play_audio_loaded_buffer + play_audio_loaded_encoded_bytes,
           chunk->pcm.data,
           chunk->pcm.size);
-      play_audio_loaded_total_bytes += chunk->pcm.size;
+      play_audio_loaded_encoded_bytes += chunk->pcm.size;
     } else {
-      const uint32_t remaining_decoded_bytes =
-          chunk->total_bytes > play_audio_loaded_total_bytes
-              ? chunk->total_bytes - play_audio_loaded_total_bytes
-              : 0;
-      const stackchan::ImaAdpcmDecodeResult decoded =
-          stackchan::decode_ima_adpcm_4bit_payload(
-              chunk->pcm.data,
-              chunk->pcm.size,
-              chunk->sequence == 0,
-              chunk->end_of_stream,
-              remaining_decoded_bytes,
-              play_audio_loaded_buffer + play_audio_loaded_total_bytes,
-              kAudioPlaybackLoadBufferBytes - play_audio_loaded_total_bytes,
-              play_audio_loaded_adpcm_state);
-      result = decoded.result;
-      if (result.ok) {
-        play_audio_loaded_total_bytes += decoded.bytes_written;
+      if (play_audio_loaded_encoded_bytes + chunk->pcm.size >
+          kAudioPlaybackLoadBufferBytes) {
+        result = stackchan::Result::rejected(
+            "AUDIO_BUFFER_OVERFLOW",
+            "loaded audio topic encoded buffer overflow",
+            false);
+      } else {
+        memcpy(
+            play_audio_loaded_buffer + play_audio_loaded_encoded_bytes,
+            chunk->pcm.data,
+            chunk->pcm.size);
+        play_audio_loaded_encoded_bytes += chunk->pcm.size;
       }
     }
     const uint32_t decode_finished_ms = millis();
@@ -7958,7 +8298,9 @@ void handle_loaded_audio_topic_chunk(
       play_audio_loaded_last_write_ms = millis();
       play_audio_loaded_complete = chunk->end_of_stream;
       if (play_audio_loaded_complete &&
-          (play_audio_loaded_total_bytes != chunk->total_bytes ||
+          ((chunk->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE &&
+            play_audio_loaded_encoded_bytes != chunk->total_bytes) ||
+           play_audio_loaded_total_bytes != chunk->total_bytes ||
            play_audio_loaded_expected_sequence != chunk->total_chunks)) {
         result = stackchan::Result::rejected(
             "MALFORMED_AUDIO_CHUNK",
@@ -8000,11 +8342,13 @@ void handle_audio_playback_load_service(const void* request, void* response) {
           play_audio_loaded_command_id,
           sizeof(play_audio_loaded_command_id),
           command_id);
+      play_audio_loaded_total_bytes = load_request->total_bytes;
+      play_audio_loaded_encoded_bytes = 0;
       play_audio_loaded_total_chunks = load_request->total_chunks;
       play_audio_loaded_format = load_request->format;
     }
     if (load_request->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE &&
-        play_audio_loaded_total_bytes + load_request->pcm.size >
+        play_audio_loaded_encoded_bytes + load_request->pcm.size >
             kAudioPlaybackLoadBufferBytes) {
       result = stackchan::Result::rejected(
           "AUDIO_BUFFER_OVERFLOW",
@@ -8012,28 +8356,23 @@ void handle_audio_playback_load_service(const void* request, void* response) {
           false);
     } else if (load_request->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE) {
       memcpy(
-          play_audio_loaded_buffer + play_audio_loaded_total_bytes,
+          play_audio_loaded_buffer + play_audio_loaded_encoded_bytes,
           load_request->pcm.data,
           load_request->pcm.size);
-      play_audio_loaded_total_bytes += load_request->pcm.size;
+      play_audio_loaded_encoded_bytes += load_request->pcm.size;
     } else {
-      const uint32_t remaining_decoded_bytes =
-          load_request->total_bytes > play_audio_loaded_total_bytes
-              ? load_request->total_bytes - play_audio_loaded_total_bytes
-              : 0;
-      const stackchan::ImaAdpcmDecodeResult decoded =
-          stackchan::decode_ima_adpcm_4bit_payload(
-              load_request->pcm.data,
-              load_request->pcm.size,
-              load_request->sequence == 0,
-              load_request->end_of_stream,
-              remaining_decoded_bytes,
-              play_audio_loaded_buffer + play_audio_loaded_total_bytes,
-              kAudioPlaybackLoadBufferBytes - play_audio_loaded_total_bytes,
-              play_audio_loaded_adpcm_state);
-      result = decoded.result;
-      if (result.ok) {
-        play_audio_loaded_total_bytes += decoded.bytes_written;
+      if (play_audio_loaded_encoded_bytes + load_request->pcm.size >
+          kAudioPlaybackLoadBufferBytes) {
+        result = stackchan::Result::rejected(
+            "AUDIO_BUFFER_OVERFLOW",
+            "loaded audio encoded buffer overflow",
+            false);
+      } else {
+        memcpy(
+            play_audio_loaded_buffer + play_audio_loaded_encoded_bytes,
+            load_request->pcm.data,
+            load_request->pcm.size);
+        play_audio_loaded_encoded_bytes += load_request->pcm.size;
       }
     }
     if (result.ok) {
@@ -8041,7 +8380,9 @@ void handle_audio_playback_load_service(const void* request, void* response) {
       play_audio_loaded_last_write_ms = millis();
       play_audio_loaded_complete = load_request->end_of_stream;
       if (play_audio_loaded_complete &&
-          (play_audio_loaded_total_bytes != load_request->total_bytes ||
+          ((load_request->format == stackchan_msgs__msg__AudioChunk__PCM_S16LE &&
+            play_audio_loaded_encoded_bytes != load_request->total_bytes) ||
+           play_audio_loaded_total_bytes != load_request->total_bytes ||
            play_audio_loaded_expected_sequence != load_request->total_chunks)) {
         result = stackchan::Result::rejected(
             "MALFORMED_AUDIO_CHUNK",
