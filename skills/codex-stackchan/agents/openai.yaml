@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex StackChan"
-  short_description: "Signal Codex work state and interpret StackChan observations"
-  default_prompt: "Use $codex-stackchan to send restrained StackChan work-state cues or interpret local StackChan observations through stackchanctl."
+  short_description: "Signal work state, communicate with speech/face/motion, and interpret StackChan observations"
+  default_prompt: "Use $codex-stackchan to communicate through short speech, expression, and motion, send restrained work-state cues, or interpret local StackChan observations such as camera snapshots through stackchanctl."
 policy:
   allow_implicit_invocation: true

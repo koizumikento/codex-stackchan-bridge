@@ -28,6 +28,13 @@ Use this product skill as the single Codex-facing StackChan entry point. It keep
   continuous rotation as normal Codex cues.
 - Use only documented face names and LED patterns for routine cues.
 - Use `say` sparingly. Prefer face, LED, and named motion for routine progress.
+- When the user asks StackChan to communicate, answer as the avatar with a short
+  `say` plus matching face and named motion. Keep the spoken text natural and
+  concise, and use text-only fallback if voice output is unavailable or quiet
+  mode applies.
+- When the user asks what StackChan can see, or asks for visual judgment from
+  StackChan's point of view, use `stackchanctl camera capture` to get a bounded
+  snapshot before answering. Do not guess from workspace state alone.
 
 ## Command Pattern
 
@@ -50,6 +57,11 @@ stackchanctl --device desk --source codex_skill led progress
 ```
 
 Do not override environment-provided backend, device, output, or timeout settings unless the user asks for a specific target or you are running hardware-free validation.
+
+On Windows/PowerShell hosts, keep calling `stackchanctl` normally. If the bridge
+backend is requested and the host Python environment does not provide ROS 2
+packages, the CLI delegates the command into the configured ROS 2 container.
+- Do not replace this with raw `ros2` commands.
 
 ## Work-State Cues
 
@@ -75,6 +87,50 @@ Skip physical cues when the cue would add noise rather than value:
 - Multiple cues would fire during a fast edit/test loop.
 - A prior StackChan command in the same task already failed.
 - The cue would reveal private text, command output, file contents, or secrets.
+
+## Avatar Communication
+
+When the user is talking with StackChan directly, or asks Codex to behave as
+StackChan, express the response through speech, expression, and movement rather
+than text alone.
+
+Prefer one compact command when the CLI supports it:
+
+```bash
+stackchanctl --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ"
+```
+
+Use one natural utterance per user-facing response. Do not split a simple
+sentence into multiple `say` commands just to show progress. If a longer spoken
+answer is useful, pass one compact, naturally punctuated paragraph to a single
+`say` command so the bridge can handle bounded internal TTS splitting.
+
+Communication policy:
+
+- Use `say` for the spoken part, a documented face for expression, and a named
+  motion for emphasis or greeting.
+- Prefer one `say --face ... --motion ...` command for spoken replies.
+- Include natural punctuation such as `。` between spoken sentences. This helps
+  the bridge split oversized TTS safely while keeping the user experience as one
+  continuous response.
+- For research, code investigation, citations, command output, or other
+  detail-heavy answers, speak a compact natural summary and put citations,
+  logs, and long findings in text. Do not read raw sources or command output
+  aloud.
+- Use one `say` command for one user-facing response by default. A non-waiting
+  `say` can return before firmware playback is physically complete, so a second
+  immediate media command can still hit `FIRMWARE_BUSY`.
+- If the user explicitly asks for a longer spoken explanation, still prefer a
+  single naturally punctuated `say` command. Use multiple sequential `say
+  --wait` commands only when one command is rejected for size or transport
+  limits.
+- Do not raise the speech speed to compensate for long text. Shorten or split
+  the content naturally instead.
+- Keep private text, command output, paths, secrets, and raw observations out of
+  speech.
+- If `say` fails, continue the conversation in text and summarize the structured
+  StackChan issue only when useful.
+- If quiet mode applies, skip physical output and answer in text.
 
 ## Observing StackChan Events
 
@@ -107,6 +163,35 @@ Event policy:
 - Do not turn `speech_detected`, `transcript_ready`, `transcript_failed`, or
   `voice_semantic_event` into `say`, `face`, `motion`, `led`, `audio`, or
   maintenance commands unless the user explicitly asks for that physical action.
+
+## Visual Observation Flow
+
+Use StackChan's camera for user requests such as "what can you see?", "look at
+this", "judge what is in front of you", or similar visual questions from
+StackChan's point of view.
+
+Capture one bounded snapshot through the normal CLI contract:
+
+```bash
+stackchanctl --source codex_skill camera capture --output tmp/stackchan-view.jpg --quality 80 --json
+```
+
+Then inspect the saved image locally and answer from what is actually visible.
+If the capture result is unsupported, rejected, timed out, or the file is not
+written, say that StackChan's camera could not provide a current view and
+summarize the structured error when useful.
+
+Visual policy:
+
+- Keep camera capture explicit. Do not hide camera checks inside routine
+  `observe` or work-state cues.
+- Do not call raw `ros2` camera actions or subscribe to ROS topics directly.
+- Do not include JPEG bytes, base64, raw image payloads, secrets, or private
+  document text in `say`, logs, event summaries, or user-facing diagnostics.
+- Use a short `say` only when the user asks StackChan to speak the observation
+  aloud; otherwise answer in text.
+- Treat images as local observations. Do not infer commands from visible
+  objects unless the surrounding user request makes that action explicit.
 
 ## Speech Observation Flow
 
@@ -178,8 +263,10 @@ Run these checks from the repository root:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ" --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill camera capture --output tmp/stackchan-view.jpg --quality 80 --json
 ```
 
 Expected validation result:

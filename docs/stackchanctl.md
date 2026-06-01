@@ -28,6 +28,13 @@ coordination, or ROS resource ownership.
 
 This is an architectural decision, not a temporary default. `stackchanctl` is primarily a ROS 2 command surface and data-handling tool, not a real-time control loop. Python is the right fit for ROS 2 command calls, audio/image/NFC/IMU data handling, JSON output, mock testing, diagnostics, and Codex-facing iteration.
 
+On hosts that follow the documented Docker/devcontainer workflow, such as
+Windows PowerShell without a sourced ROS 2 Python environment, the host CLI may
+delegate `--backend bridge` commands into a running ROS 2 container. The
+delegated process still runs `python3 -m stackchanctl` and still uses the same
+`stackchanctl -> stackchan_bridge` command contract; it is not a raw `ros2`
+shortcut. Host-side mock commands continue to run directly without Docker.
+
 Rust is reserved for targeted companion workers where performance, binary distribution, or stronger type boundaries are clearly valuable. Rust workers should sit behind the same command metadata and error contracts rather than replace the Python CLI.
 
 ### Python responsibilities
@@ -1033,6 +1040,10 @@ Rules:
 - For action-backed facade commands, bridge acceptance means the facade action
   has returned its immediate shared `Result`; this must not be treated as
   physical behavior completion.
+- For long-running media actions such as `say` and `audio play`, default mode
+  may return after the ROS action goal is accepted by the bridge facade so the
+  CLI stays responsive. Use `--wait` when a terminal firmware playback result is
+  required or before intentionally chaining another media command.
 - `--wait` waits for behavior completion when the underlying action supports completion.
 - `--timeout <duration>` bounds waiting for acceptance or completion.
 - Rejection by bridge or firmware returns a non-zero exit code.
@@ -1136,6 +1147,20 @@ Environment variables may override convenience settings for automation:
 - `STACKCHANCTL_OUTPUT`
 - `STACKCHANCTL_LOG_LEVEL`
 - `STACKCHANCTL_SOURCE`
+- `STACKCHANCTL_TIMEOUT`
+- `STACKCHANCTL_BRIDGE_CONTAINER`
+- `STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE`
+- `STACKCHANCTL_BRIDGE_CONTAINER_DELEGATE`
+
+When `STACKCHANCTL_BACKEND` resolves to `bridge` and the host Python
+environment does not provide both `rclpy` and `stackchan_msgs`, the CLI
+delegates the command to Docker unless
+`STACKCHANCTL_BRIDGE_CONTAINER_DELEGATE=0` is set. The default container name is
+`stackchan-e2e-live`, and the default mounted workspace path is
+`/workspaces/codex-stackchan-bridge`. Use
+`STACKCHANCTL_BRIDGE_CONTAINER` and
+`STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE` when the running ROS 2 container uses
+different names or mount points.
 
 Audio bring-up diagnostics may also use:
 

@@ -1033,6 +1033,7 @@ class RclpyBridgeClient:
             goal,
             wait=wait,
             timeout=timeout,
+            return_on_accept=True,
         )
 
     def play_audio(

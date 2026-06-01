@@ -101,6 +101,30 @@ container can request Docker host networking:
 uv run --no-project python scripts/ros2_container.py --network host exec "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 topic list -t"
 ```
 
+## Run stackchanctl Bridge Commands From PowerShell
+
+`stackchanctl --backend bridge` requires `rclpy` and the generated
+`stackchan_msgs` Python package. On a Windows host that does not have those ROS
+2 Python packages, the host CLI delegates bridge commands into the running ROS
+2 container and preserves the normal CLI contract:
+
+```powershell
+uv run --directory apps/stackchanctl stackchanctl --backend bridge observe --json
+uv run --directory apps/stackchanctl stackchanctl --backend bridge --timeout 60 say --face happy --motion cheerful "できたよ" --json
+```
+
+The default target container is `stackchan-e2e-live`, with the repository
+mounted at `/workspaces/codex-stackchan-bridge`. If your bring-up container uses
+a different name or mount point, set:
+
+```powershell
+$env:STACKCHANCTL_BRIDGE_CONTAINER = "your-container-name"
+$env:STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE = "/workspaces/codex-stackchan-bridge"
+```
+
+Set `STACKCHANCTL_BRIDGE_CONTAINER_DELEGATE=0` only when you explicitly want the
+host process to fail fast if its own Python environment does not provide ROS 2.
+
 ## Hardware-Free Readiness Checks
 
 Run the full containerized readiness check before hardware arrives:

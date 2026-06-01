@@ -73,6 +73,7 @@ from stackchan_bridge.ros_node import (
     _tts_audio_fits_single_loaded_playback,
     _split_tts_audio_for_loaded_playback,
     _split_tts_text_fragment_for_loaded_playback,
+    _split_tts_text_fragment_on_script_boundaries,
     _split_tts_text_for_loaded_playback,
     _tts_audio_too_large_for_loaded_playback_result,
     _tts_segment_command_meta,
@@ -305,6 +306,24 @@ class RosNodeHelperTests(unittest.TestCase):
         segments = _split_tts_text_for_loaded_playback("今日は電気をたべたよ")
 
         self.assertEqual(segments, ("今日は電気をたべたよ",))
+
+    def test_split_tts_text_for_loaded_playback_can_fallback_for_long_phrases(self) -> None:
+        segments = _split_tts_text_for_loaded_playback(
+            "PowerShellからCLIで話したよ",
+            allow_fallback=True,
+        )
+
+        self.assertEqual(segments, ("PowerShellからCLIで", "話したよ"))
+
+    def test_split_tts_text_fragment_for_loaded_playback_uses_script_boundaries(self) -> None:
+        segments = _split_tts_text_fragment_for_loaded_playback("PowerShellからCLIで")
+
+        self.assertEqual(segments, ("PowerShell", "から", "CLI", "で"))
+
+    def test_split_tts_text_fragment_on_script_boundaries_splits_mixed_text(self) -> None:
+        segments = _split_tts_text_fragment_on_script_boundaries("PowerShellからCLIで")
+
+        self.assertEqual(segments, ("PowerShell", "から", "CLI", "で"))
 
     def test_split_tts_text_fragment_for_loaded_playback_falls_back_to_particles(self) -> None:
         segments = _split_tts_text_fragment_for_loaded_playback("電気をたべたよ")

@@ -33,6 +33,28 @@ uv run --directory apps/stackchanctl stackchanctl --backend mock observe --json
 uv run --directory apps/stackchanctl stackchanctl mcp serve --transport stdio --backend mock
 ```
 
+Run the bridge backend from a host shell such as PowerShell through the
+documented ROS 2 container workflow:
+
+```bash
+uv run --directory apps/stackchanctl stackchanctl --backend bridge observe --json
+```
+
+If the host Python environment does not provide `rclpy` and `stackchan_msgs`,
+the CLI delegates the bridge command into the running ROS 2 container named by
+`STACKCHANCTL_BRIDGE_CONTAINER` or `stackchan-e2e-live` by default.
+
+For repeated PowerShell commands after the project environment has been created,
+using the package virtualenv entrypoint avoids the extra `uv run` startup cost:
+
+```powershell
+apps/stackchanctl/.venv/Scripts/stackchanctl.exe --backend bridge observe --json
+apps/stackchanctl/.venv/Scripts/stackchanctl.exe --backend bridge say --face happy --motion nod "できたよ" --json
+```
+
+Use `--wait` only when you need the terminal physical playback result or when
+you intentionally chain another media command after speech.
+
 Run the focused CLI tests:
 
 ```bash

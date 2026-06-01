@@ -83,7 +83,14 @@ def resolve_runtime_config(
         or "default",
         output=output,
         log_level=env.get("STACKCHANCTL_LOG_LEVEL", file_config.log_level),
-        timeout=cli_timeout if cli_timeout is not None else file_config.timeout,
+        timeout=(
+            cli_timeout
+            if cli_timeout is not None
+            else _finite_float(
+                env.get("STACKCHANCTL_TIMEOUT", file_config.timeout),
+                default=file_config.timeout,
+            )
+        ),
         source=cli_source
         or env.get("STACKCHANCTL_SOURCE")
         or file_config.source

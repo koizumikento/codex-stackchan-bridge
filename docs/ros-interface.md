@@ -1586,11 +1586,16 @@ ADPCM payload fits the encoded loaded payload buffer and the decoded duration
 stays within the ADPCM decoded-byte ceiling, the bridge should keep it as a
 single loaded playback transaction. Only when the selected loaded format cannot
 fit may the normal bridge path split the source text on natural phrase
-boundaries before synthesizing segment audio. `STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE=1`
-may be used for diagnostic PCM-splitting comparison runs; in that opt-in mode
-each firmware-facing segment uses a bounded derived command id so delayed load
-or drain events from one segment are not reused as completion evidence for
-another. Neither path may log speech text or PCM payloads.
+boundaries before synthesizing segment audio. Callers should prefer one
+naturally punctuated `say` request over multiple immediate `say` requests. When
+a source string has no hard punctuation and still exceeds the bounded loaded
+playback size, the bridge may fall back to smaller phrase-like boundaries such
+as Japanese particles before rejecting it as too large.
+`STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE=1` may be used for diagnostic
+PCM-splitting comparison runs; in that opt-in mode each firmware-facing segment
+uses a bounded derived command id so delayed load or drain events from one
+segment are not reused as completion evidence for another. Neither path may log
+speech text or PCM payloads.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout, 35
 seconds by default in the bridge, large enough for goal acceptance, firmware

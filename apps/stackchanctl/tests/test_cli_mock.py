@@ -7,6 +7,8 @@ import unittest
 from contextlib import redirect_stderr
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,42 @@ def run_stackchanctl(argv: list[str], env: dict[str, str] | None = None):
 
 
 class MockCliTests(unittest.TestCase):
+    def test_bridge_delegates_to_container_when_ros_python_is_unavailable(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch("stackchanctl.cli._bridge_python_available", return_value=False),
+            patch("stackchanctl.cli.subprocess.run") as subprocess_run,
+        ):
+            subprocess_run.return_value = SimpleNamespace(
+                returncode=0,
+                stdout='{"ok": true, "result_state": "ACCEPTED"}\n',
+                stderr="",
+            )
+            code = run_cli(
+                ["--backend", "bridge", "observe", "--json"],
+                stdout=stdout,
+                stderr=stderr,
+                env={
+                    "XDG_CONFIG_HOME": str(ROOT / ".test-config"),
+                    "STACKCHANCTL_SOURCE": "codex_skill",
+                },
+                command_id_factory=lambda: "cmd-test-0001",
+                clock=lambda: FIXED_NOW,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["result_state"], "ACCEPTED")
+        self.assertEqual(stderr.getvalue(), "")
+        docker_args = subprocess_run.call_args.args[0]
+        self.assertEqual(docker_args[:2], ["docker", "exec"])
+        self.assertIn("STACKCHANCTL_BACKEND=bridge", docker_args)
+        self.assertIn("STACKCHANCTL_SOURCE=codex_skill", docker_args)
+        self.assertIn("stackchan-e2e-live", docker_args)
+        self.assertTrue(any("python3 -m stackchanctl" in arg for arg in docker_args))
+        self.assertEqual(docker_args[-4:], ["--backend", "bridge", "observe", "--json"])
+
     def test_mock_face_json_matches_fixture(self) -> None:
         code, stdout, stderr = run_stackchanctl(
             ["face", "happy", "--json"],
@@ -755,6 +793,18 @@ class MockCliTests(unittest.TestCase):
         self.assertEqual(payload["result_state"], "TIMEOUT")
         self.assertEqual(payload["error"]["code"], "TIMEOUT")
         self.assertTrue(payload["error"]["recoverable"])
+
+    def test_timeout_env_is_used_when_cli_timeout_is_omitted(self) -> None:
+        code, stdout, stderr = run_stackchanctl(
+            ["motion", "nod", "--json"],
+            {"STACKCHANCTL_BACKEND": "mock", "STACKCHANCTL_TIMEOUT": "0"},
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["result_state"], "TIMEOUT")
+        self.assertEqual(payload["error"]["code"], "TIMEOUT")
 
     def test_non_finite_timeout_is_rejected_by_parser(self) -> None:
         code, stdout, stderr = run_stackchanctl(

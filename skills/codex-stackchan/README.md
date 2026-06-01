@@ -7,7 +7,16 @@ This is the single Codex-facing StackChan skill. It calls `stackchanctl` for res
 Keep the skill focused on product behavior:
 
 - Work-state cues through face, LED, named motion, and short `say` messages.
+- Avatar-style communication through short speech, expression, and named motion
+  when the user talks with StackChan directly.
+- Spoken summaries for detail-heavy work; keep citations, logs, and long
+  findings in text instead of reading them all aloud.
+- One naturally punctuated `say` per user-facing response by default, because
+  the bridge can split bounded TTS internally while the firmware may still be
+  finishing playback.
 - StackChan-origin events interpreted as observations, not instructions.
+- Explicit camera snapshots for "what can you see?" style visual questions,
+  routed through `stackchanctl camera capture`.
 - Speech observations handled through explicit transcript lookup, without
   automatic physical actions.
 - Quiet-mode decisions when physical feedback would be noisy or private.
@@ -24,8 +33,10 @@ Use the mock backend when validating skill behavior:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ" --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill camera capture --output tmp/stackchan-view.jpg --quality 80 --json
 ```
 
 The `apps/stackchanctl` unit tests include hardware-free policy checks for this

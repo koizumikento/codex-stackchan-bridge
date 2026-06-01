@@ -312,14 +312,15 @@ def run_stackchanctl(argv: list[str], client: FakeBridgeClient):
     original = bridge_module.RclpyBridgeClient
     bridge_module.RclpyBridgeClient = lambda: client
     try:
-        code = run_cli(
-            argv,
-            stdout=stdout,
-            stderr=stderr,
-            env={"XDG_CONFIG_HOME": str(ROOT / ".test-config")},
-            command_id_factory=lambda: "cmd-test-0001",
-            clock=lambda: FIXED_NOW,
-        )
+        with patch("stackchanctl.cli._bridge_python_available", return_value=True):
+            code = run_cli(
+                argv,
+                stdout=stdout,
+                stderr=stderr,
+                env={"XDG_CONFIG_HOME": str(ROOT / ".test-config")},
+                command_id_factory=lambda: "cmd-test-0001",
+                clock=lambda: FIXED_NOW,
+            )
     finally:
         bridge_module.RclpyBridgeClient = original
     return code, stdout.getvalue(), stderr.getvalue()
@@ -648,12 +649,21 @@ class BridgeBackendTests(unittest.TestCase):
         client._say_type = FakeSay
         captured = {}
 
-        def send_action_goal(action_type, action_name, goal, *, wait, timeout):
+        def send_action_goal(
+            action_type,
+            action_name,
+            goal,
+            *,
+            wait,
+            timeout,
+            return_on_accept=False,
+        ):
             captured["action_type"] = action_type
             captured["action_name"] = action_name
             captured["goal"] = goal
             captured["wait"] = wait
             captured["timeout"] = timeout
+            captured["return_on_accept"] = return_on_accept
             return BridgeCommandResponse(ok=True, result_state=ResultState.ACCEPTED)
 
         client._send_action_goal = send_action_goal
@@ -684,6 +694,7 @@ class BridgeBackendTests(unittest.TestCase):
         self.assertEqual(captured["goal"].face_hint, "happy")
         self.assertEqual(captured["goal"].motion_hint, "cheerful")
         self.assertEqual(captured["goal"].after_face_hint, "happy")
+        self.assertTrue(captured["return_on_accept"])
 
     def test_created_at_is_copied_to_ros_time(self) -> None:
         class Stamp:

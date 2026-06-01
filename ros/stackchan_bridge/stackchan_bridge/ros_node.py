@@ -585,7 +585,11 @@ def _split_tts_audio_for_loaded_playback(
     )
 
 
-def _split_tts_text_for_loaded_playback(text: str) -> tuple[str, ...]:
+def _split_tts_text_for_loaded_playback(
+    text: str,
+    *,
+    allow_fallback: bool = False,
+) -> tuple[str, ...]:
     """Split TTS text on phrase-like boundaries before falling back to audio cuts."""
 
     raw_text = str(text or "").strip()
@@ -602,7 +606,12 @@ def _split_tts_text_for_loaded_playback(text: str) -> tuple[str, ...]:
             continue
     if buffer:
         fragments.append(buffer)
-    return tuple(fragment for fragment in fragments if fragment.strip())
+    phrase_fragments = tuple(fragment for fragment in fragments if fragment.strip())
+    if allow_fallback and len(phrase_fragments) <= 1:
+        fallback_fragments = _split_tts_text_fragment_for_loaded_playback(raw_text)
+        if len(fallback_fragments) > 1:
+            return fallback_fragments
+    return phrase_fragments
 
 
 def _split_tts_text_fragment_for_loaded_playback(text: str) -> tuple[str, ...]:
@@ -622,6 +631,32 @@ def _split_tts_text_fragment_for_loaded_playback(text: str) -> tuple[str, ...]:
         ):
             fragments.append(buffer)
             buffer = ""
+    if buffer:
+        fragments.append(buffer)
+    phrase_fragments = tuple(fragment for fragment in fragments if fragment.strip())
+    if len(phrase_fragments) > 1:
+        return phrase_fragments
+    script_fragments = _split_tts_text_fragment_on_script_boundaries(raw_text)
+    if len(script_fragments) > 1:
+        return script_fragments
+    return phrase_fragments
+
+
+def _split_tts_text_fragment_on_script_boundaries(text: str) -> tuple[str, ...]:
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return ()
+    fragments: list[str] = []
+    buffer = raw_text[0]
+    last_ascii = raw_text[0].isascii() and raw_text[0].isalnum()
+    for character in raw_text[1:]:
+        current_ascii = character.isascii() and character.isalnum()
+        if current_ascii != last_ascii and buffer.strip():
+            fragments.append(buffer)
+            buffer = character
+        else:
+            buffer += character
+        last_ascii = current_ascii
     if buffer:
         fragments.append(buffer)
     return tuple(fragment for fragment in fragments if fragment.strip())
@@ -2968,7 +3003,9 @@ def main(args: list[str] | None = None) -> None:
             voice_profile: str,
             max_decoded_bytes: int,
         ) -> tuple[VoiceProfile | None, tuple[TtsAudio, ...], Result | None]:
-            text_fragments = list(_split_tts_text_for_loaded_playback(text))
+            text_fragments = list(
+                _split_tts_text_for_loaded_playback(text, allow_fallback=True)
+            )
             if len(text_fragments) <= 1:
                 return None, (), None
 

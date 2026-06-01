@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -35,6 +37,14 @@ Clock = Callable[[], datetime]
 
 VALUE_GLOBALS = {"--backend", "--device", "--timeout", "--priority", "--source"}
 FLAG_GLOBALS = {"--json", "--wait"}
+DEFAULT_BRIDGE_CONTAINER = "stackchan-e2e-live"
+DEFAULT_BRIDGE_CONTAINER_WORKSPACE = "/workspaces/codex-stackchan-bridge"
+CONTAINER_DELEGATE_DISABLE_VALUES = {"0", "false", "no", "off"}
+CONTAINER_ENV_PASSTHROUGH = (
+    "ROS_DOMAIN_ID",
+    "RMW_IMPLEMENTATION",
+    "CYCLONEDDS_URI",
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,6 +83,20 @@ def run_cli(
         env=env,
         default_source="mcp_agent" if is_mcp else "human_cli",
     )
+    delegate_code = _maybe_delegate_bridge_to_container(
+        argv,
+        runtime_backend=runtime.backend,
+        runtime_device=runtime.device,
+        runtime_output=runtime.output,
+        runtime_timeout=runtime.timeout,
+        runtime_source=runtime.source,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    if delegate_code is not None:
+        return delegate_code
+
     if is_mcp:
         if args.transport != "stdio":
             stderr.write("REJECTED unsupported MCP transport\n")
@@ -233,6 +257,129 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("observe")
 
     return parser
+
+
+def _maybe_delegate_bridge_to_container(
+    argv: list[str],
+    *,
+    runtime_backend: str,
+    runtime_device: str,
+    runtime_output: str,
+    runtime_timeout: float,
+    runtime_source: str,
+    env: Mapping[str, str],
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int | None:
+    if runtime_backend != "bridge":
+        return None
+    if env.get("STACKCHANCTL_CONTAINER_DELEGATED") == "1":
+        return None
+    if _bridge_python_available():
+        return None
+
+    setting = env.get("STACKCHANCTL_BRIDGE_CONTAINER_DELEGATE", "1").lower()
+    if setting in CONTAINER_DELEGATE_DISABLE_VALUES:
+        return None
+
+    return _run_bridge_container_delegate(
+        argv,
+        runtime_backend=runtime_backend,
+        runtime_device=runtime_device,
+        runtime_output=runtime_output,
+        runtime_timeout=runtime_timeout,
+        runtime_source=runtime_source,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _bridge_python_available() -> bool:
+    return (
+        importlib.util.find_spec("rclpy") is not None
+        and importlib.util.find_spec("stackchan_msgs") is not None
+    )
+
+
+def _run_bridge_container_delegate(
+    argv: list[str],
+    *,
+    runtime_backend: str,
+    runtime_device: str,
+    runtime_output: str,
+    runtime_timeout: float,
+    runtime_source: str,
+    env: Mapping[str, str],
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    container = env.get("STACKCHANCTL_BRIDGE_CONTAINER") or DEFAULT_BRIDGE_CONTAINER
+    workspace = (
+        env.get("STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE")
+        or DEFAULT_BRIDGE_CONTAINER_WORKSPACE
+    )
+    bash_command = (
+        "set -e; "
+        "source /opt/ros/jazzy/setup.bash; "
+        'cd "$STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE"; '
+        "source install/setup.bash; "
+        'export PYTHONPATH="apps/stackchanctl/src:${PYTHONPATH:-}"; '
+        "export STACKCHANCTL_CONTAINER_DELEGATED=1; "
+        'exec python3 -m stackchanctl "$@"'
+    )
+    docker_args = [
+        "docker",
+        "exec",
+        "-e",
+        f"STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE={workspace}",
+        "-e",
+        f"STACKCHANCTL_BACKEND={runtime_backend}",
+        "-e",
+        f"STACKCHANCTL_DEVICE={runtime_device}",
+        "-e",
+        f"STACKCHANCTL_OUTPUT={runtime_output}",
+        "-e",
+        f"STACKCHANCTL_TIMEOUT={runtime_timeout}",
+        "-e",
+        f"STACKCHANCTL_SOURCE={runtime_source}",
+    ]
+    for name in CONTAINER_ENV_PASSTHROUGH:
+        value = env.get(name)
+        if value:
+            docker_args.extend(["-e", f"{name}={value}"])
+    docker_args.extend(
+        [
+            container,
+            "bash",
+            "-lc",
+            bash_command,
+            "stackchanctl",
+            *argv,
+        ]
+    )
+
+    if _has_fileno(stdout) and _has_fileno(stderr):
+        completed = subprocess.run(docker_args, check=False)
+        return int(completed.returncode)
+
+    completed = subprocess.run(
+        docker_args,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    stdout.write(completed.stdout)
+    stderr.write(completed.stderr)
+    return int(completed.returncode)
+
+
+def _has_fileno(stream: TextIO) -> bool:
+    try:
+        stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
 
 
 def build_request(
