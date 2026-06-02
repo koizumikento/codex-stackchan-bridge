@@ -325,6 +325,10 @@ Degraded operation examples:
 - If servo initialization fails, `motion` and explicit pose commands return
   `UNSUPPORTED_FEATURE`, `CALIBRATION_INVALID`, or a more specific structured
   error. Face, LED, audio, camera, and non-motion observations may continue.
+- A transient boot-time servo position-read miss must not poison the whole
+  servo adapter. The K151 path may initialize the UART and driver successfully
+  while reporting `motion` unavailable with `SERVO_READ_FAILED` until a later
+  bounded retry succeeds.
 - If the camera fails to initialize, camera snapshot commands return
   `UNSUPPORTED_FEATURE` or `CAMERA_CAPTURE_FAILED`; motion and audio should not
   enter fault solely because camera is unavailable.
@@ -411,6 +415,14 @@ servo safety step fails,
 firmware attempts an explicit neutral/home recovery and latches `fault` while
 preserving the original structured error. Combined home-plus-motion targets are
 revalidated against firmware degree limits before scheduling.
+Before accepting a named motion, firmware forces a fresh bounded servo position
+read instead of relying only on the low-rate health cache. If the read still
+fails, the command rejects with `SERVO_READ_FAILED` and status reports the same
+capability detail without blocking face, audio, camera, or LED operation.
+When a health check reads valid raw servo positions, firmware converts those
+values back to home-frame pan/tilt and publishes `/stackchan/<device_id>/device/motion/pose`
+at the existing low-rate telemetry cadence. It must not publish synthetic pose
+samples when no current servo read is available.
 While a named motion is active, firmware defers routine servo-health polling
 and low-rate sensor telemetry so blocking reads do not collapse the scheduler's
 25 ms retarget cadence. Command executor, status heartbeat, event drain, and

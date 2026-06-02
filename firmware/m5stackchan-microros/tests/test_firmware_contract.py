@@ -246,6 +246,14 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("stackchan::Result initialize_servo_adapter()", main)
         self.assertIn("servo_bus.ReadPos(kYawServoId)", main)
         self.assertIn("servo_bus.ReadPos(kPitchServoId)", main)
+        self.assertIn("constexpr uint8_t kServoReadRetryCount = 5;", main)
+        self.assertIn("constexpr unsigned long kServoReadRetryDelayMs = 20;", main)
+        self.assertIn("attempt < kServoReadRetryCount", main)
+        self.assertIn("delay(kServoReadRetryDelayMs)", main)
+        self.assertIn("float raw_servo_to_degrees", main)
+        self.assertIn("bool update_head_pose_measurement_from_servos()", main)
+        self.assertIn("head_pose_measurement_available = true;", main)
+        self.assertIn("head_pose_measurement_available = false;", main)
         self.assertIn("servo_bus.ReadMove(kYawServoId)", main)
         self.assertIn("servo_bus.ReadMove(kPitchServoId)", main)
         self.assertIn("raw_servo_position_valid", main)
@@ -262,7 +270,13 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("static_cast<u8>(kPitchServoId)", main)
         self.assertIn("servo_position_read_available_cache", main)
         self.assertIn("void update_servo_health_cache(unsigned long now, bool force = false)", main)
+        self.assertIn("(void)verify_servo_position_read();", main)
+        self.assertIn('return stackchan::Result::accepted("servo adapter initialized");', main)
+        self.assertIn("bool motion_capability_available()", main)
+        self.assertIn("const char* motion_unavailable_detail_code()", main)
+        self.assertIn('"CALIBRATION_INVALID"', main)
         self.assertIn("const bool servo_read_ok = calibration_valid && servo_position_read_available_cache;", main)
+        self.assertIn("update_servo_health_cache(millis(), true);", main)
         self.assertIn("validate_motion_servo_target(home, \"home\")", main)
         self.assertIn("validate_motion_servo_target(target, \"motion\", true)", main)
         self.assertIn("plan.waypoint_count == 0", main)
@@ -335,13 +349,15 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("fail_motion_scheduler(result);", main)
         self.assertIn("try_motion_neutral_recovery", main)
         self.assertNotIn("delay(plan.duration_ms / 2)", main)
+        motion_handler_start = main.find("stackchan::Result handle_motion_command")
         motion_handler = main[
-            main.find("stackchan::Result handle_motion_command") :
-            main.find("void handle_motion_set_service")
+            motion_handler_start :
+            main.find("void handle_motion_set_service", motion_handler_start)
         ]
         self.assertNotIn("move_servo_pair_to(", motion_handler)
         self.assertNotIn("servo_position_read_available()", motion_handler)
         self.assertNotIn("state_machine.fault();", motion_handler)
+        self.assertIn("update_servo_health_cache(millis(), true);", motion_handler)
         enqueue_body = main[
             main.find("stackchan::Result enqueue_motion_scheduler") :
             main.find("void step_motion_scheduler")
@@ -601,6 +617,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("runtime_state_name", main)
         self.assertIn("firmware_calibration_valid", main)
         self.assertIn("servo_position_read_available", main)
+        self.assertIn("telemetry_publish_scheduler.should_publish_motion_pose", main)
+        self.assertIn("publish_head_pose(last_head_pose_pan_deg, last_head_pose_tilt_deg, false)", main)
         face_handler = main[
             main.find("stackchan::Result handle_face_command") : main.find("stackchan::Result handle_motion_command")
         ]

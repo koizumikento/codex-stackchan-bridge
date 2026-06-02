@@ -249,6 +249,8 @@ constexpr unsigned long kBringupEventDelayMs = 500;
 constexpr unsigned long kBringupEventRetryMs = 1000;
 constexpr uint8_t kBringupEventMaxEnqueues = 1;
 constexpr unsigned long kServoHealthCheckIntervalMs = 100;
+constexpr uint8_t kServoReadRetryCount = 5;
+constexpr unsigned long kServoReadRetryDelayMs = 20;
 constexpr unsigned long kMotionFinalSettleMinMs = 250;
 constexpr unsigned long kMotionFinalSettleTimeoutMs = 1200;
 constexpr unsigned long kMotionSegmentTickIntervalMs = 25;
@@ -415,6 +417,9 @@ MotionSchedulerJob motion_scheduler{
 bool microros_transport_configured = false;
 bool microros_entities_initialized = false;
 bool servo_position_read_available_cache = false;
+bool head_pose_measurement_available = false;
+float last_head_pose_pan_deg = 0.0f;
+float last_head_pose_tilt_deg = 0.0f;
 bool motion_status_publish_pending = false;
 struct MotionDiagnosticSummary {
   bool active;
@@ -1264,14 +1269,19 @@ bool read_servo_raw_positions(int* yaw_raw, int* pitch_raw) {
   if (yaw_raw == nullptr || pitch_raw == nullptr) {
     return false;
   }
-  const int yaw = servo_bus.ReadPos(kYawServoId);
-  const int pitch = servo_bus.ReadPos(kPitchServoId);
-  if (!raw_servo_position_valid(yaw) || !raw_servo_position_valid(pitch)) {
-    return false;
+  for (uint8_t attempt = 0; attempt < kServoReadRetryCount; ++attempt) {
+    const int yaw = servo_bus.ReadPos(kYawServoId);
+    const int pitch = servo_bus.ReadPos(kPitchServoId);
+    if (raw_servo_position_valid(yaw) && raw_servo_position_valid(pitch)) {
+      *yaw_raw = yaw;
+      *pitch_raw = pitch;
+      return true;
+    }
+    if (attempt + 1 < kServoReadRetryCount) {
+      delay(kServoReadRetryDelayMs);
+    }
   }
-  *yaw_raw = yaw;
-  *pitch_raw = pitch;
-  return true;
+  return false;
 }
 
 bool servo_pair_moving(bool* moving) {
@@ -1290,6 +1300,10 @@ bool servo_pair_moving(bool* moving) {
 int servo_degrees_to_raw(int default_zero_pos, int degrees) {
   const int deci_degrees = degrees * 10;
   return default_zero_pos + deci_degrees * 16 / 50;
+}
+
+float raw_servo_to_degrees(int default_zero_pos, int raw_position) {
+  return static_cast<float>(raw_position - default_zero_pos) * 50.0f / 160.0f;
 }
 
 stackchan::Result initialize_m5_bsp_adapter() {
@@ -1353,7 +1367,8 @@ stackchan::Result initialize_servo_adapter() {
   if (!result.ok) {
     return result;
   }
-  return verify_servo_position_read();
+  (void)verify_servo_position_read();
+  return stackchan::Result::accepted("servo adapter initialized");
 }
 
 bool ltr553_write_register(uint8_t reg, uint8_t value) {
@@ -2308,6 +2323,20 @@ stackchan::ServoTarget calibrated_home_target() {
   };
 }
 
+bool update_head_pose_measurement_from_servos() {
+  int yaw_raw = -1;
+  int pitch_raw = -1;
+  if (!read_servo_raw_positions(&yaw_raw, &pitch_raw)) {
+    head_pose_measurement_available = false;
+    return false;
+  }
+  const stackchan::ServoTarget home = calibrated_home_target();
+  last_head_pose_pan_deg = raw_servo_to_degrees(kYawDefaultZeroPos, yaw_raw) - home.x;
+  last_head_pose_tilt_deg = raw_servo_to_degrees(kPitchDefaultZeroPos, pitch_raw) - home.y;
+  head_pose_measurement_available = true;
+  return true;
+}
+
 stackchan::ServoTarget apply_motion_offset(
     const stackchan::ServoTarget& home,
     const stackchan::ServoTarget& offset) {
@@ -2958,15 +2987,14 @@ const char* runtime_state_name(stackchan::RuntimeState state) {
 }
 
 bool servo_position_read_available() {
-  int yaw_raw = -1;
-  int pitch_raw = -1;
   return servo_adapter_init_result.ok &&
-         read_servo_raw_positions(&yaw_raw, &pitch_raw);
+         update_head_pose_measurement_from_servos();
 }
 
 void update_servo_health_cache(unsigned long now, bool force = false) {
   if (!firmware_calibration_valid() || !servo_adapter_init_result.ok) {
     servo_position_read_available_cache = false;
+    head_pose_measurement_available = false;
     last_servo_health_check_ms = now;
     return;
   }
@@ -3323,13 +3351,40 @@ const char* camera_snapshot_unavailable_detail_code() {
   return "UNSUPPORTED_FEATURE";
 }
 
+bool motion_capability_available() {
+  return servo_adapter_init_result.ok &&
+         firmware_calibration_valid() &&
+         servo_position_read_available_cache;
+}
+
+const char* motion_unavailable_detail_code() {
+  if (!servo_adapter_init_result.ok) {
+    return servo_adapter_init_result.error_code[0] == '\0'
+               ? "UNSUPPORTED_FEATURE"
+               : servo_adapter_init_result.error_code;
+  }
+  if (!firmware_calibration_valid()) {
+    return "CALIBRATION_INVALID";
+  }
+  if (!servo_position_read_available_cache) {
+    return "SERVO_READ_FAILED";
+  }
+  return "UNSUPPORTED_FEATURE";
+}
+
 bool assign_status_capabilities(stackchan_msgs__msg__StackChanStatus* destination) {
   if (destination == nullptr || destination->capabilities.capacity < 6) {
     return false;
   }
   destination->capabilities.size = 6;
   return assign_capability_status(&destination->capabilities.data[0], "face", true) &&
-         assign_capability_status(&destination->capabilities.data[1], "motion", servo_adapter_init_result.ok) &&
+         assign_capability_status(
+             &destination->capabilities.data[1],
+             "motion",
+             motion_capability_available(),
+             false,
+             0,
+             motion_unavailable_detail_code()) &&
          assign_capability_status(&destination->capabilities.data[2], "led", stackchan_led_initialized) &&
          assign_capability_status(
              &destination->capabilities.data[3],
@@ -9025,6 +9080,7 @@ stackchan::Result handle_motion_command(
     return last_error;
   }
 
+  update_servo_health_cache(millis(), true);
   const bool calibration_valid = firmware_calibration_valid();
   const bool servo_read_ok = calibration_valid && servo_position_read_available_cache;
   const stackchan::MotionPlan plan =
@@ -9250,6 +9306,19 @@ void publish_runtime_telemetry(uint32_t now_ms) {
         power_event_estimator.update(telemetry, event_publisher);
     if (!event_result.ok && strcmp(event_result.error_code, "TRANSPORT_DISCONNECTED") != 0) {
       last_error = event_result;
+    }
+  }
+
+  if (telemetry_publish_scheduler.should_publish_motion_pose(now_ms) &&
+      head_pose_measurement_available) {
+    const stackchan::Result publish_result =
+        publish_head_pose(last_head_pose_pan_deg, last_head_pose_tilt_deg, false);
+    if (!publish_result.ok) {
+      last_error = publish_result;
+      if (microros_publish_failures_exceeded()) {
+        update_agent_connection(false);
+      }
+      return;
     }
   }
 
