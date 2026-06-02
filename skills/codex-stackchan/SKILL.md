@@ -113,17 +113,45 @@ Communication policy:
 - Include natural punctuation such as `。` between spoken sentences. This helps
   the bridge split oversized TTS safely while keeping the user experience as one
   continuous response.
+- Write spoken summaries as connected short sentences, not keyword lists. Avoid
+  comma-separated topic dumps such as `補正予算、株高、台風がポイントだよ`; prefer
+  `今日は補正予算の審議が動いていて、株高も続いているよ。台風の交通影響にも注意だよ`.
+- Keep routine spoken summaries to one very short sentence, roughly 25 Japanese
+  characters or less when possible. Longer text may be split into multiple
+  loaded-playback segments, and each segment can add an audible load gap on
+  serial hardware. Put the fuller explanation in text.
+- When the user explicitly asks for detailed spoken explanation, provide audio
+  detail too, but do not read the whole technical answer aloud. Compress the
+  spoken explanation into 2-4 connected short sentences that preserve the
+  decision, reason, and next implication, and pass them to one `say` command as
+  one naturally punctuated paragraph. On serial hardware, aim for about 20-30
+  Japanese characters total when a spoken summary can still be useful, and
+  prefer about 20-25 characters when initial waiting is the main naturalness
+  risk. Validated transport candidates at 31, 22, and 20 characters all fit one
+  loaded playback transaction; the 20 character candidate shortened the loaded
+  transfer while preserving the "detailed speech, internal split, less waiting"
+  explanation. Prefer a spoken paragraph short enough to fit one loaded
+  playback transaction when possible, because that avoids audible transfer gaps
+  between sentence groups. Use face/motion once for the whole spoken
+  explanation, and use `--after-face` once at the end. Do not chain separate
+  `say --wait` commands for normal detailed explanations, because waiting for
+  one sentence to finish before starting the next TTS/load cycle creates
+  unnatural gaps. Keep the written answer as the authoritative detailed record
+  with citations, code references, or logs.
 - For research, code investigation, citations, command output, or other
   detail-heavy answers, speak a compact natural summary and put citations,
   logs, and long findings in text. Do not read raw sources or command output
   aloud.
-- Use one `say` command for one user-facing response by default. A non-waiting
-  `say` can return before firmware playback is physically complete, so a second
-  immediate media command can still hit `FIRMWARE_BUSY`.
-- If the user explicitly asks for a longer spoken explanation, still prefer a
-  single naturally punctuated `say` command. Use multiple sequential `say
-  --wait` commands only when one command is rejected for size or transport
-  limits.
+- Use one `say` command for one user-facing response by default. Do not split a
+  long spoken response into separate CLI commands just to fit transport timing;
+  the bridge owns splitting synthesized TTS audio internally when bounded
+  firmware playback needs smaller segments. A non-waiting `say` can return
+  before firmware playback is physically complete, so a second immediate media
+  command can still hit `FIRMWARE_BUSY`.
+- If the user explicitly asks for a longer spoken explanation, still prefer one
+  naturally punctuated `say` command. Use multiple sequential `say --wait`
+  commands only when one command is rejected for size or transport limits, or
+  when a later physical command must wait for speech completion.
 - Do not raise the speech speed to compensate for long text. Shorten or split
   the content naturally instead.
 - Keep private text, command output, paths, secrets, and raw observations out of

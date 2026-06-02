@@ -9,10 +9,12 @@ from stackchan_bridge.tts_provider import (
     AUDIO_CHANNELS,
     AUDIO_FORMAT,
     AUDIO_SAMPLE_RATE,
+    TTS_PLAYBACK_SAMPLE_RATE_8K,
     TtsProviderError,
     VoiceVoxTtsProvider,
     decode_wav_to_pcm_s16le_mono_16k,
     default_voice_profiles,
+    resample_tts_audio,
     trim_pcm_s16le_silence,
     tune_voicevox_query_payload,
 )
@@ -43,6 +45,32 @@ class TtsProviderTests(unittest.TestCase):
         self.assertGreater(len(audio.pcm), 0)
         self.assertEqual(len(audio.pcm) % 2, 0)
 
+    def test_decode_wav_can_target_8khz_playback_pcm(self) -> None:
+        audio = decode_wav_to_pcm_s16le_mono_16k(
+            wav_bytes(),
+            target_sample_rate=TTS_PLAYBACK_SAMPLE_RATE_8K,
+        )
+
+        self.assertEqual(audio.format, AUDIO_FORMAT)
+        self.assertEqual(audio.sample_rate, TTS_PLAYBACK_SAMPLE_RATE_8K)
+        self.assertEqual(audio.channels, AUDIO_CHANNELS)
+        self.assertGreater(len(audio.pcm), 0)
+        self.assertEqual(len(audio.pcm) % 2, 0)
+
+    def test_resample_tts_audio_returns_streaming_rate_pcm(self) -> None:
+        low_rate_audio = decode_wav_to_pcm_s16le_mono_16k(
+            wav_bytes(),
+            target_sample_rate=TTS_PLAYBACK_SAMPLE_RATE_8K,
+        )
+
+        audio = resample_tts_audio(low_rate_audio, AUDIO_SAMPLE_RATE)
+
+        self.assertEqual(audio.format, AUDIO_FORMAT)
+        self.assertEqual(audio.sample_rate, AUDIO_SAMPLE_RATE)
+        self.assertEqual(audio.channels, AUDIO_CHANNELS)
+        self.assertGreater(len(audio.pcm), len(low_rate_audio.pcm))
+        self.assertEqual(len(audio.pcm) % 2, 0)
+
     def test_voicevox_adapter_uses_profile_and_returns_normalized_audio(self) -> None:
         calls: list[tuple[str, bytes, dict[str, str]]] = []
 
@@ -57,13 +85,14 @@ class TtsProviderTests(unittest.TestCase):
         provider = VoiceVoxTtsProvider(
             profiles=default_voice_profiles("http://voicevox:50021"),
             default_profile="default",
+            target_sample_rate=TTS_PLAYBACK_SAMPLE_RATE_8K,
             http_post=post,
         )
 
         profile, audio = provider.synthesize("hello", "default")
 
         self.assertEqual(profile.name, "default")
-        self.assertEqual(audio.sample_rate, AUDIO_SAMPLE_RATE)
+        self.assertEqual(audio.sample_rate, TTS_PLAYBACK_SAMPLE_RATE_8K)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1][1], b'{"accent_phrases":[]}')
 

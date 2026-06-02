@@ -14,6 +14,14 @@ This document defines the quality gates for this repository. These gates are int
 - Media completion and audible quality are different gates. `tts_finished`,
   action completion, and firmware drain events prove transport/software
   completion; they do not prove that speech was intelligible to an operator.
+  A hardware `say` smoke counts as an audible-quality pass only when the
+  operator records the listening verdict, for example with
+  `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT=pass` from the smoke helper.
+  That pass means intelligible speech, acceptable volume, no truncation, no
+  phrase-level choppiness, and acceptable initial wait. Failed listening
+  verdicts should carry a bounded issue category such as `wait`, `volume`,
+  `truncation`, `phrase_chop`, or `unintelligible` so the next fix targets the
+  audible problem rather than reworking unrelated transport code.
 
 ## Required Gates By Area
 

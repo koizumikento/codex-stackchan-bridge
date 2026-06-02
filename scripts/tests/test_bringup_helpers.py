@@ -35,10 +35,13 @@ def bridge_smoke_args(
         disconnect_face_command="",
         face_check="",
         say_check="はい",
+        say_naturalness_check=False,
         say_voice="default",
         say_face="",
         say_motion="",
         say_after_face="",
+        say_operator_listening_verdict="unrecorded",
+        say_operator_listening_issue="none",
         led_check=False,
         motion_check="",
         motion_disconnect_check="",
@@ -185,7 +188,23 @@ class MicroRosAgentContainerTests(unittest.TestCase):
             microros_agent_container.ENV_PASSTHROUGH,
         )
         self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
             "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENTS",
+            microros_agent_container.ENV_PASSTHROUGH,
+        )
+        self.assertIn(
+            "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS",
             microros_agent_container.ENV_PASSTHROUGH,
         )
 
@@ -241,6 +260,111 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         self.assertIn('STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=', command)
         self.assertIn('STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=', command)
         self.assertIn('STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=', command)
+
+    def test_bridge_smoke_marks_say_operator_listening_gate(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(bridge_smoke_args())
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=", command)
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_REQUIRED=1", command)
+        self.assertIn(
+            "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_CHECKS="
+            "intelligible,volume_ok,no_truncation,no_phrase_chop,wait_acceptable",
+            command,
+        )
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT=unrecorded", command)
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_ISSUE=none", command)
+
+    def test_bridge_smoke_can_use_default_say_naturalness_candidate(self) -> None:
+        args = bridge_smoke_args()
+        args.say_check = ""
+        args.say_naturalness_check = True
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn(microros_agent_container.DEFAULT_SAY_NATURALNESS_CHECK_TEXT, command)
+        self.assertIn(
+            "say --voice default --face happy --motion cheerful --after-face happy",
+            command,
+        )
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_REQUIRED=1", command)
+        self.assertIn(
+            "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_PASS_RERUN_HINT=uv run "
+            "--no-project python scripts/microros_agent_container.py "
+            "tcp-pty-bridge-smoke",
+            command,
+        )
+        self.assertIn("--say-naturalness-check --say-operator-listening-verdict pass", command)
+
+    def test_bridge_smoke_does_not_print_pass_hint_for_arbitrary_say_text(self) -> None:
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(bridge_smoke_args())
+
+        command = docker_run.call_args.args[1]
+        self.assertNotIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_PASS_RERUN_HINT", command)
+
+    def test_bridge_smoke_can_record_operator_listening_verdict(self) -> None:
+        args = bridge_smoke_args()
+        args.say_operator_listening_verdict = "pass"
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT=pass", command)
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_ISSUE=none", command)
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_REQUIRED=1", command)
+
+    def test_bridge_smoke_can_record_operator_listening_failure_issue(self) -> None:
+        args = bridge_smoke_args()
+        args.say_operator_listening_verdict = "fail"
+        args.say_operator_listening_issue = "wait"
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+        command = docker_run.call_args.args[1]
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT=fail", command)
+        self.assertIn("STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_ISSUE=wait", command)
+
+    def test_bridge_smoke_rejects_failed_operator_verdict_without_issue(self) -> None:
+        args = bridge_smoke_args()
+        args.say_operator_listening_verdict = "fail"
+        with self.assertRaises(SystemExit):
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+    def test_bridge_smoke_rejects_unrecorded_operator_verdict_with_issue(self) -> None:
+        args = bridge_smoke_args()
+        args.say_operator_listening_issue = "wait"
+        with self.assertRaises(SystemExit):
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+    def test_bridge_smoke_rejects_pass_operator_verdict_with_issue(self) -> None:
+        args = bridge_smoke_args()
+        args.say_operator_listening_verdict = "pass"
+        args.say_operator_listening_issue = "wait"
+        with self.assertRaises(SystemExit):
+            microros_agent_container.run_tcp_pty_bridge_smoke(args)
 
     def test_sensor_sweep_walks_media_terminal_events_after_pre_command_cursor(self) -> None:
         with mock.patch.object(

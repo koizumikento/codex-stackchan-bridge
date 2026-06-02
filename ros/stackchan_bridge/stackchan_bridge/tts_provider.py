@@ -16,6 +16,8 @@ import wave
 
 AUDIO_FORMAT = "pcm_s16le"
 AUDIO_SAMPLE_RATE = 16000
+TTS_PLAYBACK_SAMPLE_RATE_8K = 8000
+TTS_PLAYBACK_SAMPLE_RATES = frozenset({TTS_PLAYBACK_SAMPLE_RATE_8K, AUDIO_SAMPLE_RATE})
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_BYTES = 640
 AUDIO_CHUNK_FORMAT_ID = 1
@@ -71,6 +73,7 @@ class VoiceVoxTtsProvider:
         post_phoneme_length: float | None = None,
         silence_trim_threshold: int = 0,
         silence_trim_margin_samples: int = 0,
+        target_sample_rate: int = AUDIO_SAMPLE_RATE,
         http_post: HttpPost | None = None,
     ) -> None:
         self._profiles = dict(profiles)
@@ -82,6 +85,11 @@ class VoiceVoxTtsProvider:
         self._post_phoneme_length = post_phoneme_length
         self._silence_trim_threshold = max(0, int(silence_trim_threshold))
         self._silence_trim_margin_samples = max(0, int(silence_trim_margin_samples))
+        self._target_sample_rate = (
+            int(target_sample_rate)
+            if int(target_sample_rate) in TTS_PLAYBACK_SAMPLE_RATES
+            else AUDIO_SAMPLE_RATE
+        )
         self._http_post = http_post or _http_post
 
     @property
@@ -113,13 +121,17 @@ class VoiceVoxTtsProvider:
         )
         validate_voicevox_query_payload(query)
         wav_bytes = self._synthesis(endpoint, profile.speaker_id, query)
-        audio = decode_wav_to_pcm_s16le_mono_16k(wav_bytes)
+        audio = decode_wav_to_pcm_s16le_mono_16k(
+            wav_bytes,
+            target_sample_rate=self._target_sample_rate,
+        )
         return profile, TtsAudio(
             pcm=trim_pcm_s16le_silence(
                 audio.pcm,
                 threshold=self._silence_trim_threshold,
                 margin_samples=self._silence_trim_margin_samples,
-            )
+            ),
+            sample_rate=audio.sample_rate,
         )
 
     def _audio_query(self, endpoint: str, speaker_id: int, text: str) -> bytes:
@@ -177,7 +189,11 @@ def default_voice_profiles(endpoint: str = "") -> dict[str, VoiceProfile]:
     }
 
 
-def decode_wav_to_pcm_s16le_mono_16k(wav_bytes: bytes) -> TtsAudio:
+def decode_wav_to_pcm_s16le_mono_16k(
+    wav_bytes: bytes,
+    *,
+    target_sample_rate: int = AUDIO_SAMPLE_RATE,
+) -> TtsAudio:
     try:
         with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
             if wav.getsampwidth() != 2 or wav.getcomptype() != "NONE":
@@ -206,7 +222,12 @@ def decode_wav_to_pcm_s16le_mono_16k(wav_bytes: bytes) -> TtsAudio:
     if sys.byteorder != "little":
         samples.byteswap()
     mono = _mix_to_mono(samples, channels)
-    normalized = _resample(mono, source_rate, AUDIO_SAMPLE_RATE)
+    target_rate = (
+        int(target_sample_rate)
+        if int(target_sample_rate) in TTS_PLAYBACK_SAMPLE_RATES
+        else AUDIO_SAMPLE_RATE
+    )
+    normalized = _resample(mono, source_rate, target_rate)
     if not normalized:
         raise TtsProviderError(
             "TTS_SYNTHESIS_FAILED",
@@ -215,7 +236,30 @@ def decode_wav_to_pcm_s16le_mono_16k(wav_bytes: bytes) -> TtsAudio:
         )
     if sys.byteorder != "little":
         normalized.byteswap()
-    return TtsAudio(pcm=normalized.tobytes())
+    return TtsAudio(pcm=normalized.tobytes(), sample_rate=target_rate)
+
+
+def resample_tts_audio(audio: TtsAudio, target_sample_rate: int) -> TtsAudio:
+    target_rate = (
+        int(target_sample_rate)
+        if int(target_sample_rate) in TTS_PLAYBACK_SAMPLE_RATES
+        else AUDIO_SAMPLE_RATE
+    )
+    if audio.sample_rate == target_rate:
+        return audio
+    samples = array.array("h")
+    samples.frombytes(audio.pcm[: len(audio.pcm) - (len(audio.pcm) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    normalized = _resample(samples, audio.sample_rate, target_rate)
+    if sys.byteorder != "little":
+        normalized.byteswap()
+    return TtsAudio(
+        pcm=normalized.tobytes(),
+        format=audio.format,
+        sample_rate=target_rate,
+        channels=audio.channels,
+    )
 
 
 def tune_voicevox_query_payload(

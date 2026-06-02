@@ -661,10 +661,10 @@ Baseline audio path:
   for very short prompts. In the default path, firmware accepts bounded loaded
   chunks on `/stackchan/<device_id>/device/audio/playback/chunks`, stores
   payload only in a fixed RAM buffer keyed by `command_id`, ignores duplicate
-  already-buffered chunks, and reports progress while the bridge repeats the
-  carousel until the contiguous transaction completes. The bridge then starts
+  already-buffered chunks, and reports progress while the bridge sends bounded
+  topic windows until the contiguous transaction completes. The bridge then starts
   playback with the same `command_id`, and firmware plays the loaded buffer
-  through the existing playback action result. The older
+  through the existing playback action result. The bounded carousel retry path, older
   `/stackchan/<device_id>/device/audio/playback/load` service and firmware-pull
   loaded path remain diagnostic fallbacks. The K151 bring-up payload buffer is
   32 KiB, and responses carry only structured result and buffered counters.
@@ -673,9 +673,12 @@ Baseline audio path:
   depending on ROS executor timing between 20 ms speaker frames. For ADPCM
   loaded playback, firmware keeps encoded payload bytes in that buffer and
   decodes incrementally into speaker frames during playback; it does not need
-  the full decoded PCM waveform in RAM at once. Keep load-service chunks small
-  on serial transports; larger synchronous service payloads have timed out on
-  the Windows Docker host serial bridge during hardware smoke.
+  the full decoded PCM waveform in RAM at once. Bridge-owned local TTS
+  playback may use 8 kHz or 16 kHz mono PCM; capture remains on the 16 kHz
+  baseline. The 8 kHz TTS path reduces encoded payload size so longer natural
+  explanations can fit a single loaded transaction. Keep load-service chunks
+  small on serial transports; larger synchronous service payloads have timed
+  out on the Windows Docker host serial bridge during hardware smoke.
   Firmware must reject overflow, format mismatch, stale command ids,
   concurrent loads, and playback without a complete loaded buffer with
   structured `Result` errors. If an incomplete load stops making progress,
@@ -689,12 +692,16 @@ Baseline audio path:
   | Allocation | Standard size | Purpose |
   | --- | ---: | --- |
   | Loaded playback payload buffer | 32 KiB | Stable PCM or encoded ADPCM payload for local TTS playback |
+  | Loaded playback future-chunk buffer | about 10 KiB | Ordering cushion for 32 x 256 byte loaded-topic chunks plus metadata |
   | Topic/pull future-chunk jitter buffer | about 5 KiB | Diagnostic topic relay lookahead, 8 x 640 byte PCM slots plus metadata |
   | Speaker runtime frame buffers | about 5 KiB | Rotating `playRaw()` buffers held while M5Unified drains queued frames |
   | ROS audio request/response PCM sequences | several 1280 byte sequences | Bounded micro-ROS message/service storage |
 
-  The standard build keeps only 8 topic/pull future-chunk slots because loaded
-  playback is the preferred audible TTS path. A bring-up build may define
+  The loaded playback future-chunk buffer is separate from the topic/pull relay
+  jitter buffer. It accepts only small loaded-topic payload chunks and exists to
+  absorb short serial micro-ROS reordering before the missing expected sequence
+  arrives. The standard build keeps only 8 topic/pull future-chunk slots because
+  loaded playback is the preferred audible TTS path. A bring-up build may define
   `STACKCHAN_AUDIO_TOPIC_RELAY_EXTENDED_BUFFER=1` to restore the older 24-slot
   topic relay buffer for transport diagnostics, at the cost of roughly 10 KiB
   more static RAM. Increasing the loaded playback buffer above 32 KiB overflowed
@@ -802,12 +809,21 @@ include PCM bytes, ADPCM bytes, speech text, transcripts, provider request
 bodies, images, NFC tag IDs, IR codes, or protocol dumps.
 Normal successful service-load chunks should be sampled rather than published
 for every chunk. Normal successful topic-load chunks publish payload-free
-progress observations so the bridge can wait for each bounded window and retry
-the same sequence when progress stalls. Sequence-gap, overflow, and other
-rejection events remain publishable. The loaded topic subscriber uses a
+progress observations at bounded progress intervals so the bridge can wait for
+windowed progress without making reliable event publication the per-chunk hot
+path. The diagnostic carousel path may resume from the latest accepted
+sequence, and windowed-progress diagnostics may retry the same sequence when
+progress stalls. Sequence-gap, overflow, and other rejection events remain
+publishable.
+The loaded topic subscriber uses a
 16-sample reliable keep-last depth. The micro-ROS input reliable stream history
 stays at 8 because larger stream histories overflow CoreS3 DRAM in the full
 bring-up profile.
+While a loaded audio transaction is active but not complete, firmware suppresses
+normal low-rate runtime telemetry publishing so serial bandwidth and executor
+time favor loaded audio chunks and payload-free load progress observations.
+This does not suppress safety/fault handling, command execution, or loaded
+playback completion events.
 
 ### Camera
 

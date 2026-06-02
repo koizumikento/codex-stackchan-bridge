@@ -703,8 +703,10 @@ provides the terminal confirmation. This avoids per-chunk application
 request/response while preserving a final action result for the speech command.
 The bridge paces loaded topic chunks with a local serial transport interval
 instead of requiring per-chunk ACKs; current full-firmware COM3 hardware
-validation uses 0.05 s with 128 byte ADPCM chunks after fixing host serial
-partial writes and firmware loaded-playback queue handling.
+validation uses 0.04 s with 128 byte ADPCM chunks after fixing host serial
+partial writes and firmware loaded-playback queue handling. A 0.03 s pacing
+smoke timed out on the same serial path and remains diagnostic-only until
+revalidated.
 
 `sequence` is monotonic per `command_id` plus `direction`. At most one playback
 session may be active per device; same-direction concurrent sessions are
@@ -861,13 +863,14 @@ The standard loaded playback transaction for bridge-owned local TTS is:
    PCM locally.
 2. The bridge encodes the selected loaded payload, normally
    `IMA_ADPCM_4BIT`, and publishes bounded loaded chunks on
-   `/stackchan/<device_id>/device/audio/playback/chunks` in a carousel until
-   firmware reports the contiguous transaction complete.
+   `/stackchan/<device_id>/device/audio/playback/chunks` with bounded progress
+   windows until firmware reports the contiguous transaction complete.
 3. Each topic chunk carries format, sample rate, channel count, decoded total
    byte count, total chunk count, monotonic `sequence`, and a bounded encoded
    payload. Firmware ignores same-command duplicate chunks that are already
    buffered and rejects future sequence gaps without advancing state; the
-   carousel retries the missing sequence on a later pass.
+   diagnostic carousel transport retries from the latest accepted sequence on
+   a later pass.
 4. Firmware stores the encoded payload in a bounded per-device playback buffer
    keyed by `command_id`. It rejects overflow, format mismatch, duplicate
    active loads, out-of-order writes, and stale command IDs with structured
@@ -882,8 +885,8 @@ This is the standard local speech reliability path, not a new public raw-audio
 command surface. `stackchanctl say` and `stackchanctl audio play` remain the
 user-facing commands. The load path must stay device-scoped, bounded, redacted
 in normal logs, and covered by mock, bridge, firmware, and hardware-smoke
-validation. Pull-loaded and synchronous load service transports remain
-diagnostic paths, not the default TTS payload path.
+validation. Carousel, pull-loaded, and synchronous load service transports
+remain diagnostic paths, not the default TTS payload path.
 
 ### `/stackchan/<device_id>/device/audio/playback/load`
 
@@ -925,8 +928,11 @@ Rules:
   across chunks must fit the same 32 KiB payload buffer. The K151 firmware
   accepts decoded totals up to 128 KiB for this path and decodes incrementally
   into speaker frames during playback.
-- `format=PCM_S16LE` or `IMA_ADPCM_4BIT`, `sample_rate=16000`, and
-  `channels=1` are required.
+- `format=PCM_S16LE` or `IMA_ADPCM_4BIT` and `channels=1` are required.
+  Baseline audio remains `sample_rate=16000`. Bridge-owned local TTS playback
+  may use `sample_rate=8000` to reduce loaded-playback payload size for spoken
+  explanations; capture and general CLI audio remain on the 16 kHz baseline
+  unless a separate contract expands them.
 - `pcm` is bounded by the same `uint8[<=1280]` IDL limit as `AudioChunk`.
   On the current serial micro-ROS path, PCM bridge load chunks should stay much
   smaller than that limit; 640 byte synchronous PCM service requests timed out
@@ -934,11 +940,12 @@ Rules:
   requests completed at 96 bytes while 128 bytes and above timed out before the
   first firmware callback response. The loaded topic path is the current
   default for local TTS and has been validated with 128 byte ADPCM chunks at
-  0.05 s pacing and a 30 s final completion wait after fixing host serial
-  partial writes and firmware loaded-playback queue handling. Larger 160 and
-  256 byte ADPCM topic chunks remain diagnostic-only until the serial
-  micro-ROS MTU/resource path is revalidated. Use 64 or 96 bytes as
-  conservative service-load fallbacks.
+  0.04 s pacing and a 30 s final completion wait after fixing host serial
+  partial writes and firmware loaded-playback queue handling. A 0.03 s pacing
+  smoke timed out on the same serial path, so faster intervals remain
+  diagnostic-only until revalidated. Larger 160 and 256 byte ADPCM topic chunks
+  also remain diagnostic-only until the serial micro-ROS MTU/resource path is
+  revalidated. Use 64 or 96 bytes as conservative service-load fallbacks.
 - `end_of_stream=true` marks the final chunk. The bridge may start
   `/stackchan/<device_id>/device/audio/play` only after `complete=true`.
 - If an incomplete load transaction stalls, firmware may accept a new
@@ -976,31 +983,64 @@ followed by IMA nibbles packed low nibble first. Later chunks continue the same
 decoder state. Firmware stores the encoded payload and decodes it into bounded
 speaker frames during the playback action; it may ignore one final padding
 nibble only on the `end_of_stream=true` chunk. Bridge-owned TTS uses the
-compressed loaded-topic carousel by default when loaded playback is enabled.
-Pull-loaded and load-service transports remain diagnostic fallbacks for
-comparing serial transport behavior.
-For the default compressed loaded-topic carousel, the bridge publishes ADPCM
-chunks at the validated serial pacing and starts playback only after the
-firmware reports the contiguous loaded transaction complete. If a chunk is
-missed, the later carousel pass retries from the latest reported buffered
-sequence. The older one-shot topic progress loop remains a diagnostic transport
-for comparison. Firmware treats duplicate loaded topic chunks for the same
-command id as idempotent and must not decode duplicate payload bytes twice.
+compressed windowed loaded-topic path by default when loaded playback is
+enabled. Carousel, pull-loaded, and load-service transports remain diagnostic
+fallbacks for comparing serial transport behavior.
+When a bridge-owned TTS loaded preload fails before playback starts, the bridge
+may continue the same public `say` through normal PCM streaming relay. That is
+an internal transport fallback, not a split into multiple public commands.
+If a single synthesized utterance naturally becomes multiple loaded-preload
+segments, the normal bridge path keeps one public `say` and plays those loaded
+segments internally in order. Streaming relay is a fallback when loaded preload
+fails before playback starts, not the preferred long-speech path. Streaming
+relay uses baseline 16 kHz PCM even when the bridge synthesized 8 kHz audio for
+loaded-preload transfer reduction. For prebuffered TTS streaming, firmware pull
+requests are answered immediately from the bridge buffer instead of waiting
+through topic NACK retries. Once the `say` path has selected this streaming
+fallback, the bridge starts the firmware playback action without re-running the
+command-audio loaded-preload wait.
+For the default compressed loaded-topic path, the bridge publishes ADPCM chunks
+at the validated serial pacing, waits for bounded firmware progress, and starts
+playback only after the firmware reports the contiguous loaded transaction
+complete. If the loaded-topic progress timeout is configured to zero, the
+bridge uses the bounded carousel path instead of a full-payload fire-and-wait
+burst. The carousel path republishes a bounded window from the latest firmware
+progress point. It sends only `sequence=0` until the loaded session starts,
+then repeats the current expected sequence before each lookahead window because
+firmware progress events are sampled rather than emitted for every accepted
+chunk. Firmware treats duplicate loaded topic chunks for the same command id as
+idempotent and must not decode duplicate payload bytes twice. The normal path
+does not call the load service for missing anchors. A diagnostic bridge setting
+may recover one missing anchor chunk through
+`/stackchan/<device_id>/device/audio/playback/load` before returning to the
+topic path, but that recovery is disabled by default and must not become the
+normal per-chunk service ACK payload path.
 Firmware progress events may expose redacted transport counters such as
 `expected_seq`, `received_seq`, `buf_chunks`, `chunks`, `complete`, `result`,
 short `detail`, `rx_ms`, `gap_ms`, `dec_ms`, and `last_dec_ms`, but must not
 expose PCM, ADPCM payload bytes, speech text, provider request bodies, or raw
 provider identifiers.
 For normal topic-loaded playback, successful intermediate topic chunks publish
-payload-free progress events so the bridge can retry missing chunks without
-advancing the sequence. Successful service-load chunks should still be sampled.
+payload-free progress events only at bounded progress intervals so the bridge
+can retry missing chunks without turning every accepted chunk into a reliable
+event. Successful service-load chunks should still be sampled.
 The firmware subscription depth is kept at 16 for this loaded-topic path so a
 short ADPCM transaction has more subscriber-side room. The micro-ROS input
 reliable stream history remains 8 because larger stream histories overflow
-CoreS3 DRAM in the full bring-up profile. Bridge diagnostics should report
+CoreS3 DRAM in the full bring-up profile. The bridge-side chunk publisher keeps
+a deeper local reliable history so anchor repeats and lookahead windows do not
+evict the currently expected sequence before the Agent can forward it. Bridge
+diagnostics should report
 loaded-topic publish elapsed time separately from the final firmware
 `audio_playback_load` completion wait so serial backlog and firmware receive
 latency can be investigated without reintroducing per-chunk service ACKs.
+Firmware also keeps a fixed 32-slot future-chunk buffer for this loaded-topic
+path. Each future slot accepts only small chunks up to 256 bytes, matching the
+current 128 byte ADPCM serial TTS path, and drains buffered future sequences
+only after the missing expected sequence arrives. The buffer is an ordering
+cushion for short serial micro-ROS reordering; it is not a permission to publish
+unbounded bursts, and it does not expose ADPCM or PCM payload bytes in
+diagnostics.
 
 ### `/stackchan/<device_id>/device/audio/chunks`
 
@@ -1573,29 +1613,89 @@ path sends format-dependent audio payloads over
 action and uses the action result as the final confirmation, not per-chunk
 application ACK. The bridge may pace topic chunks slightly to avoid overrunning
 bounded publisher/subscriber queues; this pacing is not an acknowledgement
-loop. Before starting the playback action, the bridge waits for the
-transaction-level firmware `audio_playback_load` completion event for the
-matching `command_id`; this confirms the preloaded buffer is ready without
-requiring a response for each payload chunk. The older synchronous load service
-remains available as a diagnostic fallback. Serial load-service chunks should
-stay small enough for the current micro-ROS/host-serial bridge; larger
-synchronous PCM service payloads may time out even when the total loaded buffer
-would fit.
+loop. The default windowed loaded-topic transport waits for bounded firmware
+progress until the transaction-level firmware `audio_playback_load` completion
+event appears for the matching `command_id`, then starts the playback action.
+The carousel, pull-loaded, and older synchronous load-service transports remain
+available as diagnostic fallbacks.
+During an incomplete loaded audio transaction, firmware should reduce unrelated
+low-rate runtime telemetry publication so the serial micro-ROS path is not
+competing with proximity, light, power, or raw sensor observations while audio
+chunks are still arriving. This is a media transport scheduling rule, not a
+change to the public command contract.
+Serial load-service chunks should stay small enough for the current
+micro-ROS/host-serial bridge; larger synchronous PCM service payloads may time
+out even when the total loaded buffer would fit.
+Bridge-owned local TTS defaults to 8 kHz mono PCM before ADPCM encoding when
+firmware supports the playback sample rate. This keeps slower, naturally paced
+spoken explanations more likely to fit one 32 KiB encoded loaded transaction.
+Set `STACKCHAN_TTS_SAMPLE_RATE=16000` to return to the baseline 16 kHz TTS
+profile for diagnostics or firmware that has not been updated for 8 kHz
+playback.
+When a naturally punctuated source string contains multiple short sentences,
+the bridge may use progressive loaded TTS: group short sentence-like fragments,
+then synthesize, load, and play each group internally while keeping the public
+facade action as one `say`. This avoids waiting for the whole paragraph to be
+synthesized before the first audible group starts, while keeping adjacent short
+sentences together when they fit the group bound. Progressive text grouping is
+limited to hard punctuation boundaries by default; comma, whitespace, and
+particle fallback splits are not used for this fast-start path because they
+sound like chopped phrases. `STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENTS=0`
+disables this path, and `STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS`
+bounds candidate groups. The default candidate bound is 64 characters. The
+bridge still validates each synthesized candidate against the encoded loaded
+payload buffer; if a multi-sentence candidate does not fit, it falls back to
+the smaller sentence-sized group instead of falling through to full-utterance
+audio splitting.
+For progressive groups after the first, the bridge may synthesize the next
+group on the PC while the current group is playing so inter-group latency is
+not inflated by local TTS work. The default firmware still owns one loaded
+playback buffer, so loading the next group remains serialized after the current
+playback result.
 When synthesized TTS PCM exceeds the 32 KiB PCM loaded-playback limit but its
 ADPCM payload fits the encoded loaded payload buffer and the decoded duration
-stays within the ADPCM decoded-byte ceiling, the bridge should keep it as a
-single loaded playback transaction. Only when the selected loaded format cannot
-fit may the normal bridge path split the source text on natural phrase
-boundaries before synthesizing segment audio. Callers should prefer one
-naturally punctuated `say` request over multiple immediate `say` requests. When
-a source string has no hard punctuation and still exceeds the bounded loaded
-playback size, the bridge may fall back to smaller phrase-like boundaries such
-as Japanese particles before rejecting it as too large.
+stays within the ADPCM decoded-byte ceiling, the bridge keeps the utterance as
+one loaded transaction when it fits, including short multi-sentence groups. The
+bridge should not split an already-fit utterance merely to shorten transport
+timing, because that can introduce audible pauses between otherwise connected
+sentences. If the audio exceeds the hard loaded limit, the bridge may split the
+synthesized audio internally at detected silence boundaries near a bounded
+target size, defaulting to 16 KiB decoded PCM, or cut at the target when no
+suitable silence boundary is found so the encoded ADPCM payload fits the
+bounded firmware buffer.
+Source-text fallback splitting and segment re-synthesis remain fallback
+behavior when synthesized audio cannot be segmented into loaded-playback-sized
+chunks. Callers should prefer one naturally punctuated `say` request over
+multiple immediate `say` requests.
+When a source string has no hard punctuation and still exceeds the bounded
+loaded playback size, the bridge may fall back to smaller phrase-like
+boundaries such as Japanese particles before rejecting it as too large.
 `STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE=1` may be used for diagnostic
 PCM-splitting comparison runs; in that opt-in mode each firmware-facing segment
 uses a bounded derived command id so delayed load or drain events from one
 segment are not reused as completion evidence for another. Neither path may log
 speech text or PCM payloads.
+For oversized utterances that need the streaming relay instead of segmented
+loaded playback, the bridge-side pending playback buffer defaults to 4096
+chunks and may be adjusted with `STACKCHAN_AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS`.
+This buffer is PC-side queue capacity for synthesized command audio; it does
+not change the firmware loaded playback RAM limit or the firmware topic
+lookahead buffer. This is internal audio transport segmentation for one public
+`say`, not a sequence of public `say` commands.
+Segmented loaded playback is a reliability fallback, not proof of natural
+long-form speech. Because the standard firmware owns one bounded loaded buffer,
+the bridge cannot load the next segment concurrently with the current segment's
+playback on the default path. Operator-facing detailed speech that exceeds one
+loaded transaction may therefore include audible transfer pauses until a
+separate continuous long-speech contract, such as a validated streaming relay,
+double-buffered loaded playback, or a more compact codec path, is introduced.
+On the current host-serial path, streaming relay is diagnostic for long TTS and
+has timed out under detailed-speech smoke; do not promote it over progressive
+loaded playback without fresh completion and operator-listening evidence.
+Firmware-origin events and active media actions should both count as liveness
+evidence. During long loaded playback, the bridge must not publish a
+`device_disconnected(liveness_timeout)` event merely because low-rate status
+telemetry is quiet while audio load or playback is active.
 The bridge must not use the short synchronous device-command timeout for media
 action result delivery. Playback and capture need a media-action timeout, 35
 seconds by default in the bridge, large enough for goal acceptance, firmware

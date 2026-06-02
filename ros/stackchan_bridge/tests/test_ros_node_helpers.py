@@ -9,14 +9,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 from stackchan_bridge.event_buffer import EventRecord
+from stackchan_bridge.models import CommandMeta
 from stackchan_bridge.ros_node import (
     AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT,
     AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES_ENV,
     AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES_ENV,
     AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS,
+    AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS_ENV,
     AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT_ENV,
     AUDIO_PLAYBACK_ACK_REPUBLISH_MIN_INTERVAL_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS_ENV,
+    AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC_ENV,
     AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC_ENV,
@@ -29,6 +33,9 @@ from stackchan_bridge.ros_node import (
     AUDIO_PLAYBACK_PULL_LOOKAHEAD_CHUNKS_ENV,
     AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV,
     MEDIA_ACTION_SETTLE_SEC_ENV,
+    TTS_SAMPLE_RATE_ENV,
+    TTS_PROGRESSIVE_TEXT_SEGMENTS_ENV,
+    TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS_ENV,
     _coerce_telemetry_device_id,
     _copy_command_meta,
     _copy_power_status,
@@ -44,8 +51,14 @@ from stackchan_bridge.ros_node import (
     _snapshot_from_stackchan_status,
     _audio_playback_pull_lookahead_chunks,
     _audio_playback_ack_first_chunk_retry_count,
+    _audio_playback_buffer_max_chunks,
     _audio_playback_loaded_topic_complete_timeout_sec,
+    _audio_playback_loaded_topic_anchor_repeats,
+    _audio_playback_loaded_topic_anchor_service_after_passes,
     _audio_playback_adpcm_loaded_max_decoded_bytes,
+    _tts_loaded_audio_split_target_decoded_bytes,
+    _tts_sample_rate,
+    _tts_playback_sample_rate_supported,
     _audio_playback_loaded_tts_split_oversize,
     _audio_playback_loaded_topic_progress_retries,
     _audio_playback_loaded_topic_progress_timeout_sec,
@@ -75,6 +88,7 @@ from stackchan_bridge.ros_node import (
     _split_tts_text_fragment_for_loaded_playback,
     _split_tts_text_fragment_on_script_boundaries,
     _split_tts_text_for_loaded_playback,
+    _split_tts_text_for_progressive_loaded_playback,
     _tts_audio_too_large_for_loaded_playback_result,
     _tts_segment_command_meta,
     _meta_from_ros,
@@ -269,6 +283,37 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertEqual(_audio_playback_adpcm_loaded_max_decoded_bytes(), 1024)
 
+    def test_loaded_audio_split_target_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _tts_loaded_audio_split_target_decoded_bytes(128 * 1024),
+                16 * 1024,
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {"STACKCHAN_TTS_LOADED_AUDIO_SPLIT_TARGET_DECODED_BYTES": "999999"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _tts_loaded_audio_split_target_decoded_bytes(64 * 1024),
+                64 * 1024,
+            )
+
+    def test_tts_sample_rate_defaults_to_8khz_and_rejects_unknown_values(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_tts_sample_rate(), 8000)
+
+        with mock.patch.dict(os.environ, {TTS_SAMPLE_RATE_ENV: "16000"}, clear=True):
+            self.assertEqual(_tts_sample_rate(), 16000)
+
+        with mock.patch.dict(os.environ, {TTS_SAMPLE_RATE_ENV: "44100"}, clear=True):
+            self.assertEqual(_tts_sample_rate(), 16000)
+
+        self.assertTrue(_tts_playback_sample_rate_supported(8000))
+        self.assertTrue(_tts_playback_sample_rate_supported(16000))
+        self.assertFalse(_tts_playback_sample_rate_supported(44100))
+
     def test_tts_audio_fits_single_loaded_playback_uses_adpcm_payload_size(self) -> None:
         audio = TtsAudio(pcm=b"\x00\x00" * 20000)
 
@@ -297,6 +342,84 @@ class RosNodeHelperTests(unittest.TestCase):
         segments = _split_tts_audio_for_loaded_playback(TtsAudio(pcm=b"aabbcc"), 5)
 
         self.assertEqual([segment.pcm for segment in segments], [b"aabb", b"cc"])
+
+    def test_split_tts_audio_for_loaded_playback_prefers_silence_boundaries(self) -> None:
+        def pcm(samples: list[int]) -> bytes:
+            return b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples)
+
+        audio = TtsAudio(
+            pcm=pcm(([1000] * 8) + ([0] * 220) + ([1000] * 8) + ([0] * 220) + ([1000] * 8)),
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+        )
+
+        segments = _split_tts_audio_for_loaded_playback(
+            audio,
+            640,
+            target_decoded_bytes=320,
+        )
+
+        self.assertGreater(len(segments), 1)
+        self.assertTrue(all(len(segment.pcm) <= 640 for segment in segments))
+        self.assertTrue(all(len(segment.pcm) % 2 == 0 for segment in segments))
+        self.assertTrue(all(segment.format == audio.format for segment in segments))
+
+    def test_split_tts_audio_for_loaded_playback_uses_target_without_silence(self) -> None:
+        audio = TtsAudio(
+            pcm=b"\x01\x01" * 200,
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+        )
+
+        segments = _split_tts_audio_for_loaded_playback(
+            audio,
+            320,
+            target_decoded_bytes=224,
+        )
+
+        self.assertEqual([len(segment.pcm) for segment in segments], [224, 176])
+
+    def test_split_tts_audio_for_loaded_playback_can_split_at_target_when_it_fits(self) -> None:
+        def pcm(samples: list[int]) -> bytes:
+            return b"".join(sample.to_bytes(2, "little", signed=True) for sample in samples)
+
+        audio = TtsAudio(
+            pcm=pcm(([1000] * 80) + ([0] * 220) + ([1000] * 80)),
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+        )
+
+        segments = _split_tts_audio_for_loaded_playback(
+            audio,
+            1024,
+            target_decoded_bytes=320,
+            split_at_target=True,
+            require_silence=True,
+        )
+
+        self.assertGreater(len(segments), 1)
+        self.assertTrue(all(len(segment.pcm) <= 1024 for segment in segments))
+
+    def test_split_tts_audio_for_loaded_playback_keeps_unsplittable_audio_whole(self) -> None:
+        audio = TtsAudio(
+            pcm=b"\x01\x01" * 200,
+            format="pcm_s16le",
+            sample_rate=16000,
+            channels=1,
+        )
+
+        segments = _split_tts_audio_for_loaded_playback(
+            audio,
+            1024,
+            target_decoded_bytes=224,
+            split_at_target=True,
+            require_silence=True,
+        )
+
+        self.assertEqual(segments, (audio,))
 
     def test_split_tts_audio_for_loaded_playback_rejects_invalid_limits(self) -> None:
         self.assertEqual(_split_tts_audio_for_loaded_playback(TtsAudio(pcm=b"aa"), 1), ())
@@ -333,7 +456,99 @@ class RosNodeHelperTests(unittest.TestCase):
     def test_split_tts_text_for_loaded_playback_preserves_hard_breaks(self) -> None:
         segments = _split_tts_text_for_loaded_playback("Hello world. OK")
 
-        self.assertEqual(segments, ("Hello ", "world.", "OK"))
+        self.assertEqual(segments, ("Hello world.", "OK"))
+
+    def test_split_tts_text_for_loaded_playback_keeps_commas_connected(self) -> None:
+        segments = _split_tts_text_for_loaded_playback(
+            "今日の日本ニュースは、補正予算、株高、台風の交通影響がポイントだよ。"
+        )
+
+        self.assertEqual(
+            segments,
+            ("今日の日本ニュースは、補正予算、株高、台風の交通影響がポイントだよ。",),
+        )
+
+    def test_split_tts_text_for_loaded_playback_uses_commas_as_fallback(self) -> None:
+        segments = _split_tts_text_for_loaded_playback(
+            "今日の日本ニュースは、補正予算、株高、台風の交通影響がポイントだよ",
+            allow_fallback=True,
+        )
+
+        self.assertEqual(
+            segments,
+            ("今日の", "日本ニュースは、", "補正予算、", "株高、", "台風の", "交通影響が", "ポイントだよ"),
+        )
+
+    def test_progressive_loaded_text_split_groups_short_hard_breaks(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            segments = _split_tts_text_for_progressive_loaded_playback(
+                "今日は電気をたべたよ。ちょっと元気になったよ。"
+            )
+
+        self.assertEqual(segments, ())
+
+        with mock.patch.dict(
+            os.environ,
+            {TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS_ENV: "18"},
+            clear=True,
+        ):
+            segments = _split_tts_text_for_progressive_loaded_playback(
+                "今日は電気をたべたよ。ちょっと元気になったよ。次の話だよ。"
+            )
+
+        self.assertEqual(
+            segments,
+            ("今日は電気をたべたよ。", "ちょっと元気になったよ。次の話だよ。"),
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            segments = _split_tts_text_for_progressive_loaded_playback(
+                "スタックチャンは机の上で話せる小さな相棒だよ。"
+                "Codexからは一回の発話としてお願いするよ。"
+                "長い説明のときは、中で自然な文のまとまりに分けるよ。"
+                "だから待ち時間を減らしながら、ぶつ切りにならないように話すよ。"
+            )
+
+        self.assertEqual(
+            segments,
+            (
+                "スタックチャンは机の上で話せる小さな相棒だよ。"
+                "Codexからは一回の発話としてお願いするよ。",
+                "長い説明のときは、中で自然な文のまとまりに分けるよ。"
+                "だから待ち時間を減らしながら、ぶつ切りにならないように話すよ。",
+            ),
+        )
+
+    def test_progressive_loaded_text_split_does_not_use_comma_fallback(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            segments = _split_tts_text_for_progressive_loaded_playback(
+                "今日の日本ニュースは、補正予算、株高、台風の交通影響がポイントだよ"
+            )
+
+        self.assertEqual(segments, ())
+
+    def test_progressive_loaded_text_split_can_be_disabled_or_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {TTS_PROGRESSIVE_TEXT_SEGMENTS_ENV: "0"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _split_tts_text_for_progressive_loaded_playback("短いよ。次だよ。"),
+                (),
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS_ENV: "8"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _split_tts_text_for_progressive_loaded_playback(
+                    "これは長すぎる文だよ。次だよ。"
+                ),
+                (),
+            )
 
     def test_fit_tts_audio_for_loaded_playback_trims_edges_only_when_needed(self) -> None:
         audio = TtsAudio(
@@ -627,6 +842,28 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertEqual(_audio_playback_topic_initial_window_chunks(), 8)
 
+    def test_audio_playback_buffer_max_chunks_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_buffer_max_chunks(), 4096)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS_ENV: "2048",
+                AUDIO_PLAYBACK_TOPIC_INITIAL_WINDOW_CHUNKS_ENV: "999999",
+            },
+            clear=True,
+        ):
+            self.assertEqual(_audio_playback_buffer_max_chunks(), 2048)
+            self.assertEqual(_audio_playback_topic_initial_window_chunks(), 2048)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS_ENV: "999999"},
+            clear=True,
+        ):
+            self.assertEqual(_audio_playback_buffer_max_chunks(), 16384)
+
     def test_audio_playback_pull_lookahead_env_is_bounded(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -683,7 +920,7 @@ class RosNodeHelperTests(unittest.TestCase):
 
     def test_audio_playback_loaded_topic_publish_interval_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.05)
+            self.assertEqual(_audio_playback_loaded_topic_publish_interval_sec(), 0.04)
 
         with mock.patch.dict(
             os.environ,
@@ -720,6 +957,9 @@ class RosNodeHelperTests(unittest.TestCase):
             self.assertEqual(_audio_playback_loaded_topic_complete_timeout_sec(), 180.0)
 
     def test_audio_playback_loaded_topic_window_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_window_chunks(), 8)
+
         with mock.patch.dict(
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS_ENV: "2"},
@@ -740,7 +980,7 @@ class RosNodeHelperTests(unittest.TestCase):
 
     def test_audio_playback_loaded_topic_progress_timeout_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 2.0)
+            self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 4.0)
 
         with mock.patch.dict(
             os.environ,
@@ -761,6 +1001,9 @@ class RosNodeHelperTests(unittest.TestCase):
             self.assertEqual(_audio_playback_loaded_topic_progress_timeout_sec(), 10.0)
 
     def test_audio_playback_loaded_topic_progress_retries_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 3)
+
         with mock.patch.dict(
             os.environ,
             {AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES_ENV: "2"},
@@ -779,9 +1022,53 @@ class RosNodeHelperTests(unittest.TestCase):
         ):
             self.assertEqual(_audio_playback_loaded_topic_progress_retries(), 8)
 
-    def test_audio_playback_loaded_transport_defaults_to_carousel(self) -> None:
+    def test_audio_playback_loaded_topic_anchor_repeats_env_is_bounded(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_audio_playback_loaded_transport(), "carousel")
+            self.assertEqual(_audio_playback_loaded_topic_anchor_repeats(), 2)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS_ENV: "3"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_repeats(), 3)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS_ENV: "0"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_repeats(), 1)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_repeats(), 8)
+
+    def test_audio_playback_loaded_topic_anchor_service_env_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_service_after_passes(), 0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES_ENV: "6"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_service_after_passes(), 6)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES_ENV: "-1"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_service_after_passes(), 0)
+
+        with mock.patch.dict(
+            os.environ,
+            {AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES_ENV: "99"},
+        ):
+            self.assertEqual(_audio_playback_loaded_topic_anchor_service_after_passes(), 32)
+
+    def test_audio_playback_loaded_transport_defaults_to_topic(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_audio_playback_loaded_transport(), "topic")
 
         with mock.patch.dict(
             os.environ,
@@ -881,12 +1168,14 @@ class RosNodeHelperTests(unittest.TestCase):
         gate = MediaActionGate(3.0, clock=lambda: 10.0)
 
         self.assertIsNone(gate.begin("default", "cmd-1", "audio playback"))
+        self.assertEqual(gate.active_command_id("default"), "cmd-1")
         gate.finish(
             "default",
             "cmd-1",
             "audio playback",
             Result.completed("audio playback completed"),
         )
+        self.assertIsNone(gate.active_command_id("default"))
 
         self.assertIsNone(gate.begin("default", "cmd-2", "audio capture"))
 
@@ -1210,6 +1499,24 @@ class RosNodeHelperTests(unittest.TestCase):
         self.assertIs(target.created_at, stamp)
         self.assertEqual(target.priority, 2)
 
+    def test_copy_command_meta_converts_string_created_at_to_ros_time_shape(self) -> None:
+        target = SimpleNamespace(created_at=SimpleNamespace(sec=0, nanosec=0))
+        meta = CommandMeta(
+            device_id="default",
+            command_id="cmd-test-0001",
+            source="human_cli",
+            created_at="1778889601.250000000",
+            priority=2,
+        )
+
+        _copy_command_meta(target, meta, meta.created_at)
+
+        self.assertEqual(target.device_id, "default")
+        self.assertEqual(target.command_id, "cmd-test-0001")
+        self.assertEqual(target.created_at.sec, 1778889601)
+        self.assertEqual(target.created_at.nanosec, 250000000)
+        self.assertEqual(target.priority, 2)
+
     def test_safety_priority_rejection_helper_clears_result_response_payloads(self) -> None:
         meta = SimpleNamespace(device_id="default", command_id="cmd-test-0001", priority=3)
         response = SimpleNamespace(
@@ -1451,8 +1758,8 @@ class RosNodeHelperTests(unittest.TestCase):
             "MultiThreadedExecutor",
             "ReentrantCallbackGroup",
             "ActionClient",
+            "ThreadPoolExecutor",
             "reliable_depth_4 = QoSProfile(depth=4)",
-            "reliable_depth_8 = QoSProfile(depth=8)",
             "reliable_depth_64 = QoSProfile(depth=64)",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_COUNT = 3",
             "AUDIO_PLAYBACK_FIRST_CHUNK_RETRY_INTERVAL_SEC = 0.03",
@@ -1472,12 +1779,14 @@ class RosNodeHelperTests(unittest.TestCase):
             "AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT = 2",
             "STACKCHAN_AUDIO_PLAYBACK_ACK_FIRST_CHUNK_RETRY_COUNT",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_SETTLE_SEC",
-            "AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.05",
+            "AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC = 0.04",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_COMPLETE_TIMEOUT_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC",
             "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS",
+            "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES",
             "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES",
             "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES",
             "TTS_SPEED_SCALE_DEFAULT = 1.0",
@@ -1485,6 +1794,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "TTS_POST_PHONEME_LENGTH_DEFAULT = 0.03",
             "TTS_SILENCE_TRIM_THRESHOLD_DEFAULT = 256",
             "TTS_SILENCE_TRIM_MARGIN_MS_DEFAULT = 30.0",
+            "_tts_audio_for_streaming_playback",
             "_publish_device_audio_chunk_with_retries",
             "_republish_device_audio_chunk_for_pull",
             "_select_playback_chunks_for_topic_window",
@@ -1503,6 +1813,9 @@ class RosNodeHelperTests(unittest.TestCase):
             "STACKCHAN_TTS_LOADED_ADPCM",
             "STACKCHAN_TTS_LOADED_TRANSPORT",
             "STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE",
+            "STACKCHAN_TTS_LOADED_AUDIO_SPLIT_TARGET_DECODED_BYTES",
+            "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENTS",
+            "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS",
             "AUDIO_CHUNK_FORMAT_ID_IMA_ADPCM_4BIT",
             "encode_ima_adpcm_4bit",
             "_loaded_audio_transfer_candidates",
@@ -1511,22 +1824,38 @@ class RosNodeHelperTests(unittest.TestCase):
             "_tts_audio_fits_single_loaded_playback",
             "_split_tts_audio_for_loaded_playback",
             "_split_tts_text_fragment_for_loaded_playback",
+            "_split_tts_text_for_progressive_loaded_playback",
             "_split_tts_text_for_loaded_playback",
+            "text_fragments = _split_tts_text_for_progressive_loaded_playback(",
             "_tts_audio_too_large_for_loaded_playback_result",
             "_tts_segment_command_meta",
+            "_try_handle_cmd_say_progressive_loaded_text_segments",
+            "tts progressive loaded playback synth prefetch",
             "_synthesize_loaded_tts_text_segments",
             "_audio_playback_loaded_transport",
             "_buffer_loaded_audio_pull_playback",
             "audio playback loaded pull buffered",
             "_publish_loaded_audio_playback_carousel",
             "audio playback loaded topic carousel complete",
+            "_audio_playback_loaded_topic_anchor_repeats()",
+            "window_span = (",
+            "if start_sequence == 0",
+            "repeat_count = anchor_repeats if index == 0 else 1",
+            "_load_loaded_audio_topic_anchor_chunk",
+            "audio playback loaded topic anchor service fallback",
+            "if progress_timeout_sec <= 0:",
+            "audio playback loaded topic using bounded window carousel",
             "total_chunks * publish_interval_sec + 30.0",
             'format="ima_adpcm_4bit" if loaded_pull else AUDIO_FORMAT',
             "loaded_pull=loaded_pull",
             "tts loaded playback text split",
+            "tts loaded playback audio split",
             "_publish_loaded_audio_playback",
             "_play_loaded_tts_segments",
             "tts loaded playback split",
+            "tts loaded playback unavailable; falling back to streaming relay",
+            "skip_loaded_preload",
+            "if prebuffered_topic",
             "segment_command_id",
             "after_sequence=load_after_sequence",
             "record.sequence > after_sequence",
@@ -1557,6 +1886,7 @@ class RosNodeHelperTests(unittest.TestCase):
             "_device_audio_load_clients",
             "_device_audio_play_clients",
             "_device_audio_chunk_publishers",
+            'f"/stackchan/{device_id}/device/audio/playback/chunks",\n                reliable_depth_64,',
             "_cmd_audio_chunk_subscriptions",
             "_device_audio_playback_ack_subscriptions",
             "_pending_playback_chunks",
@@ -1603,6 +1933,10 @@ class RosNodeHelperTests(unittest.TestCase):
             "_call_device_audio_capture",
             "_call_device_audio_play",
             "_load_device_audio_playback",
+            "if _tts_audio_fits_single_loaded_playback(audio, max_loaded_bytes):",
+            "loaded_segments = (audio,)",
+            "tts loaded playback audio split",
+            "tts progressive loaded playback segment",
             "audio playback load service unavailable; falling back to topic relay",
             "audio playback load chunk request",
             "audio playback load chunk timeout",

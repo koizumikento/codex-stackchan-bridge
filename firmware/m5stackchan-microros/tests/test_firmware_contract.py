@@ -280,7 +280,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertLess(loop_body.find("step_motion_scheduler(now);"), loop_body.find("spin_command_executor();"))
         self.assertIn("if (!motion_scheduler.active) {\n    update_servo_health_cache(now);", loop_body)
         self.assertIn(
-            "if (!motion_scheduler.active) {\n    publish_runtime_telemetry(static_cast<uint32_t>(now));",
+            "if (!motion_scheduler.active && !play_audio_loaded_load_active()) {\n    publish_runtime_telemetry(static_cast<uint32_t>(now));",
             loop_body,
         )
         self.assertLess(loop_body.find("poll_capture_audio_action_server();"), loop_body.find("spin_command_executor();"))
@@ -363,7 +363,9 @@ class FirmwareContractTests(unittest.TestCase):
     def test_led_commands_route_to_k151_rgb_adapter(self) -> None:
         main = (ROOT / "src" / "main.cpp").read_text()
         meta = (ROOT / "microros_stackchan.meta").read_text()
-        smoke = (REPO_ROOT / "scripts" / "microros_agent_container.py").read_text()
+        smoke = (
+            REPO_ROOT / "scripts" / "microros_agent_container.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("#include <stackchan_msgs/srv/set_led.h>", main)
         self.assertIn("/stackchan/%s/device/led/set", main)
@@ -785,6 +787,19 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("kAudioPlaybackPullTimeoutMs = 2500", main)
         self.assertIn("kAudioPlaybackAckPublishIntervalMs = 50", main)
         self.assertIn("kAudioPlaybackChunkDiagnosticSampleInterval = 16", main)
+        self.assertIn("kAudioPlaybackLowSampleRate = 8000", main)
+        self.assertIn("kAudioPlaybackLoadedFutureChunkSlots = 32", main)
+        self.assertIn("kAudioPlaybackLoadedFutureChunkBytes = 256", main)
+        self.assertIn("play_audio_loaded_last_logged_progress_chunks", main)
+        self.assertIn(
+            "buffered_chunks > play_audio_loaded_last_logged_progress_chunks",
+            main,
+        )
+        self.assertIn("play_audio_loaded_load_active", main)
+        self.assertIn("!motion_scheduler.active && !play_audio_loaded_load_active()", main)
+        self.assertIn("audio_playback_sample_rate_supported", main)
+        self.assertIn("play_audio_sample_rate", main)
+        self.assertIn("play_audio_loaded_sample_rate", main)
         self.assertNotIn("play_audio_last_chunk_ms = now_ms;", main)
         self.assertIn("play_audio_end_of_stream_seen", main)
         self.assertIn("const bool waiting_for_gap = play_audio_pending_chunk_count > 0;", main)
@@ -851,6 +866,11 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("play_audio_chunks_seen", main)
         self.assertIn("play_audio_chunks_accepted", main)
         self.assertIn("play_audio_chunks_rejected", main)
+        self.assertIn("play_audio_last_chunk_format", main)
+        self.assertIn("play_audio_last_chunk_sample_rate", main)
+        self.assertIn("play_audio_last_chunk_channels", main)
+        self.assertIn('\\"sample_rate\\"', main)
+        self.assertIn('\\"channels\\"', main)
         self.assertIn("kAudioPlaybackSpeakerFrameSamples", main)
         self.assertIn("prepare_play_audio_speaker", main)
         self.assertIn("recover_capture_mic_after_abort", main)
@@ -887,6 +907,15 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("play_audio_loaded_last_write_ms", main)
         self.assertIn("play_audio_loaded_first_rx_ms", main)
         self.assertIn("play_audio_loaded_decode_total_ms", main)
+        self.assertIn("LoadedAudioFutureChunk", main)
+        self.assertIn("kAudioPlaybackLoadedFutureChunkSlots = 32", main)
+        self.assertIn("kAudioPlaybackLoadedFutureChunkBytes = 256", main)
+        self.assertIn("play_audio_loaded_future_chunks", main)
+        self.assertIn("buffer_loaded_audio_future_chunk", main)
+        self.assertIn("drain_loaded_audio_future_chunks", main)
+        self.assertIn("chunk->sequence <=\n            play_audio_loaded_expected_sequence +", main)
+        self.assertIn("chunk->sequence >\n      play_audio_loaded_expected_sequence +", main)
+        self.assertIn("loaded audio topic future window exceeded", main)
         self.assertIn("step_loaded_play_audio_playback", main)
         self.assertIn("const bool use_loaded_playback", main)
         self.assertIn("reset_play_audio_loaded_buffer();", main)
@@ -900,6 +929,8 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn('\\"dec_ms\\"', main)
         self.assertIn('"sequence_gap"', main)
         self.assertIn('strcmp(stage, "topic") == 0', main)
+        self.assertIn("kAudioPlaybackLoadTopicProgressEventInterval", main)
+        self.assertIn("(sequence + 1) % kAudioPlaybackLoadTopicProgressEventInterval == 0", main)
         self.assertIn("!topic_stage &&", main)
         self.assertIn("is_duplicate_loaded_audio_topic_chunk", main)
         self.assertIn("loaded audio topic duplicate chunk ignored", main)
@@ -1254,7 +1285,9 @@ class FirmwareContractTests(unittest.TestCase):
         main = (ROOT / "src" / "main.cpp").read_text()
         events = (ROOT / "include" / "stackchan" / "events.hpp").read_text()
         publishers = (ROOT / "include" / "stackchan" / "ros_publishers.hpp").read_text()
-        sweep = (REPO_ROOT / "scripts" / "microros_agent_container.py").read_text()
+        sweep = (
+            REPO_ROOT / "scripts" / "microros_agent_container.py"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("#include <M5UnitUnifiedNFC.h>", main)
         self.assertIn("#include <IRrecv.h>", main)

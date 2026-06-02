@@ -111,15 +111,19 @@ hardware bring-up issue complete.
   $env:STACKCHAN_TTS_SPEED_SCALE='1.0'
   $env:STACKCHAN_TTS_PRE_PHONEME_LENGTH='0.03'
   $env:STACKCHAN_TTS_POST_PHONEME_LENGTH='0.03'
+  $env:STACKCHAN_TTS_SAMPLE_RATE='8000'
+  $env:STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS='64'
   $env:STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD='256'
   $env:STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS='30.0'
   $env:STACKCHAN_TTS_LOADED_PLAYBACK='1'
-  $env:STACKCHAN_TTS_LOADED_TRANSPORT='carousel'
+  $env:STACKCHAN_TTS_LOADED_TRANSPORT='topic'
+  $env:STACKCHAN_TTS_LOADED_AUDIO_SPLIT_TARGET_DECODED_BYTES='16384'
+  $env:STACKCHAN_AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS='4096'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES='128'
   $env:STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES='131072'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.05'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='1'
-  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='2'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC='0.04'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS='8'
+  $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC='4'
   $env:STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES='3'
   # Optional CLI audio-play experiment only:
   # $env:STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES='32768'
@@ -128,6 +132,28 @@ hardware bring-up issue complete.
   uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-check "はい" --say-voice default --say-face happy --say-motion cheerful --say-after-face happy
   ```
 
+  For the current compact detailed-speech naturalness candidate, use the
+  dedicated helper flag instead of hand-copying the text:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-naturalness-check
+  ```
+
+  After the operator listens and all listening checks pass, rerun the same
+  candidate with an explicit verdict so the smoke log records the human result.
+  Prefer the normal build path for this final evidence; use `--skip-build` only
+  for repeated checks after a successful normal build and never with stale
+  source changes:
+
+  ```powershell
+  uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-smoke --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4 --timeout 190 --say-naturalness-check --say-operator-listening-verdict pass
+  ```
+
+  This runs one public `say` with:
+  `詳しく話すよ。中で分けて待ちを減らすよ。`
+  and default `--face happy --motion cheerful --after-face happy` hints unless
+  those hints are explicitly overridden.
+
   The smoke expects `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
   `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`, and
   `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`. When expression hints are passed,
@@ -135,31 +161,56 @@ hardware bring-up issue complete.
   `STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=1`, and
   `STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=1`; these confirm that the facade
   command carried the hints, while the operator must still confirm the visible
-  expression and motion timing. Also record whether the operator heard the
-  speaker output; `tts_finished` alone is not an audible-playback pass. For
+  expression and motion timing. For `say` checks, the helper also prints
+  `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_REQUIRED=1`,
+  `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_CHECKS=...`, and
+  `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT=unrecorded`, plus
+  `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_ISSUE=none`. These are a reminder
+  to record the human listening result; they are not automatic pass markers.
+  For `--say-naturalness-check` runs with an unrecorded verdict, the helper also
+  prints `STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_PASS_RERUN_HINT=...` with a
+  source-rebuilding pass-record command that does not expose arbitrary speech
+  text.
+  Use `--say-operator-listening-verdict pass` only if the speech was
+  intelligible, volume was acceptable, no word or sentence was truncated,
+  phrase timing did not sound chopped, and the initial wait was acceptable.
+  Use `--say-operator-listening-verdict fail` when any of those listening
+  checks fail, and add `--say-operator-listening-issue` with one of
+  `unintelligible`, `volume`, `truncation`, `phrase_chop`, `wait`,
+  `expression_timing`, or `other`. Also record whether the operator heard the
+  speaker output;
+  `tts_finished` alone is not an audible-playback pass. For
   audible-quality checks, prefer loaded playback
   (`STACKCHAN_TTS_LOADED_PLAYBACK=1`) so firmware can play a stable loaded
-  buffer. The current default sends loaded ADPCM as a bounded topic carousel
-  until firmware reports the contiguous loaded transaction complete, then starts
-  normal playback for that stable buffer. Use
-  `STACKCHAN_TTS_LOADED_TRANSPORT=pull` only when comparing against firmware
-  pull-loaded transfer, and `STACKCHAN_TTS_LOADED_TRANSPORT=service` only when
-  comparing against the older synchronous load service. Keep
+  buffer. The current default sends loaded ADPCM over the playback chunk topic
+  with bounded progress windows until firmware reports the contiguous loaded
+  transaction complete, then starts normal playback for that stable buffer. Use
+  `STACKCHAN_TTS_LOADED_TRANSPORT=carousel` only when comparing against the
+  older carousel retry path, `STACKCHAN_TTS_LOADED_TRANSPORT=pull` only when
+  comparing against firmware pull-loaded transfer, and
+  `STACKCHAN_TTS_LOADED_TRANSPORT=service` only when comparing against the
+  older synchronous load service. Keep
   `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES=128` on the current COM3
-  host serial TCP bridge for the loaded carousel path. The previous service-load
+  host serial TCP bridge for the loaded topic path. The previous service-load
   path completed short ADPCM TTS at 96 bytes while 128, 256, and 512 byte
   synchronous compressed service-load requests timed out before the first
   firmware callback response; use 96 bytes only when specifically diagnosing
   the synchronous service-load path.
-  For one-shot diagnostic loaded-topic path, keep
-  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=1` for the current
+  For normal loaded-topic path, keep
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS=8` for the current
   host-serial TCP path and
-  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=2` for normal
-  audible checks. The bridge now waits for payload-free firmware progress for
-  each loaded topic chunk and republishes the same sequence after progress
-  stalls; firmware treats same-command duplicate loaded chunks as idempotent
-  observations instead of decoding them twice. Set the progress timeout to `0`
-  only when explicitly tuning fire-and-wait transport diagnostics. The current
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC=4` for normal
+  audible checks. The bridge waits for payload-free firmware progress at
+  bounded windows and republishes the current sequence after progress stalls;
+  firmware treats same-command duplicate loaded chunks as idempotent
+  observations instead of decoding them twice. The bounded-window carousel
+  sends only `seq0` until the loaded session starts, then repeats the current
+  expected sequence before each lookahead window because firmware reports topic
+  progress at sampled intervals rather than every accepted chunk;
+  keep `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS=2` on the current
+  host-serial path unless a smoke proves a different value. A progress timeout
+  of `0` still uses the bridge bounded-window carousel path; do not use it as a
+  fire-and-wait full-payload burst on the current host-serial path. The current
   firmware keeps the loaded topic subscriber at 16 samples
   and the micro-ROS input reliable stream at 8 samples; if a smoke still reports
   `sequence_gap`, check that the rebuilt `libmicroros` cache picked up the
@@ -2242,11 +2293,453 @@ KOIZUMI-112 diagnostic firmware update:
   firmware loaded-playback speaker queue handling, then revalidated the same
   target phrase `今日は電気をたべたよ` over COM3. With 128 byte ADPCM chunks
   and `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC=0.05`, both
-  the one-shot topic path and the default carousel path completed. The target
+  the one-shot topic path and the carousel path completed. The target
   phrase used 106 chunks, 13,493 encoded bytes, 53,958 decoded bytes, and
-  completed in about 10-11 s instead of the previous 68 s paced run. Keep the
-  loaded-topic publish interval default at 0.05 s for this validated host
-  serial path; slower values remain useful only for transport diagnostics.
+  completed in about 10-11 s instead of the previous 68 s paced run. At that
+  point, the loaded-topic publish interval default stayed at 0.05 s for this
+  validated host serial path; slower values remained useful only for transport
+  diagnostics.
+- 2026-06-02 detailed-spoken-explanation follow-up rechecked the same COM3
+  host-serial loaded-topic path for natural multi-sentence speech. With 128
+  byte ADPCM chunks, `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC=0.02`
+  timed out at 21/127 loaded chunks, and `0.03` timed out at 76/122 loaded
+  chunks. `0.04` completed a short waited `say` with 125 chunks, 15,875
+  encoded bytes, and 63,486 decoded bytes. Use 0.04 s as the normal
+  loaded-topic pacing for this validated path; 0.03 s and faster remain
+  diagnostic-only until repeated hardware smokes prove reliability.
+- A follow-up two-sentence `say` smoke on 2026-06-02 showed that splitting
+  already-fit synthesized audio at a punctuation pause can be worse than one
+  loaded transaction. The bridge accepted the one CLI command but internally
+  loaded a later segment with a derived segment command id; the observed later
+  segment reached `audio_playback_load complete=true` at 58 loaded chunks and
+  29,260 decoded bytes, but the CLI had already returned recoverable
+  `TIMEOUT`. Treat this as evidence that the normal path should keep
+  short one-phrase synthesized TTS as one loaded transaction when it already
+  fits the selected loaded payload limit. Longer multi-phrase speech may still
+  use bridge-internal audio segmentation at natural silence boundaries; the
+  important contract point is that Codex and users still send one public `say`
+  command. This was a transport-completion finding only; audible naturalness
+  still needs operator-listening validation.
+- After rebuilding `stackchan_bridge` and restarting the host serial TCP
+  bridge, the same smoke no longer produced a derived segment command id. The
+  full utterance stayed one loaded transaction, proving the split-condition
+  fix. The run still timed out: the single transaction reported 116 loaded
+  chunks and 59,234 decoded bytes, with observed receive progress only reaching
+  roughly 80 buffered chunks after about 111 s of firmware receive time. This
+  separates the issues: avoidable internal segmentation is fixed, but the
+  current host-serial loaded-topic transfer can still be too slow for even a
+  short two-sentence spoken paragraph. Do not treat this as an audible-quality
+  pass.
+- After flashing firmware with a small loaded-topic future-chunk buffer, a
+  fire-and-wait diagnostic run of the same short two-sentence `say` command
+  still rejected the load with `MALFORMED_AUDIO_CHUNK(sequence_gap)`: firmware
+  had accepted `seq0`, was still waiting for `expected_seq=1`, and then
+  observed future chunks as far ahead as `received_seq=11` and later. This
+  proves the remaining failure is transport ordering/backlog after one external
+  `say` command, not Codex splitting the phrase into multiple commands. The
+  firmware loaded-topic future window was widened to 24 small chunks for the
+  128 byte ADPCM serial path before the next smoke. This remains a
+  transport-completion finding only; audible naturalness still needs
+  operator-listening validation after playback completes.
+- With the 24-slot window and inclusive boundary fix flashed, another
+  fire-and-wait diagnostic run still rejected early: firmware reached only
+  `expected_seq=2` before seeing future chunks at `received_seq=27` and later.
+  This shows the no-progress full-payload topic burst can create backlog far
+  beyond a bounded device ordering cushion. The next corrective direction is
+  bridge-internal natural audio segmentation and bounded segment loading under
+  one public `say`, not unbounded firmware RAM growth.
+- After adding bridge-internal natural audio segmentation, the same public
+  `say` generated a first firmware-facing segment of 58 chunks and 29,260
+  decoded bytes, proving the public command stayed one request while the bridge
+  split the audio internally. That first segment still rejected under
+  fire-and-wait topic diagnostics: firmware reached `expected_seq=18` and then
+  saw `received_seq=43`, again one chunk beyond the 24-slot future window. The
+  loaded-topic future window was widened to 32 small chunks for the next smoke;
+  this is still a transport/backlog experiment, not an audible-quality pass.
+- With the 32-slot future window flashed, the same public `say` still rejected
+  under no-progress full-burst diagnostics. The first internal segment remained
+  58 chunks / 29,260 decoded bytes; firmware buffered future chunks while
+  waiting near `expected_seq=9`, then rejected `received_seq=42`, one chunk
+  beyond the bounded future window. This confirms the fix is not more firmware
+  RAM. The bridge loaded-topic path now routes progress-timeout-zero diagnostics
+  through the existing bounded window carousel instead of publishing the whole
+  segment as one burst. This is a transport-completion correction only;
+  audible naturalness still needs an operator-listening pass.
+- A follow-up smoke after that bridge change rebuilt `stackchan_bridge` and ran
+  a short two-sentence `say` with progress timeout zero. The public command
+  stayed one `say`, and the bridge used an internal segment with 51 chunks /
+  25,644 decoded bytes through the bounded-window carousel. It did not fail
+  with a current-command `sequence_gap`; instead, the load timed out at 17/51
+  chunks. Treat this as progress from burst-ordering failure to a remaining
+  serial transfer throughput/progress-loop issue. This is still not an
+  audible-quality pass.
+- A later diagnostic run with anchor repeats showed the reset `seq0` could be
+  accepted, but `seq1` then failed to reach firmware and the load timed out at
+  1/51 chunks. The bridge-side playback chunk publisher had only reliable
+  depth 8 while the carousel could publish anchor repeats plus an 8-chunk
+  lookahead window. The bridge publisher history was increased to 64 and the
+  carousel now sends only `seq0` until the topic session starts, then resumes
+  repeating the current expected sequence before the lookahead window. This
+  protects the session-start anchor without starving later sampled progress
+  events; it still needs a clean hardware smoke and an operator-listening pass.
+- The next smoke rebuilt `stackchan_bridge` with bridge-side reliable depth 64
+  and the sampled-progress-aware carousel. The same short two-sentence public
+  `say` still timed out, but progressed to 19/51 chunks instead of 1/51. Events
+  showed sampled progress from `seq0`, then `seq7`, then later buffered counts
+  around 9, 11, 16, and 19 chunks, with future chunks observed beyond the
+  missing expected sequence. This confirms the bridge is again feeding
+  lookahead, but the current host-serial topic path still cannot reliably
+  deliver the missing expected sequence quickly enough for natural spoken
+  explanations. Do not count this as transport completion or audible quality.
+- The next bridge change added a bounded missing-anchor service fallback:
+  after the same expected sequence remains stuck for four carousel passes, the
+  bridge may send only that chunk through the existing load service, then
+  continue the topic carousel. This keeps the public command as one `say` and
+  keeps topic loading as the primary payload path, while avoiding a full
+  per-chunk service ACK fallback. Validate with hardware before treating it as
+  transport-complete, and still require operator listening for naturalness.
+- 2026-06-02 follow-up validation found that the fallback did not complete on
+  the K151 serial path: the bridge no longer crashed when it converted internal
+  segment metadata back to ROS `Time`, but the one-chunk load-service recovery
+  timed out. A follow-up with 256 byte ADPCM topic chunks and service recovery
+  disabled also timed out at the first segment. Keep the service recovery
+  disabled by default and treat it as diagnostic-only until a focused hardware
+  run proves it works without leaving the firmware loaded-playback session
+  stuck. This still supports the design direction that long public `say`
+  commands should be split internally after TTS, not split into multiple public
+  commands.
+- The bridge now treats failed TTS loaded preload as an internal transport
+  failure and falls back to the normal PCM streaming relay for the same public
+  `say` command. This is intended to reduce "wait, then fail" behavior while
+  preserving the user-facing single-utterance contract. It still needs hardware
+  smoke validation and operator listening before counting detailed natural
+  speech as complete.
+- A 2026-06-02 smoke with the normal loaded-topic progress timeout showed that
+  the first internally split loaded segment could complete and play, but the
+  second segment preload extended the public `say` past the CLI timeout. Later
+  streaming fallback trials also failed to carry the next PCM chunk reliably on
+  the same serial path. The bridge therefore keeps multi-segment loaded
+  playback as the normal long-speech direction and uses a smaller default split
+  target so first audio can start earlier; streaming remains a fallback when
+  loaded preload fails before playback starts.
+- A follow-up smoke confirmed that the streaming relay path was entered, but
+  firmware rejected the first PCM chunk as `UNSUPPORTED_FEATURE` when the TTS
+  audio had been synthesized at 8 kHz for loaded-preload reduction. The bridge
+  now normalizes streaming fallback audio back to baseline 16 kHz PCM while
+  keeping 8 kHz available for loaded ADPCM diagnostics.
+- After the 16 kHz streaming normalization, firmware accepted the first PCM
+  chunk but timed out waiting for the next pull response while the bridge still
+  preferred topic NACK retries. The bridge now answers prebuffered TTS pull
+  requests directly from its local buffer instead of waiting through NACK
+  retries.
+- A later long-speech smoke entered the streaming relay with all synthesized
+  chunks buffered, but the bridge still attempted the command-audio
+  loaded-preload wait before starting the firmware playback action. The bridge
+  now skips that second preload wait for TTS streaming fallback, preserving one
+  public `say` while splitting only the synthesized audio transport internally.
+  The next smoke reached firmware playback action acceptance and the first 16
+  kHz PCM chunk was accepted, but the mixed topic-window plus pull fallback
+  still missed the next chunk deadline and ended in `pull_response_timeout`.
+  A pull-led trial also missed the same service-response deadline and returned
+  `AUDIO_UNDERRUN`, so per-chunk service delivery should not become the default.
+  A follow-up trial that skipped the playback-topic subscription-count wait also
+  still missed `seq1` and produced late `chunk_without_active_goal` events.
+  Keep these as negative transport findings; the retained bridge fix is to
+  avoid re-running loaded-preload wait once TTS has already fallen back to
+  streaming.
+- A diagnostic run with explicit multi-segment loaded playback confirmed that
+  the first segment can load and play under one public `say`, and that the next
+  segment begins with a derived segment command id. The run still timed out
+  before all segments completed, so this is transport progress rather than an
+  audible-quality pass. The default split target was reduced to 16 KiB decoded
+  PCM to favor earlier first audio and shorter loaded transfers per segment.
+- The next bridge-side corrective step added progressive loaded TTS for
+  naturally punctuated short sentences. This keeps one public `say` action but
+  lets the bridge synthesize, load, and play the first sentence-like fragment
+  before waiting for the full paragraph TTS result. The fast-start path uses
+  hard punctuation only, not comma or particle fallback splitting, because those
+  fallback cuts sounded like chopped speech in earlier operator feedback. This
+  still needs K151 smoke validation and an operator-listening pass before it can
+  count as natural detailed speech.
+- K151 smoke validation of that progressive path confirmed the bridge entered
+  the intended one-public-`say` / internal-segment route: the firmware-facing
+  command ids used derived `-s01` and `-s02` suffixes, `s01` reached loaded
+  topic completion, the playback action was accepted, and speaker frames were
+  queued. The smoke still returned a public `say` timeout before all internal
+  segments completed. This proves the external command contract is now right,
+  but the loaded-topic transfer is still too slow for natural detailed speech
+  on the current host-serial path.
+- A diagnostic run with 256 byte ADPCM loaded-topic chunks and a wider progress
+  window did not fix the latency; progress stalled at the first segment's early
+  window and the bridge then timed out. The bridge now treats an explicit
+  progressive first-segment load failure as the same public `say` failure rather
+  than falling through to a second full-utterance TTS/load attempt, because that
+  fallback only made the user wait longer. A follow-up service-load diagnostic
+  also exceeded the outer command timeout, so neither 256 byte topic chunks nor
+  service-load delivery should be promoted to the default path from this
+  evidence.
+- A short one-sentence `say` smoke after the one-phrase split fix completed
+  without derived `-s01` / `-s02` segment command ids. The public command id
+  stayed on the loaded playback transaction, `tts_finished`,
+  `loaded_playback_started`, and `speaker_frame_queued` were observed, so the
+  bridge no longer splits a single natural sentence merely to shorten the
+  transport. The run still needed about 36.8 s of firmware receive time for
+  28 loaded topic chunks / 14,244 decoded bytes. This is useful contract
+  evidence, but it is not a natural detailed-speech pass; the remaining issue
+  is loaded-topic transfer latency on the current host-serial path.
+- After flashing the firmware that samples loaded-topic progress events, the
+  same short `元気だよ。` smoke still completed as one public `say` without
+  derived segment ids. It used 28 loaded topic chunks / 14,244 decoded bytes and
+  still needed about 37.9 s of firmware receive time, with sampled progress at
+  chunks 1, 8, 16, 24, and 28. This proves duplicate progress-event suppression
+  reduced event volume but did not fix loaded-topic receive latency.
+- A follow-up two-sentence `say` smoke, still one public `say`, completed with
+  progressive internal segments `-s01` and `-s02`. The first internal segment
+  loaded 53 chunks / 26,980 decoded bytes in about 71.5 s and played; the
+  second loaded 37 chunks / 18,512 decoded bytes in about 50.7 s and played,
+  followed by `tts_finished` for the original public command id. This validates
+  the command contract and internal sequencing, but the operator-facing delay is
+  still far too long for natural detailed speech. The observed per-window
+  receive gaps remained around 1.1 s, so the next firmware experiment suppresses
+  unrelated low-rate runtime telemetry during incomplete loaded audio loads.
+- After flashing that runtime-telemetry suppression change, the same short
+  `元気だよ。` smoke completed with the one public command id and loaded 28
+  chunks / 14,244 decoded bytes in about 1.12 s instead of about 37.9 s. The
+  sampled receive gaps dropped from roughly 1.1 s to tens of milliseconds. A
+  two-sentence public `say` then completed with progressive internal `-s01` and
+  `-s02` segments: `s01` loaded 53 chunks / 26,980 decoded bytes in about
+  2.48 s, and `s02` loaded 37 chunks / 18,512 decoded bytes in about 1.94 s,
+  followed by `tts_finished` for the original public command id. This is the
+  first K151 evidence that the single public `say` plus bridge-internal
+  sentence segmentation can be fast enough for natural short explanations on
+  the host-serial path. Audible quality and perceived pause naturalness still
+  require an operator-listening pass.
+- A follow-up bridge rebuild changed progressive text segmentation to group
+  adjacent short sentence-like fragments before synthesis, and changed the
+  normal loaded-TTS path to keep any already-fit utterance as one loaded
+  transaction. The K151 smoke for
+  `今日は電気をたべたよ。元気が出たよ。` then completed as one public command
+  id with no derived `-s01` / `-s02` loaded-playback ids. Firmware received one
+  loaded transaction of 98 chunks / 49,946 decoded bytes in about 4.32 s,
+  followed by `tts_finished`, `loaded_playback_started`, and
+  `speaker_frame_queued`. This removes the artificial reload pause for short
+  connected two-sentence utterances while preserving the single public `say`
+  contract. Longer detailed explanations may still be grouped internally when
+  they exceed the configured progressive text segment size, and perceived
+  naturalness still needs an operator-listening pass.
+- A longer four-sentence explanation smoke then exposed a validation helper
+  gap: `STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS` was not passed into
+  the Docker smoke container, and the first text group could exceed the 32 KiB
+  encoded loaded payload buffer. In that state the bridge fell back to full
+  utterance TTS and then split the synthesized audio into 10 loaded playback
+  segments, including a final 243 chunk / 124,172 decoded-byte segment. That
+  completed as one public `say`, but it is not the intended natural detailed
+  speech path.
+- The smoke helper now passes the progressive text controls through to the
+  container, and the default progressive group bound is 32 characters. With
+  `STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS=32`, the same
+  four-sentence explanation completed as one public `say` using four
+  sentence-sized progressive loaded TTS groups instead of the full-audio
+  10-segment fallback. The groups loaded as 120 chunks / 61,228 decoded bytes
+  in about 5.57 s, 140 chunks / 71,656 decoded bytes in about 7.46 s,
+  145 chunks / 73,898 decoded bytes in about 7.79 s, and 149 chunks /
+  75,864 decoded bytes in about 7.98 s, followed by `tts_finished` for the
+  original public command id. The smoke phase took about 70 s versus about
+  93 s for the unintended 10-segment full-audio fallback. This is transport
+  evidence that detailed speech now uses one public command with internal
+  sentence groups; audible naturalness still needs an operator-listening pass.
+- A diagnostic repeat with
+  `STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PUBLISH_INTERVAL_SEC=0.03` also
+  completed the four progressive groups, but it reported bridge liveness
+  timeouts and the smoke phase grew to about 122 s. Keep 0.04 s as the standard
+  loaded-topic pacing on this host-serial path unless repeated hardware smokes
+  prove a faster value is reliable and improves end-to-end audible behavior.
+- A follow-up bridge smoke added PC-side TTS prefetch for progressive groups:
+  after each group is loaded and before it is played, the bridge starts
+  synthesizing the next group in a background worker. The same four-sentence
+  explanation still completed as one public `say` with four sentence-sized
+  progressive groups, emitted `tts progressive loaded playback synth prefetch`
+  for segments 2, 3, and 4, and avoided the full-audio 10-segment fallback.
+  The smoke phase was about 69 s, similar to the previous 70 s because the
+  dominant remaining wait is serialized loaded-topic transfer, not local TTS
+  synthesis. This is a small naturalness improvement because inter-group gaps
+  no longer need to include next-group synthesis time, but audible naturalness
+  still requires operator listening.
+- A direct comparison with `STACKCHAN_TTS_LOADED_PLAYBACK=0` showed that the
+  streaming relay is still not a usable long-form speech replacement on this
+  host-serial path. The same four-sentence explanation buffered 3,708 small
+  streaming chunks and entered the relay, but firmware pull responses stalled
+  with repeated `pull_response_timeout`; `stackchanctl say --wait` returned
+  `TIMEOUT` and no `tts_finished` event was observed. Do not route normal
+  detailed speech to the streaming relay until a separate relay fix proves
+  continuous playback completion.
+- A loaded-progressive diagnostic with
+  `STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOAD_CHUNK_BYTES=256` also failed on the
+  first progressive group. Firmware progress stopped around sequence 7 and the
+  bridge exhausted three progress retries, returning `TIMEOUT` without
+  `tts_finished`. Keep 128 byte ADPCM loaded-topic chunks as the standard for
+  the current host-serial path. The remaining operator-facing pause is the
+  serialized loaded-topic transfer between progressive groups, not TTS
+  synthesis or public command splitting.
+- The bridge then changed progressive text grouping from fixed character-sized
+  groups to synthesized-size-aware candidate grouping. With
+  `STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS=64`, the same four-sentence
+  explanation first considered larger candidate groups, then fell back to
+  single-sentence groups when the paired candidates did not fit the encoded
+  loaded payload buffer. The public `say` still completed, `tts_finished` was
+  observed, and the logs showed `source_fragments=1-1/4` through
+  `source_fragments=4-4/4`. This preserves the option to merge shorter
+  adjacent sentences when they really fit, without falling through to the
+  unintended full-audio 10-segment fallback.
+- A follow-up liveness fix updates bridge liveness from firmware events and
+  suppresses `device_disconnected(liveness_timeout)` while a media action is
+  active. The same four-sentence loaded-progressive smoke completed with no
+  `device_disconnected` or `liveness_timeout` events in the filtered output.
+  This removes a distracting bridge-status glitch during long speech playback;
+  it does not remove the audible serialized transfer pauses between loaded
+  groups.
+- An operator-listening sample command then used one public `say` with
+  `--face happy --motion cheerful --after-face happy` and three short
+  explanation sentences:
+  `今の設定では、一回の発話の中で文を自然にまとめるよ。大きすぎる文は中で分けて、次の音声も先に準備するよ。だから詳しい説明でも、できるだけつながって聞こえるようにしたよ。`
+  The smoke completed with the face, motion, and after-face hints present in
+  CLI JSON, `tts_finished` observed, no filtered `device_disconnected` /
+  `liveness_timeout` events, and three progressive sentence-sized loaded
+  groups. Those groups loaded 158 chunks / 80,618 decoded bytes in about
+  7.91 s, 155 chunks / 79,078 decoded bytes in about 7.29 s, and 157 chunks /
+  80,018 decoded bytes in about 8.61 s. This is the current listening-candidate
+  configuration for "detailed but natural" speech; whether the inter-group
+  transfer pauses are acceptable still requires the operator's listening
+  verdict.
+- A more speech-compressed listening sample then used one public `say` with
+  `--face happy --motion cheerful --after-face happy` and:
+  `一回で話すよ。長い説明は中で分けるよ。待ちを減らしてつなぐよ。`
+  The dynamic progressive path grouped all three source sentences into one
+  loaded playback transaction with the original public command id, not a
+  derived `-s01` segment id. The run observed `loaded_playback_started`,
+  `speaker_frame_queued`, and `tts_finished`; the face, motion, and after-face
+  hints were present in CLI JSON. The single loaded transaction used
+  184 chunks / 94,150 decoded bytes and loaded in about 9.10 s; the smoke phase
+  took about 31 s. This is the current best listening candidate for a detailed
+  but natural spoken summary: compact enough to avoid inter-group transfer
+  pauses while still explaining the behavior.
+  Count this candidate as complete only after an operator-listening verdict.
+  The required transport evidence is `result_state=COMPLETED`,
+  `STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=1`, observed
+  `loaded_playback_started` and `speaker_frame_queued`, the original public
+  command id on the single loaded transaction with no derived `-s01` segment
+  id, and no filtered `device_disconnected` or `liveness_timeout` event. The
+  required listening evidence is that the speech is intelligible, volume is
+  acceptable, no word or sentence is truncated, phrase-level timing does not
+  sound chopped, and the initial load delay feels acceptable for a physical
+  avatar answer that also carries face and motion expression. If the operator
+  reports unnatural waiting, first shorten the spoken summary toward 20-25
+  Japanese characters and leave the detailed explanation in text. If the
+  operator reports unclear audio or poor volume, treat that as TTS/audio tuning
+  rather than a command-splitting issue. If audible gaps appear inside the
+  summary, verify the run stayed one loaded transaction and did not create
+  derived segment command ids before changing the Codex skill wording.
+- A repeat smoke of the same speech-compressed candidate on 2026-06-02 used
+  the same one public `say` with face, motion, and after-face hints. The CLI
+  returned `result_state=COMPLETED`, with
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`,
+  `STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=1`,
+  `STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=1`, and
+  `STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=1`. Firmware events showed the single
+  loaded transaction for the original public command id progressing to
+  `complete=true` at 184 chunks / 94,150 decoded bytes, with receive time about
+  8.63 s, followed by playback action events. The smoke checks phase took
+  about 30 s. This is another transport pass for one-command compact detailed
+  speech; it is still not an audible-naturalness pass until the operator
+  records the listening verdict.
+- A shorter candidate then tested the same meaning without increasing speech
+  speed:
+  `詳しい話は一回で。中で分け、待ちを減らすよ。`
+  Offline synthesis at 8 kHz with the same VOICEVOX tuning produced 72,346 PCM
+  bytes, about 4.52 s of audio, compared with 94,150 PCM bytes / about 5.88 s
+  for the 31 character candidate. The K151 smoke completed as one public `say`
+  with face, motion, and after-face hints; CLI JSON reported
+  `result_state=COMPLETED`, and the smoke reported
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `STACKCHAN_BRIDGE_SAY_VOICE_PROFILE_SEEN=1`,
+  `STACKCHAN_BRIDGE_SAY_FACE_HINT_SEEN=1`,
+  `STACKCHAN_BRIDGE_SAY_MOTION_HINT_SEEN=1`, and
+  `STACKCHAN_BRIDGE_SAY_AFTER_FACE_SEEN=1`. Firmware loaded-topic events used
+  the original public command id, reached `complete=true` at 142 chunks /
+  72,346 decoded bytes, and reported about 6.62 s receive time; the smoke
+  checks phase took about 27 s. Treat 20-25 Japanese characters as the current
+  better target for compact detailed speech when initial waiting is the main
+  naturalness risk. This remains a transport pass until the operator records
+  intelligibility, volume, truncation, and perceived-wait verdicts.
+- A still shorter 20 character candidate preserved the same user-facing
+  decision without increasing speech speed:
+  `詳しく話すよ。中で分けて待ちを減らすよ。`
+  Offline synthesis at 8 kHz with the same VOICEVOX tuning produced 56,842 PCM
+  bytes, about 3.55 s of audio. The K151 smoke completed as one public `say`
+  with face, motion, and after-face hints; CLI JSON reported
+  `result_state=COMPLETED`, and the smoke reported the expected
+  `STACKCHAN_BRIDGE_SAY_*` completion and hint markers. Firmware loaded-topic
+  events used the original public command id, reached `complete=true` at
+  112 chunks / 56,842 decoded bytes, and reported about 5.19 s receive time;
+  the smoke checks phase took about 23 s. This is the best transport candidate
+  so far for "detailed but natural" spoken summaries: it keeps the speech
+  detailed enough to explain the behavior, while leaving full technical detail
+  in text. It is still not an audible-naturalness pass until the operator
+  records intelligibility, volume, truncation, and perceived-wait verdicts.
+- The same candidate was then wired into the smoke helper as
+  `--say-naturalness-check`, which sets that text and default
+  `--face happy --motion cheerful --after-face happy` hints unless explicitly
+  overridden. A K151 repeat run with the flag completed as one public `say`;
+  CLI JSON reported `result_state=COMPLETED`, `text_length=20`, and the
+  expected face, motion, and after-face hint fields. Firmware loaded-topic
+  events again used the original public command id, reached `complete=true` at
+  112 chunks / 56,842 decoded bytes, and reported about 5.29 s receive time;
+  the smoke checks phase took about 24 s. Use this flag for repeated
+  naturalness checks so the spoken text stays comparable across runs. The
+  helper still prints the operator-listening gate as unrecorded; the run remains
+  a transport pass, not an audible-naturalness pass, until a human listening
+  verdict is recorded.
+- After fixing the progressive `say` path to call the hard-punctuation-only
+  progressive splitter, a no-`--skip-build` K151 repeat rebuilt
+  `stackchan_bridge` and completed the same `--say-naturalness-check` as one
+  public `say`. The run reported `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `text_length=20`, and the expected voice, face, motion, and after-face
+  markers. Firmware loaded-topic events used the original public command id and
+  reached `complete=true` at 112 chunks / 56,842 decoded bytes with about
+  5.24 s receive time; the smoke checks phase took about 24 s after a 4 s ROS
+  package rebuild. This proves the corrected source tree still passes the
+  transport path. It is still not an audible-naturalness pass until an operator
+  listening verdict is recorded.
+- After adding the naturalness pass rerun hint, another K151
+  `--say-naturalness-check` completed as one public `say` with
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1`, `text_length=20`, and the expected voice,
+  face, motion, and after-face markers. ROS sources were unchanged, so the
+  helper reused the current symlink install rather than a stale install. Firmware
+  loaded-topic events again used the original public command id and reached
+  `complete=true` at 112 chunks / 56,842 decoded bytes with about 5.16 s receive
+  time; the smoke checks phase took about 24 s. This confirms the post-hint
+  source path still passes transport and emits the listening-record workflow, but
+  it remains unrecorded audible quality until an operator verdict is captured.
+- The operator then listened to the same `--say-naturalness-check` candidate on
+  K151 and judged the audible result acceptable. The unrecorded listening run
+  completed as one public `say` with `STACKCHAN_BRIDGE_SAY_COMPLETED=1`,
+  `text_length=20`, expected voice/face/motion/after-face markers, a loaded
+  topic completion at 112 chunks / 56,842 decoded bytes, about 5.41 s receive
+  time, and a smoke checks phase around 24 s. The first attempt to record
+  `--say-operator-listening-verdict pass` is not valid audible-pass evidence:
+  the `say` command was rejected with `UNSUPPORTED_FEATURE` /
+  `speaker begin failed`, `STACKCHAN_BRIDGE_SAY_COMPLETED=0`, and no
+  `tts_finished` observation. After a 10 s settle delay, the same pass-record
+  command completed with smoke exit 0. That successful retry reported
+  `result_state=COMPLETED`, command id
+  `e7189767-53c3-49c0-90a0-096596930c8e`,
+  `STACKCHAN_BRIDGE_SAY_COMPLETED=1`, expected voice/face/motion/after-face
+  markers, loaded-topic `complete=true` at 112 chunks / 56,842 decoded bytes
+  with about 5.12 s receive time, `--say-operator-listening-verdict pass`, and
+  issue `none`. Count only this successful retry, together with the operator's
+  "OK. 許容範囲内" listening judgment, as the audible-naturalness pass for the
+  compact detailed spoken summary.
 - KOIZUMI-178 focused playback follow-up on 2026-05-29 found that the current
   bridge can convert a 500 ms `stackchanctl audio play --wait` tone into the
   loaded playback transaction before starting firmware playback. The run used

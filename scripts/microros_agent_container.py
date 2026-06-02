@@ -18,6 +18,7 @@ DEFAULT_PTY = "/tmp/stackchan-tty"
 DEFAULT_EVENT_TOPIC = "/stackchan/default/device/events"
 DEFAULT_PUBLIC_EVENT_TOPIC = "/stackchan/default/events"
 DEFAULT_EVENT_TYPE = "stackchan_msgs/msg/StackChanEvent"
+DEFAULT_SAY_NATURALNESS_CHECK_TEXT = "詳しく話すよ。中で分けて待ちを減らすよ。"
 ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_FIRST_GOAL_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_CHUNK_BYTES",
@@ -32,16 +33,23 @@ ENV_PASSTHROUGH = (
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_WINDOW_CHUNKS",
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_TIMEOUT_SEC",
     "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_PROGRESS_RETRIES",
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_REPEATS",
+    "STACKCHAN_AUDIO_PLAYBACK_LOADED_TOPIC_ANCHOR_SERVICE_AFTER_PASSES",
     "STACKCHAN_AUDIO_PLAYBACK_COMMAND_LOADED_MAX_DECODED_BYTES",
     "STACKCHAN_AUDIO_PLAYBACK_ADPCM_LOADED_MAX_DECODED_BYTES",
+    "STACKCHAN_AUDIO_PLAYBACK_BUFFER_MAX_CHUNKS",
     "STACKCHAN_AUDIO_PLAYBACK_PULL_ONLY",
     "STACKCHAN_TTS_LOADED_PLAYBACK",
     "STACKCHAN_TTS_LOADED_ADPCM",
     "STACKCHAN_TTS_LOADED_TRANSPORT",
     "STACKCHAN_TTS_LOADED_SPLIT_OVERSIZE",
+    "STACKCHAN_TTS_LOADED_AUDIO_SPLIT_TARGET_DECODED_BYTES",
+    "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENTS",
+    "STACKCHAN_TTS_PROGRESSIVE_TEXT_SEGMENT_MAX_CHARS",
     "STACKCHAN_TTS_ENDPOINT",
     "STACKCHAN_TTS_POST_PHONEME_LENGTH",
     "STACKCHAN_TTS_PRE_PHONEME_LENGTH",
+    "STACKCHAN_TTS_SAMPLE_RATE",
     "STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS",
     "STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD",
     "STACKCHAN_TTS_SPEED_SCALE",
@@ -370,6 +378,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run this text through stackchanctl say with local TTS enabled.",
     )
     tcp_pty_bridge.add_argument(
+        "--say-naturalness-check",
+        action="store_true",
+        help=(
+            "Use the current compact detailed-speech listening candidate for "
+            "--say-check, with default expression hints when unset."
+        ),
+    )
+    tcp_pty_bridge.add_argument(
         "--say-voice",
         default="default",
         help="Bridge-owned voice profile used by --say-check.",
@@ -388,6 +404,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--say-after-face",
         default="",
         help="After-speech face hint passed to stackchanctl say during --say-check.",
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-operator-listening-verdict",
+        choices=("unrecorded", "pass", "fail"),
+        default="unrecorded",
+        help=(
+            "Record the human listening verdict for a say check. This does not "
+            "change transport checks; use pass only after the operator heard "
+            "intelligible, untruncated, natural speech with acceptable waiting."
+        ),
+    )
+    tcp_pty_bridge.add_argument(
+        "--say-operator-listening-issue",
+        choices=(
+            "none",
+            "unintelligible",
+            "volume",
+            "truncation",
+            "phrase_chop",
+            "wait",
+            "expression_timing",
+            "other",
+        ),
+        default="none",
+        help=(
+            "Bounded issue category for a failed say listening verdict. Use "
+            "none with unrecorded/pass, and a specific issue with fail."
+        ),
     )
     tcp_pty_bridge.add_argument(
         "--allow-missing-firmware-ready",
@@ -1403,11 +1447,67 @@ def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     disconnect_face_command = args.disconnect_face_command.strip()
     face_check = args.face_check.strip()
     say_check = args.say_check.strip()
+    if args.say_naturalness_check and not say_check:
+        say_check = DEFAULT_SAY_NATURALNESS_CHECK_TEXT
     say_check_arg = shlex.quote(say_check)
     say_voice = shlex.quote(args.say_voice.strip() or "default")
-    say_face = args.say_face.strip()
-    say_motion = args.say_motion.strip()
-    say_after_face = args.say_after_face.strip()
+    say_face = args.say_face.strip() or (
+        "happy" if args.say_naturalness_check and say_check else ""
+    )
+    say_motion = args.say_motion.strip() or (
+        "cheerful" if args.say_naturalness_check and say_check else ""
+    )
+    say_after_face = args.say_after_face.strip() or (
+        "happy" if args.say_naturalness_check and say_check else ""
+    )
+    say_operator_listening_verdict = args.say_operator_listening_verdict
+    say_operator_listening_issue = args.say_operator_listening_issue
+    if (
+        say_operator_listening_verdict in {"unrecorded", "pass"}
+        and say_operator_listening_issue != "none"
+    ):
+        raise SystemExit(
+            "--say-operator-listening-issue must be none when verdict is unrecorded or pass"
+        )
+    if say_operator_listening_verdict == "fail" and say_operator_listening_issue == "none":
+        raise SystemExit("--say-operator-listening-issue is required when verdict is fail")
+    say_operator_listening_pass_hint = ""
+    if (
+        args.say_naturalness_check
+        and say_check
+        and say_operator_listening_verdict == "unrecorded"
+    ):
+        pass_hint_command = " ".join(
+            shlex.quote(part)
+            for part in (
+                "uv",
+                "run",
+                "--no-project",
+                "python",
+                "scripts/microros_agent_container.py",
+                "tcp-pty-bridge-smoke",
+                "--tcp-host",
+                args.tcp_host,
+                "--tcp-port",
+                str(args.tcp_port),
+                "--baud",
+                str(args.baud),
+                "--verbose",
+                str(args.verbose),
+                "--timeout",
+                str(args.timeout),
+                "--say-naturalness-check",
+                "--say-operator-listening-verdict",
+                "pass",
+            )
+        )
+        say_operator_listening_pass_hint = (
+            "  echo "
+            + shlex.quote(
+                "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_PASS_RERUN_HINT="
+                + pass_hint_command
+            )
+        )
     say_hint_args = " ".join(
         option
         for option in (
@@ -1628,6 +1728,11 @@ if [ -n "{say_check}" ]; then
   say_tts_finished_result=$?
   echo "STACKCHAN_BRIDGE_SAY_TTS_FINISHED_SEEN=$([ "$say_tts_finished_result" -eq 0 ] && echo 1 || echo 0)"
   [ "$say_tts_finished_result" -eq 0 ] || result=1
+  echo "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_REQUIRED=1"
+  echo "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_CHECKS=intelligible,volume_ok,no_truncation,no_phrase_chop,wait_acceptable"
+  echo "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_VERDICT={say_operator_listening_verdict}"
+  echo "STACKCHAN_BRIDGE_SAY_OPERATOR_LISTENING_ISSUE={say_operator_listening_issue}"
+{say_operator_listening_pass_hint}
   if printf '%s\n' "$say_events_output" | grep -q 'firmware_ready'; then
     firmware_ready_seen=1
   fi
