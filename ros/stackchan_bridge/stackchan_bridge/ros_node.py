@@ -4967,22 +4967,25 @@ def main(args: list[str] | None = None) -> None:
                 return result
             motion_hint_result = self._run_say_motion_hint(device_id, request, meta)
             if motion_hint_result is not None and not motion_hint_result.ok:
-                _copy_result(result.result, motion_hint_result)
+                self.get_logger().warning(
+                    "say motion hint failed; continuing speech "
+                    f"device_id={device_id!r} command_id={meta.command_id!r} "
+                    f"error_code={motion_hint_result.error_code!r}"
+                )
                 self._handle_speech_event(
                     SpeechEvent(
                         device_id=device_id,
-                        event_name="tts_failed",
+                        event_name="tts_expression_degraded",
                         command_id=meta.command_id,
                         source="bridge",
                         payload={
                             "voice_profile": profile.name,
                             "provider": profile.provider,
+                            "hint_type": "motion",
                             "error_code": motion_hint_result.error_code,
                         },
                     )
                 )
-                goal_handle.abort()
-                return result
             if loaded_result is not None and loaded_result.ok:
                 playback_result = self._play_loaded_tts_segments(
                     device_id,

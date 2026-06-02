@@ -229,7 +229,7 @@ consume them safely.
 ```bash
 stackchanctl say "テスト終わったよ"
 stackchanctl say --voice default "テスト終わったよ"
-stackchanctl say --face happy --motion cheerful --after-face happy "できたよ"
+stackchanctl say --face happy --after-face happy "できたよ"
 stackchanctl face happy
 stackchanctl motion nod
 stackchanctl motion pose --pan-deg 30 --tilt-deg 20 --speed 500
@@ -265,8 +265,7 @@ Examples:
 ```bash
 stackchanctl --device default observe
 stackchanctl --device desk say "テスト終わったよ"
-stackchanctl --device desk say --motion cheerful "できたよ"
-stackchanctl --device desk say --face happy --motion cheerful --after-face happy "できたよ"
+stackchanctl --device desk say --face happy --after-face happy "できたよ"
 stackchanctl --device livingroom motion nod
 ```
 
@@ -286,6 +285,9 @@ Expected backend behavior:
 - The bridge starts face and motion hints after TTS synthesis/preload and just
   before firmware audio playback, so short gestures can align with the spoken
   line.
+- A motion hint is expressive, not speech-critical. If the firmware rejects the
+  motion hint, the bridge records a bounded `tts_expression_degraded` event and
+  continues the speech playback when the audio path is otherwise ready.
 - After playback completes, the bridge applies `--after-face` when provided. If
   it is omitted, the bridge keeps a cute/restful expression instead of
   unconditionally returning to `neutral`: `happy`, `thinking`, `sleepy`, and
@@ -1236,6 +1238,18 @@ delegates the command to Docker unless
 `STACKCHANCTL_BRIDGE_CONTAINER` and
 `STACKCHANCTL_BRIDGE_CONTAINER_WORKSPACE` when the running ROS 2 container uses
 different names or mount points.
+
+For repeated PowerShell hardware commands over the documented host serial TCP
+bridge, start that default container with:
+
+```powershell
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-live --replace --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
+```
+
+The live container runs `socat`, the micro-ROS Agent, and
+`stackchan_bridge_node` together. It stops when one of those processes exits, so
+delegated `stackchanctl --backend bridge` calls do not keep entering a stale
+container whose facade services are no longer alive.
 
 Audio bring-up diagnostics may also use:
 

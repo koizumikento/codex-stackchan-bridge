@@ -60,6 +60,27 @@ def bridge_smoke_args(
     )
 
 
+def bridge_live_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        image="test-image",
+        skip_build=True,
+        clean_ros_build=False,
+        allow_stale_install=False,
+        tcp_host="host.docker.internal",
+        tcp_port=11411,
+        pty="/tmp/stackchan-test-pty",
+        baud=921600,
+        verbose=4,
+        timeout=190,
+        name="stackchan-e2e-live",
+        replace=True,
+        foreground=False,
+        tts_endpoint="http://host.docker.internal:50021",
+        disable_tts=False,
+        restart_policy="no",
+    )
+
+
 def sensor_sweep_args() -> argparse.Namespace:
     return argparse.Namespace(
         image="test-image",
@@ -365,6 +386,28 @@ class MicroRosAgentContainerTests(unittest.TestCase):
         args.say_operator_listening_issue = "wait"
         with self.assertRaises(SystemExit):
             microros_agent_container.run_tcp_pty_bridge_smoke(args)
+
+    def test_bridge_live_starts_named_container_for_host_cli_delegate(self) -> None:
+        args = bridge_live_args()
+        with mock.patch.object(
+            microros_agent_container,
+            "docker_run",
+            return_value=0,
+        ) as docker_run:
+            microros_agent_container.run_tcp_pty_bridge_live(args)
+
+        command = docker_run.call_args.args[1]
+        kwargs = docker_run.call_args.kwargs
+        self.assertEqual(kwargs["name"], "stackchan-e2e-live")
+        self.assertTrue(kwargs["replace"])
+        self.assertTrue(kwargs["detach"])
+        self.assertTrue(kwargs["mount_workspace"])
+        self.assertEqual(kwargs["workdir"], microros_agent_container.WORKSPACE)
+        self.assertIn("STACKCHAN_BRIDGE_LIVE_READY=1", command)
+        self.assertIn("stackchan_bridge_node", command)
+        self.assertIn("micro_ros_agent serial", command)
+        self.assertIn("wait -n", command)
+        self.assertIn("tts_enabled:=true", command)
 
     def test_sensor_sweep_walks_media_terminal_events_after_pre_command_cursor(self) -> None:
         with mock.patch.object(

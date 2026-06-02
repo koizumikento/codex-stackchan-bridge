@@ -89,6 +89,8 @@ def main() -> int:
         return run_tcp_pty_loaded_audio_probe(args)
     if args.command == "tcp-pty-bridge-smoke":
         return run_tcp_pty_bridge_smoke(args)
+    if args.command == "tcp-pty-bridge-live":
+        return run_tcp_pty_bridge_live(args)
     if args.command == "serial":
         return run_serial(args)
 
@@ -497,6 +499,53 @@ def build_parser() -> argparse.ArgumentParser:
         default=30,
         help="Seconds between soak observe checks.",
     )
+
+    tcp_pty_live = subparsers.add_parser(
+        "tcp-pty-bridge-live",
+        help=(
+            "Start a named Agent plus stackchan_bridge container for repeated "
+            "host stackchanctl --backend bridge commands."
+        ),
+    )
+    tcp_pty_live.add_argument("--tcp-host", default=DEFAULT_TCP_HOST)
+    tcp_pty_live.add_argument("--tcp-port", type=int, default=DEFAULT_TCP_PORT)
+    tcp_pty_live.add_argument("--pty", default=DEFAULT_PTY)
+    tcp_pty_live.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    tcp_pty_live.add_argument("--verbose", type=int, default=4)
+    tcp_pty_live.add_argument("--timeout", type=int, default=190)
+    tcp_pty_live.add_argument("--name", default="stackchan-e2e-live")
+    tcp_pty_live.add_argument(
+        "--replace",
+        action="store_true",
+        help="Remove an existing container with the same name before starting.",
+    )
+    tcp_pty_live.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run in the foreground instead of starting a detached container.",
+    )
+    tcp_pty_live.add_argument(
+        "--tts-endpoint",
+        default="http://host.docker.internal:50021",
+        help="Local bridge-owned TTS endpoint for stackchanctl say.",
+    )
+    tcp_pty_live.add_argument(
+        "--disable-tts",
+        action="store_true",
+        help="Start the bridge without the local TTS provider.",
+    )
+    tcp_pty_live.add_argument(
+        "--restart-policy",
+        default="no",
+        choices=("no", "unless-stopped", "on-failure"),
+        help="Docker restart policy for the live container.",
+    )
+    tcp_pty_live.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Use the existing install/ workspace instead of rebuilding ROS packages.",
+    )
+    add_ros_smoke_build_arguments(tcp_pty_live)
 
     serial = subparsers.add_parser(
         "serial",
@@ -1440,6 +1489,81 @@ exit "$result"
     )
 
 
+def run_tcp_pty_bridge_live(args: argparse.Namespace) -> int:
+    setup_script = ros_smoke_setup_script(args)
+    tts_enabled = "0" if args.disable_tts else "1"
+    tts_endpoint = shlex.quote(
+        args.tts_endpoint.strip() or "http://host.docker.internal:50021"
+    )
+    media_action_timeout = f"{float(args.timeout):.1f}"
+    command = f"""
+set -e
+{setup_script}
+export PYTHONPATH={WORKSPACE}/apps/stackchanctl/src:${{PYTHONPATH:-}}
+bridge_node={WORKSPACE}/install/stackchan_bridge/lib/stackchan_bridge/stackchan_bridge_node
+bridge_args=""
+if [ "{tts_enabled}" = "1" ]; then
+  export STACKCHAN_TTS_ENDPOINT=${{STACKCHAN_TTS_ENDPOINT:-{tts_endpoint}}}
+  export STACKCHAN_TTS_SPEED_SCALE="${{STACKCHAN_TTS_SPEED_SCALE:-1.0}}"
+  export STACKCHAN_TTS_PRE_PHONEME_LENGTH="${{STACKCHAN_TTS_PRE_PHONEME_LENGTH:-0.03}}"
+  export STACKCHAN_TTS_POST_PHONEME_LENGTH="${{STACKCHAN_TTS_POST_PHONEME_LENGTH:-0.03}}"
+  export STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD="${{STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD:-256}}"
+  export STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS="${{STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS:-30.0}}"
+  bridge_args="--ros-args -p tts_enabled:=true -p tts_endpoint:=$STACKCHAN_TTS_ENDPOINT -p tts_speed_scale:=$STACKCHAN_TTS_SPEED_SCALE -p tts_pre_phoneme_length:=$STACKCHAN_TTS_PRE_PHONEME_LENGTH -p tts_post_phoneme_length:=$STACKCHAN_TTS_POST_PHONEME_LENGTH -p tts_silence_trim_threshold:=$STACKCHAN_TTS_SILENCE_TRIM_THRESHOLD -p tts_silence_trim_margin_ms:=$STACKCHAN_TTS_SILENCE_TRIM_MARGIN_MS -p device_media_action_timeout_sec:={media_action_timeout}"
+fi
+rm -f {args.pty}
+socat -d -d pty,raw,echo=0,link={args.pty} tcp:{args.tcp_host}:{args.tcp_port} 2>/tmp/stackchan-socat.log &
+socat_pid=$!
+agent_pid=
+bridge_pid=
+cleanup() {{
+  kill $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+  wait $bridge_pid $agent_pid $socat_pid 2>/dev/null || true
+}}
+trap cleanup EXIT
+for i in $(seq 1 50); do
+  [ -e {args.pty} ] && break
+  sleep 0.1
+done
+if [ ! -e {args.pty} ]; then
+  echo "stackchan live bridge failed to create PTY {args.pty}" >&2
+  exit 1
+fi
+ros2 run micro_ros_agent micro_ros_agent serial --dev {args.pty} -b {args.baud} -v{args.verbose} >/tmp/stackchan-agent.log 2>&1 &
+agent_pid=$!
+sleep 5
+"$bridge_node" $bridge_args >/tmp/stackchan-bridge.log 2>&1 &
+bridge_pid=$!
+for i in $(seq 1 80); do
+  if ros2 service list | grep -q '^/stackchan/default/cmd/get_status$'; then
+    echo "STACKCHAN_BRIDGE_LIVE_READY=1"
+    break
+  fi
+  sleep 0.25
+done
+if ! ros2 service list | grep -q '^/stackchan/default/cmd/get_status$'; then
+  echo "STACKCHAN_BRIDGE_LIVE_READY=0" >&2
+  tail -n 80 /tmp/stackchan-bridge.log >&2 || true
+  exit 1
+fi
+wait -n "$socat_pid" "$agent_pid" "$bridge_pid"
+exit_code=$?
+echo "STACKCHAN_BRIDGE_LIVE_EXITED=1 exit_code=$exit_code" >&2
+tail -n 80 /tmp/stackchan-bridge.log >&2 || true
+exit "$exit_code"
+"""
+    return docker_run(
+        args.image,
+        command,
+        name=args.name,
+        replace=args.replace,
+        detach=not args.foreground,
+        restart_policy=args.restart_policy,
+        mount_workspace=True,
+        workdir=WORKSPACE,
+    )
+
+
 def run_tcp_pty_bridge_smoke(args: argparse.Namespace) -> int:
     disconnect_check = "1" if args.disconnect_check or args.reconnect_check else "0"
     allow_missing_firmware_ready = "1" if args.allow_missing_firmware_ready else "0"
@@ -2300,14 +2424,34 @@ def docker_run(
     command: str,
     *,
     devices: list[str] | None = None,
+    name: str | None = None,
+    replace: bool = False,
+    detach: bool = False,
+    restart_policy: str = "no",
     mount_workspace: bool = False,
     workdir: str | None = None,
 ) -> int:
-    docker_args = ["docker", "run", "--rm", "--net=host"]
-    for name in ENV_PASSTHROUGH:
-        value = os.environ.get(name)
+    if replace and name:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    docker_args = ["docker", "run", "--net=host"]
+    if not detach and not name and restart_policy == "no":
+        docker_args.append("--rm")
+    if detach:
+        docker_args.append("-d")
+    if name:
+        docker_args.extend(["--name", name])
+    if restart_policy != "no":
+        docker_args.extend(["--restart", restart_policy])
+    for env_name in ENV_PASSTHROUGH:
+        value = os.environ.get(env_name)
         if value is not None:
-            docker_args.extend(["-e", f"{name}={value}"])
+            docker_args.extend(["-e", f"{env_name}={value}"])
     for device in devices or []:
         docker_args.append(f"--device={device}")
     if mount_workspace:

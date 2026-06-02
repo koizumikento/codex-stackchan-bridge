@@ -7,8 +7,9 @@ This is the single Codex-facing StackChan skill. It calls `stackchanctl` for res
 Keep the skill focused on product behavior:
 
 - Work-state cues through face, LED, named motion, and short `say` messages.
-- Avatar-style communication through short speech, expression, and named motion
-  when the user talks with StackChan directly.
+- Avatar-style communication through short speech and expression when the user
+  talks with StackChan directly. Motion should be a separate cue when it is
+  known to be available.
 - Spoken summaries for detail-heavy work; keep citations, logs, and long
   findings in text instead of reading them all aloud.
 - Connected short spoken sentences instead of comma-separated keyword lists.
@@ -44,7 +45,7 @@ Use the mock backend when validating skill behavior:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
-uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ" --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --after-face happy "今日は電気をたべたよ" --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill camera capture --output tmp/stackchan-view.jpg --quality 80 --json

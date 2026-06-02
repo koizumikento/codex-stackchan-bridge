@@ -29,9 +29,10 @@ Use this product skill as the single Codex-facing StackChan entry point. It keep
 - Use only documented face names and LED patterns for routine cues.
 - Use `say` sparingly. Prefer face, LED, and named motion for routine progress.
 - When the user asks StackChan to communicate, answer as the avatar with a short
-  `say` plus matching face and named motion. Keep the spoken text natural and
-  concise, and use text-only fallback if voice output is unavailable or quiet
-  mode applies.
+  `say` plus matching face. Use motion as a separate cue only when it is known
+  to be available, so servo-side motion trouble does not prevent speech. Keep
+  the spoken text natural and concise, and use text-only fallback if voice
+  output is unavailable or quiet mode applies.
 - When the user asks what StackChan can see, or asks for visual judgment from
   StackChan's point of view, use `stackchanctl camera capture` to get a bounded
   snapshot before answering. Do not guess from workspace state alone.
@@ -97,7 +98,7 @@ than text alone.
 Prefer one compact command when the CLI supports it:
 
 ```bash
-stackchanctl --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ"
+stackchanctl --source codex_skill say --face happy --after-face happy "今日は電気をたべたよ"
 ```
 
 Use one natural utterance per user-facing response. Do not split a simple
@@ -107,9 +108,10 @@ answer is useful, pass one compact, naturally punctuated paragraph to a single
 
 Communication policy:
 
-- Use `say` for the spoken part, a documented face for expression, and a named
-  motion for emphasis or greeting.
-- Prefer one `say --face ... --motion ...` command for spoken replies.
+- Use `say` for the spoken part and a documented face for expression. Use a
+  separate named motion only after motion has recently worked or the user asks
+  for movement explicitly.
+- Prefer one `say --face ... --after-face ...` command for spoken replies.
 - Include natural punctuation such as `。` between spoken sentences. This helps
   the bridge split oversized TTS safely while keeping the user experience as one
   continuous response.
@@ -132,8 +134,8 @@ Communication policy:
   transfer while preserving the "detailed speech, internal split, less waiting"
   explanation. Prefer a spoken paragraph short enough to fit one loaded
   playback transaction when possible, because that avoids audible transfer gaps
-  between sentence groups. Use face/motion once for the whole spoken
-  explanation, and use `--after-face` once at the end. Do not chain separate
+  between sentence groups. Use face once for the whole spoken explanation, and
+  use `--after-face` once at the end. Do not chain separate
   `say --wait` commands for normal detailed explanations, because waiting for
   one sentence to finish before starting the next TTS/load cycle creates
   unnatural gaps. Keep the written answer as the authoritative detailed record
@@ -245,7 +247,7 @@ Good `say` messages are short and local:
 
 ```bash
 stackchanctl --source codex_skill say "テスト終わったよ"
-stackchanctl --source codex_skill say --face happy --motion cheerful --after-face happy "できたよ"
+stackchanctl --source codex_skill say --face happy --after-face happy "できたよ"
 ```
 
 Avoid reading long summaries, secrets, file paths, command output, or private user content aloud. Do not use `say` for errors unless the user is likely waiting on the physical device.
@@ -291,7 +293,7 @@ Run these checks from the repository root:
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill face thinking --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill led progress --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill motion nod --json
-uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --motion cheerful --after-face happy "今日は電気をたべたよ" --json
+uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill say --face happy --after-face happy "今日は電気をたべたよ" --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill events next --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill speech transcript mock-utt-001 --json
 uv run --directory apps/stackchanctl stackchanctl --backend mock --source codex_skill camera capture --output tmp/stackchan-view.jpg --quality 80 --json

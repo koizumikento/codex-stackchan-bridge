@@ -37,6 +37,7 @@ Run the bridge backend from a host shell such as PowerShell through the
 documented ROS 2 container workflow:
 
 ```bash
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-live --replace --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
 uv run --directory apps/stackchanctl stackchanctl --backend bridge observe --json
 ```
 
@@ -49,7 +50,7 @@ using the package virtualenv entrypoint avoids the extra `uv run` startup cost:
 
 ```powershell
 apps/stackchanctl/.venv/Scripts/stackchanctl.exe --backend bridge observe --json
-apps/stackchanctl/.venv/Scripts/stackchanctl.exe --backend bridge say --face happy --motion nod "できたよ" --json
+apps/stackchanctl/.venv/Scripts/stackchanctl.exe --backend bridge say --face happy --after-face happy "できたよ" --json
 ```
 
 Use `--wait` only when you need the terminal physical playback result or when

@@ -108,9 +108,22 @@ uv run --no-project python scripts/ros2_container.py --network host exec "source
 2 Python packages, the host CLI delegates bridge commands into the running ROS
 2 container and preserves the normal CLI contract:
 
+For repeated hardware commands through the Windows host serial TCP bridge,
+start a named live Agent plus bridge container first. This container is the
+default target for host-side `stackchanctl --backend bridge` delegation:
+
+```powershell
+uv run --no-project --with pyserial python scripts/serial_tcp_bridge.py --serial-port COM3 --baud 921600 --host 0.0.0.0 --tcp-port 11411
+uv run --no-project python scripts/microros_agent_container.py tcp-pty-bridge-live --replace --skip-build --tcp-host host.docker.internal --tcp-port 11411 --baud 921600 --verbose 4
+```
+
+The live container exits if `socat`, the micro-ROS Agent, or
+`stackchan_bridge_node` exits. That prevents a stale container from continuing
+to accept delegated CLI calls after the bridge facade has died.
+
 ```powershell
 uv run --directory apps/stackchanctl stackchanctl --backend bridge observe --json
-uv run --directory apps/stackchanctl stackchanctl --backend bridge --timeout 60 say --face happy --motion cheerful "できたよ" --json
+uv run --directory apps/stackchanctl stackchanctl --backend bridge --timeout 60 say --face happy --after-face happy "できたよ" --json
 ```
 
 The default target container is `stackchan-e2e-live`, with the repository
