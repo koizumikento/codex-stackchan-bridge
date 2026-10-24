@@ -21,6 +21,46 @@ From the repository root:
 uv run --no-project python scripts/ros2_container.py build-image
 ```
 
+## Python And CA Security Updates
+
+The firmware build tools require `pip>=26.2.2` (including its vendored certifi)
+and `certifi>=2026.10.19`. The host PlatformIO helper applies these floors to
+its uv environment and passes `scripts/firmware_pip_constraints.txt` to nested
+pip installs. The firmware Docker image bootstraps pip from the hash-verified
+wheel in the [Python security announcement](https://blog.python.org/2026/10/python-3151-3149-31317/)
+before installing PlatformIO with the same constraints. Updating standalone
+certifi alone does not update pip's vendored bundle. See the
+[certifi advisory](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2).
+
+Use host uv 0.13.5 or newer before creating build environments; existing environments
+and cached container layers do not become safe just by updating this repository.
+For a fresh image, run the relevant command from the repository root:
+
+```bash
+docker build --pull --no-cache -f .devcontainer/Dockerfile -t codex-stackchan-ros2:jazzy .
+docker build --pull --no-cache -f .devcontainer/Dockerfile.microros-agent -t codex-stackchan-microros-agent:jazzy .
+docker build --pull --no-cache -f .devcontainer/Dockerfile.firmware -t codex-stackchan-firmware:platformio .
+```
+
+These commands build images only; they do not flash a device. Inspect the actual
+image's `python3 --version`, `dpkg-query -W ca-certificates python3-pip`, and
+`python3 -m pip debug --verbose` where available. Confirm the installed CA bundle
+and Python/pip package revisions against Debian Bookworm or Ubuntu Noble security
+updates, including distribution backports. A successful build alone does not
+prove distrust of the compromised chains: check for the affected roots
+`emSign ECC Root CA - G3` and `AAA Certificate Services` in the active bundle.
+Modern pip can use
+both system trust and vendored certifi; the bridge's urllib-based TTS path uses
+system trust for HTTPS. Keep operator-provided CA bundles current as well.
+
+Keep ROS Jazzy's distribution Python 3.12 for `rclpy` and generated type support;
+the ROS images use distro packages rather than a PyPI replacement for system pip.
+The firmware tool image also stays on Python 3.12. `stackchanctl` has no runtime
+certifi dependency, so its lockfile is unchanged. This change does not establish
+a fix for CPython `tar_filter` CVE-2026-114583: no direct extraction path was
+found here, and as of 2026-10-24 a stable fixed release has not been established.
+Track upstream and distro fixes separately.
+
 ## Run A Shell
 
 From PowerShell, bash, zsh, or another local shell:
