@@ -12,7 +12,7 @@ The hardware-free facade core can be tested without ROS 2:
 
 ```bash
 uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests
-uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .
+uv run --directory apps/stackchanctl --frozen ruff check ../../ros/stackchan_bridge
 ```
 
 The `stackchan_bridge_node` entrypoint requires a sourced ROS 2 Jazzy environment.

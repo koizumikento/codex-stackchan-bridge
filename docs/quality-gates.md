@@ -250,6 +250,9 @@ The expected CI shape is:
 
 - GitHub Actions on Ubuntu 24.04.
 - Python lint and unit tests for `apps/stackchanctl`.
+- CLI and bridge lint use Ruff from `apps/stackchanctl/uv.lock` so both gates
+  retain the same reviewed tool version rather than resolving new lint rules
+  on each run.
 - Mock backend contract tests.
 - Multi-device/default-device contract tests.
 - ROS 2 interface contract checks for `ros/stackchan_msgs`; replace or supplement these with `colcon` interface build checks when a ROS 2 Jazzy CI image is available.
@@ -257,6 +260,7 @@ The expected CI shape is:
 - Containerized ROS 2 smoke for `stackchan_msgs`, `stackchan_bridge`, and the
   no-device `stackchanctl --backend bridge` path.
 - Firmware contract checks for `firmware/m5stackchan-microros`; run PlatformIO build-only checks in a PlatformIO/micro-ROS-capable environment.
+- Firmware Python build-tool dependency floors are checked without hardware.
 - Containerized PlatformIO build-only checks for firmware when the pinned
   micro-ROS PlatformIO dependency resolves.
 
@@ -267,17 +271,19 @@ in CI:
 
 - `uv run --directory apps/stackchanctl python -m unittest discover -s tests`
   for CLI, mock backend, MCP stdio, and Codex skill policy regression.
-- `uv run --directory apps/stackchanctl --with ruff ruff check .`.
+- `uv run --directory apps/stackchanctl --frozen ruff check .`.
 - `uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests`
   for hardware-free bridge facade, event, speech, telemetry, and redaction
   behavior.
-- `uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .`.
+- `uv run --directory apps/stackchanctl --frozen ruff check ../../ros/stackchan_bridge`.
 - `uv run --no-project python scripts/check_ros_interfaces.py` for
   `stackchan_msgs` contract shape when a full ROS 2 build is unavailable.
 - `uv run python -m unittest discover -s firmware/m5stackchan-microros/tests`
   for firmware contract checks that do not need a board. In CI this includes
   native C++ contract harnesses compiled with the runner toolchain; their
   assertion failures should identify the contract that failed.
+- `uv run --no-project python -m unittest scripts.tests.test_firmware_python_dependencies`
+  for the host and nested firmware installer security constraints.
 - `uv run --no-project python scripts/ros2_container.py smoke` when Docker is
   available, to build `stackchan_msgs` and `stackchan_bridge` in ROS 2 Jazzy and
   verify the no-device bridge path.

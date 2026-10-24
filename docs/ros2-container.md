@@ -32,8 +32,9 @@ before installing PlatformIO with the same constraints. Updating standalone
 certifi alone does not update pip's vendored bundle. See the
 [certifi advisory](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2).
 
-Use host uv 0.13.5 or newer before creating build environments; existing environments
-and cached container layers do not become safe just by updating this repository.
+Use host uv 0.13.5 or newer before creating build environments; existing
+environments and cached container layers do not become safe just by updating this
+repository.
 For a fresh image, run the relevant command from the repository root:
 
 ```bash
@@ -49,9 +50,9 @@ and Python/pip package revisions against Debian Bookworm or Ubuntu Noble securit
 updates, including distribution backports. A successful build alone does not
 prove distrust of the compromised chains: check for the affected roots
 `emSign ECC Root CA - G3` and `AAA Certificate Services` in the active bundle.
-Modern pip can use
-both system trust and vendored certifi; the bridge's urllib-based TTS path uses
-system trust for HTTPS. Keep operator-provided CA bundles current as well.
+Modern pip can use both system trust and vendored certifi; the bridge's urllib-based
+TTS path uses system trust for HTTPS. Keep operator-provided CA bundles current
+as well.
 
 Keep ROS Jazzy's distribution Python 3.12 for `rclpy` and generated type support;
 the ROS images use distro packages rather than a PyPI replacement for system pip.
