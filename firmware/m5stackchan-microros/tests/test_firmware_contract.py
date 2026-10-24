@@ -38,6 +38,7 @@ class FirmwareContractTests(unittest.TestCase):
         self.assertIn("UART_SCLK_DEFAULT=UART_SCLK_XTAL", platformio)
         self.assertIn("STACKCHAN_MICROROS_SERIAL_BAUD=921600", platformio)
         self.assertIn("StackChan-BSP.git#1.1.0", platformio)
+        self.assertIn("m5stack/M5Unified@0.2.20", platformio)
         self.assertRegex(platformio, r"micro_ros_platformio\.git#[0-9a-f]{7,40}")
 
         microros_meta = (ROOT / "microros_stackchan.meta").read_text()

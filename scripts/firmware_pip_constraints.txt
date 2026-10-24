@@ -1,1 +1,4 @@
 empy==3.3.4
+# Standalone certifi does not update pip's vendored CA bundle.
+pip>=26.2.2
+certifi>=2026.10.19

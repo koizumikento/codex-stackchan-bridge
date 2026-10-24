@@ -37,6 +37,7 @@ Use PlatformIO with the Arduino framework.
 Dependency stance:
 
 - `StackChan-BSP` pinned to Git tag `1.1.0`
+- `M5Unified` pinned to `0.2.20` for the BSP's IO expander API compatibility
 - `micro_ros_platformio` pinned to a provisional commit SHA until the first
   ROS 2 Jazzy PlatformIO build verifies it
 - ROS 2 / micro-ROS distro: Jazzy

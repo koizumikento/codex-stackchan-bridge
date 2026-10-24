@@ -1250,7 +1250,10 @@ Pinning rules:
   status heartbeat or core face/motion/LED services. Capability status should
   use `TRANSPORT_INIT_FAILED` for media hardware that is present but whose
   micro-ROS action transport could not initialize.
-- Let `StackChan-BSP` resolve `M5Unified`, `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
+- Pin `M5Unified` to `0.2.20` with `StackChan-BSP` `1.1.0`: M5Unified `0.2.21+`
+  changed the IO expander virtual API and no longer compiles with this BSP.
+  Keep the BSP's existing hardware behavior while restoring reproducible builds.
+- Let `StackChan-BSP` resolve `M5GFX`, `IRremoteESP8266`, and `M5Unit-NFC` at first.
 - Promote transitive dependencies to explicit pins only if reproducibility breaks.
 - Treat the `FTServo_Arduino` driver as owned by the `StackChan-BSP` layer unless a concrete adapter need appears.
 

@@ -35,7 +35,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Lint stackchan_bridge
-        run: uv run --directory ros/stackchan_bridge --no-project --with ruff ruff check .
+        run: uv run --directory apps/stackchanctl --frozen ruff check ../../ros/stackchan_bridge
       - name: Test stackchan_bridge facade
         run: uv run --directory ros/stackchan_bridge --no-project python -m unittest discover -s tests
 
@@ -58,6 +58,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Check firmware contracts
         run: uv run python -m unittest discover -s firmware/m5stackchan-microros/tests
+      - name: Check firmware Python dependency floors
+        run: uv run --no-project python -m unittest scripts.tests.test_firmware_python_dependencies
       - name: Build firmware container image
         run: uv run --no-project python scripts/firmware_container.py build-image
       - name: Build firmware
